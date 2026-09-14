@@ -687,3 +687,5 @@ reload 1: 50 listeners
 结合前面读到的两段实现(事件构造器用 `LinkedHashMap` 注册、`sortListeners` 走 guava 图),最合理的解释是:**结果 = 「按原版名字排列的那一组」前缀 + 「走拓扑排序得到的那一组」**,而后者本来也应该包含模组监听器;当事件构造时传进来的 `getListeners()` **已经含那 22 个原版监听器**时,它们就同时出现在这两部分里。
 
 也就是说,问题可能不在"谁注册了两次",而在**事件构造的时刻**:这一个运行里 22 次注册发生在 `updateListenersFrom` 之前。下一轮要做一次**对照测量**:用同一套探针,在**只装 NeoForge、不打 OptiFine 补丁**的情况下跑一遍(需要一个只含 loader 与探针、不含 OptiFine 的 jar),看原版 NeoForge 在这个时刻 `getListeners()` 是不是空的、`updateListenersFrom` 前后各是多少 —— 这能直接判定"顺序被谁改了",而不必继续猜。
+
+**顺序这条线索也断了。** 读 NeoForge 自己的 `Minecraft` 字节码,22 次 `registerReloadListener` 的偏移是 971–1916,而 `ClientHooks.initClientHooks` 在 **2192** —— 也就是说**原版 NeoForge 也是先注册、后建事件**,和我们看到的完全一样。所以"顺序被改动"不成立,重复是在**原版就会发生的那条路径**里产生的,差别只可能在**输入的内容**上:`VanillaClientListeners` 认得那些原版监听器类时才会把它们排除在拓扑排序之外,只有在它认不出时才会被排第二遍。于是对照测量仍然值得做,但要看的是"识别"而不是"顺序"。
