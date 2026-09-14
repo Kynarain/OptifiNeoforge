@@ -81,7 +81,15 @@ public final class ReloadableResourceManagerFix implements ITransformer<ClassNod
 	 * NeoForge's version of this method assigns the sorted list to the field:
 	 * {@code this.listeners = ReloadListenerSort.sort(event);}. OptiFine's copy declares the field
 	 * final, and a {@code putfield} to a final field outside an initialiser is rejected by the
-	 * verifier, so the same effect is reached by filling the existing list instead.
+	 * verifier, so the same effect is reached by replacing the contents of the existing list.
+	 *
+	 * <p>Replacing, not adding: the first version of this method appended with {@code addAll}, which
+	 * left the vanilla listeners NeoForge had already registered in place and put the sorted copy
+	 * after them - 22 entries becoming 48. The reload then ran every vanilla listener twice, and the
+	 * second pass over the sprites closed the ones the first had just built, which surfaced much later
+	 * as {@code IllegalStateException: Image is not allocated} from the atlas upload. Clearing first
+	 * is what makes this equal to an assignment while leaving the field final and the list mutable for
+	 * the listeners registered after the event.</p>
 	 */
 	private static void addUpdateFrom(ClassNode input) {
 		if(hasMethod(input, UPDATE_FROM, UPDATE_FROM_DESC)) {
@@ -90,6 +98,9 @@ public final class ReloadableResourceManagerFix implements ITransformer<ClassNod
 
 		MethodNode update = new MethodNode(Opcodes.ACC_PUBLIC, UPDATE_FROM, UPDATE_FROM_DESC, null, null);
 		InsnList body = update.instructions;
+		body.add(new VarInsnNode(Opcodes.ALOAD, 0));
+		body.add(new FieldInsnNode(Opcodes.GETFIELD, input.name, LISTENERS_FIELD, LISTENERS_DESC));
+		body.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "java/util/List", "clear", "()V", true));
 		body.add(new VarInsnNode(Opcodes.ALOAD, 0));
 		body.add(new FieldInsnNode(Opcodes.GETFIELD, input.name, LISTENERS_FIELD, LISTENERS_DESC));
 		body.add(new VarInsnNode(Opcodes.ALOAD, 1));
