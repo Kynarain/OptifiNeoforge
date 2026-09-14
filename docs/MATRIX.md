@@ -152,3 +152,31 @@ version (already in test-downloads) and a NeoForge 1.20.1 instance to launch.
 
 So the order for this line becomes: verify it through the rig first, and treat the
 Gradle build as a separate item that is understood, not mysterious.
+## 2026-09-15: a NeoForge 1.20.1 instance exists now, and the launcher owes it one property
+
+Setup done on this machine, so the next round can start with a launch:
+
+- NeoForge 1.20.1 installed as the profile 1.20.1-forge-47.1.106 (installer:
+  forge-1.20.1-47.1.106-installer.jar, run with Java 17). The installer reported
+  errors twice while maven.neoforged.net timed out, and wrote a profile whose 33
+  libraries were missing. The libraries were then fetched directly from the
+  profile's own downloads.artifact entries with a retry loop (30 downloaded, 4
+  already present, 0 failed), after which the installer ran to completion
+  ("Successfully installed client into launcher").
+- Java 17 is at C:\Program Files\Java\jdk-17, and the vanilla 1.20.1 jar is present.
+- test-downloads already holds OptiFine_1.20.1_HD_U_I6.jar and the 1.20.1 client jar.
+
+The profile still will not start, and the reason is specific rather than mysterious:
+BootstrapLauncher 1.1.2 - the era's launcher - requires a system property the
+installer does not write into the profile. Reading the class shows it looks up
+"legacyClassPath", with "legacyClassPath.file" as the variant pointing at a file, and
+line 141 is the Optional.orElseThrow() that fails with "No value present". The
+profile's own arguments.jvm carries -DlibraryDirectory, the module path with
+--add-modules ALL-MODULE-PATH, and the add-opens/add-exports, but no legacyClassPath.
+
+So the rig needs one era-specific addition for this line - pass
+-DlegacyClassPath=<the game classpath it already computes> (or write it to a file and
+pass legacyClassPath.file) - and then the same pipeline that verified 1.21.4 can run
+here. That is the first thing to do next, followed by this line's mod metadata:
+1.20.1 reads META-INF/mods.toml with Forge-style dependency entries, not the
+META-INF/neoforge.mods.toml the other lines ship.
