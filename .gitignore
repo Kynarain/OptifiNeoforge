@@ -1,16 +1,14 @@
-# Compiled class file
+# Compiled class files
 *.class
 
-# Log file
+# Logs (the game and Gradle both write plenty of these)
 *.log
 
-# BlueJ files
-*.ctxt
+# Java virtual machine crash logs
+hs_err_pid*
+replay_pid*
 
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
-
-# Package Files #
+# Package files. The Gradle wrapper jar is the one exception that has to be committed.
 *.jar
 *.war
 *.nar
@@ -18,7 +16,35 @@
 *.zip
 *.tar.gz
 *.rar
+!gradle/wrapper/gradle-wrapper.jar
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
-hs_err_pid*
-replay_pid*
+# Gradle
+.gradle/
+build/
+dist/
+
+# NeoForge / Minecraft development runs
+run/
+runs/
+
+# IntelliJ / Eclipse
+.idea/
+*.iml
+*.ipr
+*.iws
+.classpath
+.project
+.settings/
+out/
+bin/
+
+# Local tooling: OptiFine jars are never redistributed, only used for testing
+test-downloads/
+reference/
+
+# The game writes its logs beside its working directory
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
