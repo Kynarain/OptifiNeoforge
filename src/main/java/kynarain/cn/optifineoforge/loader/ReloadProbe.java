@@ -98,6 +98,27 @@ public final class ReloadProbe {
 		LOGGER.info("value " + label + ": " + describe(value));
 	}
 
+	/** Who called in, briefly - for a method that should not be running yet. */
+	public static void trace(String label) {
+		if(!enabled()) {
+			return;
+		}
+		StringBuilder report = new StringBuilder("trace " + label);
+		StackTraceElement[] frames = Thread.currentThread().getStackTrace();
+		int shown = 0;
+		for(StackTraceElement frame : frames) {
+			String type = frame.getClassName();
+			if(type.startsWith("java.") || type.startsWith("jdk.") || type.startsWith("kynarain.")) {
+				continue;
+			}
+			report.append("\n    at ").append(type).append('.').append(frame.getMethodName());
+			if(++shown == 8) {
+				break;
+			}
+		}
+		LOGGER.info(report.toString());
+	}
+
 	private static Object read(Object instance, String name) {
 		for(Class<?> type = instance.getClass(); type != null; type = type.getSuperclass()) {
 			try {

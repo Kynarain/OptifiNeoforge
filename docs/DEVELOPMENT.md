@@ -600,3 +600,37 @@ Caused by: java.lang.IllegalStateException: Image is not allocated.
 ```
 
 这条大概率在 OptiFine 的自定义贴图/连接纹理路径上(`CustomItems`/`ConnectedTextures` 这一轮已经在跑),下一轮从这里开始。
+
+### 贴图集上传失败的定位(2026-09-15 凌晨)
+
+又加了一个探针(`NativeImageProbeFix`,默认关闭):在 `NativeImage.close` 打一条带**短栈**的 trace,并在 `NativeImage.upload` 打 enter。一次运行拿到 31402 次 `close`、40283 次 `upload`,按调用者分组:
+
+```
+  30634  net.minecraft.client.renderer.texture.SpriteContents.close
+    230  SpriteContents$InterpolationData.close
+    176  SpriteContents.rescale
+    160  atlas.sources.LazyLoadedImage.release
+```
+
+再对 `SpriteContents.close` 的调用者分组,只有一个:
+
+```
+  30634  net.minecraft.client.renderer.texture.TextureAtlas.clearTextureData
+```
+
+完整栈长这样(一次实例):
+
+```
+at com.mojang.blaze3d.platform.NativeImage.close
+at net.minecraft.client.renderer.texture.SpriteContents$InterpolationData.close
+at net.minecraft.client.renderer.texture.SpriteContents$Ticker.close
+at net.minecraft.client.renderer.texture.TextureAtlasSprite$1.close
+at net.minecraft.client.renderer.texture.TextureAtlas.clearTextureData
+at net.minecraft.client.renderer.texture.TextureAtlas.upload
+at net.minecraft.client.resources.model.AtlasSet$StitchResult.upload
+at net.minecraft.client.resources.model.ModelManager.apply
+```
+
+也就是说:**`TextureAtlas.upload` 在 `clearTextureData()` 里关掉的,正是它接下来要上传的那批精灵** —— `clearTextureData` 本意是释放**上一批**精灵的 ticker 与插值数据,这里却关到了新的那批,于是 `SpriteContents.uploadFirstFrame` 一上传就撞上 `Image is not allocated.`(30k 这个数量级也和方块贴图集的精灵数吻合)。
+
+最可能的原因就是上一节记下的那个缺陷:**监听器清单里每个原版监听器出现了两次**。同一批精灵被两轮上传/清理交叉处理时,第二轮的 `clearTextureData` 关掉的正是第一轮刚建好的精灵。下一轮第一件事:查清这份清单为什么会重复 —— 需要对照 OptiFine 替换后的 `Minecraft`(Forge 时代那版)与 NeoForge 的注册顺序,以及 `ReloadableResourceManager.updateListenersFrom` 到底该替换还是追加。
