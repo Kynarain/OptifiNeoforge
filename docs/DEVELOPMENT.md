@@ -790,3 +790,20 @@ the answer is yes), and whether FML's TopologicalSort reports or silently walks
 one. The graph line itself did not appear in the OptiFine run, so the probe needs
 one more look there too - it printed on the control, so the insertion is sound and
 something about that run skipped it.
+## 2026-09-15: FML's sort is Kahn's algorithm, so it cannot emit 48 from 26
+
+TopologicalSort.topologicalSort (loader-6.0.18.jar) computes in-degrees, queues
+every node whose in-degree is zero, then repeatedly removes one from the queue,
+adds it to the result, decrements its successors' in-degrees and enqueues each
+successor that reaches zero - a Map.remove immediately after the Queue.add keeps a
+node from being enqueued twice. Every node therefore lands in the result at most
+once, and a cycle cannot be walked silently: the method declares
+IllegalArgumentException and has a throwCyclePresentException helper for it.
+
+So the previous round's reading is wrong as well: the 48 entries cannot be the
+sort emitting nodes more than once. Either the sort is handed a graph with more
+than 26 nodes, or the 48 entries are not the sort's return value at all. The next
+probe separates those two by logging the size of the list sort() itself returns,
+inside sort(), and by getting the graph numbers out of the OptiFine run - that
+line printed on the control and not there, which is itself unexplained and needs
+to be fixed before its absence is read as anything.
