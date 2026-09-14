@@ -266,3 +266,27 @@ initialisation all complete - while the visual confirmation (textures, the rig's
 screenshot) waits on downloading that version's asset objects. The download of the
 missing objects is running as a background job; systems/... once it finishes, the run
 can be repeated and the reload checked the way 1.21.4's was.
+## 2026-09-15: for 1.20.4 the installer must actually finish, because it generates what FML needs
+
+NeoForge 20.4.251 installs as a profile (49 libraries, 34 present, 15 downloaded by
+hand), ModLauncher 10.0.9 starts, and then FML stops on artifacts that are not there:
+
+    java.io.IOException: Invalid paths argument, contained no existing paths:
+      libraries/net/minecraft/client/1.20.4-20240627.114801/client-1.20.4-20240627.114801-srg.jar
+      libraries/net/minecraft/client/1.20.4-20240627.114801/client-1.20.4-20240627.114801-extra.jar
+      libraries/net/neoforged/neoforge/20.4.251/neoforge-20.4.251-client.jar
+
+Those three are not published artifacts. Fetching the last of them - the one that looks
+most like a normal maven coordinate - returns 404 from the NeoForged repository, so they
+are produced locally: the installer downloads NeoForm's tooling (AutoRenamingTool,
+srgutils, javadoctor and friends), runs it against the vanilla 1.20.4 jar and the
+mappings, and writes the srg, extra and client jars itself. On this machine that
+installer keeps failing on SocketTimeoutException against maven.neoforged.net, which is
+the same flakiness that hit Gradle and the 1.20.1 installer, so it never reaches the
+generation step.
+
+The way through, then, is the pattern that already worked twice: run the installer,
+collect the "Downloading library from <url>" lines it reports as timed out, fetch those
+exact URLs with Invoke-WebRequest and retries, repeat until it prints "Successfully
+installed client into launcher" - at which point the three derived jars exist and
+1.20.4 can be brought up like 1.20.1 was.
