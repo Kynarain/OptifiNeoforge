@@ -239,3 +239,22 @@ java.lang.IllegalStateException: Rendersystem called from wrong thread
 `Main.main` 走进 `fillReport` 说明**在它之前就已经有一次异常**,而这次断言失败发生在**组装崩溃报告**的时候(主线程读 GL 能力字符串)。也就是说:真正要查的是它之前那个异常,而这个"wrong thread"只是它的影子。
 
 教训:失败的栈要**从头看**,不能只看最后一条消息 —— 上一步据此得出的"供体真身更差"的结论需要重新验证。下一步:在完整 stderr 里找 `Main.main` 之前的第一处异常(可能在 mod 加载或 `Minecraft.run` 的早期),再决定成员的补法。
+
+### 更正:并没有"供体更差"这回事(2026-09-14)
+
+把两次运行的崩溃报告按时间对齐之后,上一节的结论是错的:
+
+| 运行 | 启动 | 崩溃报告 | 描述 |
+|---|---|---|---|
+| 22:50:43 桩版本 | →22:51:37 | crash-…22.51.37 | `Rendering overlay` / `Already building.` |
+| 22:54:53 供体版本 | →22:55:06 | crash-…22.55.06 | `Rendering overlay` / `Already building.` |
+
+**两次都到达同一个阻塞点**(FML 早期显示的 `SimpleBufferBuilder.begin`),只是到达它的耗时不同(55 秒 vs 14 秒,差别来自资源/库加载的波动,不是补法导致)。所以:
+
+- **"供体真身让启动从 60 秒退化到 10 秒"是不成立的**,那是把"最后一条日志消息"当成了根因;
+- 断言剥离与 4 个 GL 状态成员的排除仍然保留(它们各自有依据),但**当前唯一的阻塞点自始至终没变**:FML 加载覆盖层的缓冲区状态机。
+
+顺带确认两件事:
+
+- `-Dfml.earlyprogresswindow=false` 在 NeoForge 21.4 上**无效**(jar 里也找不到可用的开关字符串),所以没法用配置绕过早期显示;
+- FML 的早期显示**完全用自己的类**(`SimpleBufferBuilder` / `SimpleFont` / `Format` / `Mode`)与 LWJGL,不用 Minecraft 的 `VertexFormat`/`GlStateManager` —— 因此问题不在"OptiFine 替换了哪个渲染类",而在**某一帧的绘制中途抛了异常**,把 `building` 留成了 true(下一帧的第一次 `begin` 就炸)。下一轮要抓的是**第一帧里被吞掉的那个异常**。
