@@ -46,6 +46,13 @@
    产物在 `build/libs/OptifiNeoforge-<版本>+mc<Minecraft 版本>.jar`。构建前请把这条线对应的
    OptiFine jar 放进 `test-downloads/`(构建与重打包工具从那里取输入)。
 
+   **注意(2026-09-15 实测)**:`gradlew build` 产出的是**只含加载器**的 jar —— 1.21.x 上为
+   `OptifiNeoforge-0.1.0+mc1.21.4.jar`(约 86 KB,内含 `kynarain/cn/optifineoforge/**` 与
+   `META-INF/neoforge.mods.toml`)。真正能直接放进 `mods/` 的产物目前仍由 rig 的
+   `build-rig-jar.ps1` 流水线产出:重打包 OptiFine → 打补丁 → 生成成员还原计划与供体 → 合并成
+   `optifiNeoforge-combined.jar`。所以**这一步还不是完整的发布路径**,把那条流水线做成 Gradle
+   任务是待办事项之一。
+
 4. **记录**:把这一轮验证到的、以及验证失败的都写进 `docs/DEVELOPMENT.md`(那份文档就是本项目的
    实测记录,负面结果同样要记)。
 
