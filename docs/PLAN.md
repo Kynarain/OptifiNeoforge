@@ -1,0 +1,67 @@
+# 设计与里程碑(1.20.x 线)
+
+## 目标
+
+让 OptiFine 在 **NeoForge** 上工作,做法与 OptiFabric 在 Fabric Loader 上一样:不去重新实现 OptiFine,而是
+
+1. 用 OptiFine 自带的补丁器把它自己的补丁打进原版客户端;
+2. 重建补丁类里被搬走的 lambda;
+3. 按目标版本的命名空间把结果对齐;
+4. 把打过补丁的 Minecraft 类交给 NeoForge 的类转换流程,让它们顶替原版类。
+
+OptiFabric 在 Fabric 侧走的是 `GameTransformer.patchedClasses`。NeoForge 侧对应的位置还没有最终确定,这是本线第一个要解决的问题(见下)。
+
+本线要覆盖 **1.20.1 / 1.20.2 / 1.20.4 / 1.20.6** 四个 MC 版本。四个版本的 NeoForge 坐标、Java 版本与运行期命名空间各不相同,所以里程碑的每一条都要在四个版本上分别判据,不能由一个版本的结果外推。
+
+## 本线的额外差异
+
+| 方面 | 1.20.x 线的情况 |
+|---|---|
+| NeoForge 坐标 | 1.20.1 是 Forge 时代的 `net.neoforged:forge:1.20.1-47.1.106`;1.20.2 起是 `net.neoforged:neoforge`(`20.2.93` / `20.4.251` / `20.6.141`) |
+| Java | 1.20.1 / 1.20.2 / 1.20.4 是 17,1.20.6 是 21 —— 同一条线内不同 JDK,CI 要分两套 |
+| mod 元数据文件 | 1.20.4 及更早预期读 `META-INF/mods.toml`(OptiFine 自带的就是这份),1.20.6 及之后预期读 `META-INF/neoforge.mods.toml`;确切切换点**待确认** |
+| 运行期命名空间 | 预期整条线是 **SRG**;官方名大约从 1.20.5/1.21 前后开始,1.20.6 属于哪一侧**待确认** |
+| OptiFine 供给 | 1.20.2 只有 `I7_pre1` 一个 preview;1.20.3 与 1.20.5 完全没有 OptiFine |
+| 补丁形式 | 1.20.1 – 1.20.4 的 OptiFine 是 Forge 时代的产物,补丁流程与 1.20.6 之后可能不同,需要逐版确认 |
+
+这条线**内部**就跨越了 Forge 时代的 NeoForge 与独立的 `20.x` 系列,这是它与 1.21.x 线最大的不同:1.21.x 线内部各版本的加载器行为基本一致,而这里可能需要在同一份代码里容纳两套元数据与命名空间处理。
+
+## 与 Fabric 线的关键差异
+
+| 方面 | OptiFabric(Fabric) | 本项目(NeoForge) |
+|---|---|---|
+| 补丁时机 | Fabric Loader 的 `GameTransformer`,在 Mixin 之前 | ModLauncher / NeoForge 的转换流程,顺序需要核实 |
+| OptiFine 自身 | 纯字节码补丁 + 自己的类,没有 loader 集成 | **自带 Forge 时代的 loader 集成**(`optifine.OptiFineTransformationService`) |
+| 元数据 | 不涉及 | OptiFine 的 jar 里是 `META-INF/mods.toml`;1.20.4 及更早可能直接可用,1.20.6 及之后预期要换成 `neoforge.mods.toml` |
+| 命名空间 | official → intermediary | 这条线预期是 **SRG**(与 intermediary 不同,需要目标版本自己的映射表) |
+| 第三方补丁 | 只有 Fabric API 的 mixin | NeoForge 自己也会改原版类,补丁需要合并 |
+
+## 两条可选路线
+
+**路线 A —— 让 OptiFine 自己的 ModLauncher 服务跑起来。**
+OptiFine 的 `optifine.OptiFineTransformationService` 只依赖 `cpw.mods.modlauncher.*`(`ITransformationService`、`ITransformer<ClassNode>`、`SecureJar`),不引用 `net.minecraftforge.*`。理论上只要让 NeoForge 发现并加载这个服务、并把它的元数据修好,补丁流程就能原样工作。这条路线在 1.20.x 线上**更值得先试**:这条线的 NeoForge 本来就脱胎于 Forge,发现第三方 `ITransformationService` 的路径可能还在。代价是:顺序、投票(`castVote`)、与 NeoForge 自身补丁的合并都不在我们手里。
+
+**路线 B —— 自己跑补丁器,自己交出补丁类(像 OptiFabric)。**
+在 `preLaunch` 阶段调用 `optifine.Patcher` 打补丁、重建 lambda、对齐命名空间,然后把结果交给 NeoForge 的转换 API。可控性最高,代价是工作量大,而且要先弄清 NeoForge 允不允许整类顶替。**1.20.x 线的 SRG 命名空间对齐要在这一层自己做**,没有现成的 intermediary 映射可借。
+
+骨架阶段两条都留着:**先用最小代价验证路线 A 能不能成立**(它是"能不能跑"的问题),同时按路线 B 的形态组织代码(补丁器调用、缓存、fixer 框架都放在 `core` 里,不依赖具体挂载点)。
+
+## 里程碑
+
+| # | 内容 | 完成判据 |
+|---|---|---|
+| M0 | 骨架:三条分支、版本矩阵、构建配置、文档 | 本提交(文档部分)与随后的构建配置提交 |
+| M1 | 路线 A 可行性:修好 OptiFine jar 的元数据,让 NeoForge 认它 | **四个版本各自**能启动到标题界面,日志里能看到 OptiFine 的转换服务被加载 |
+| M2 | 补丁管线:调用 `optifine.Patcher`,建立缓存(`<游戏目录>/.optifine/<OptiFine 版本>/`) | 首次启动完成补丁,二次启动走缓存 |
+| M3 | 补丁类注入 + fixer 框架:对齐命名空间(SRG),补回被搬走的方法、处理与 NeoForge 自身补丁的重叠 | 逐版本进世界不崩,方块/物品/区块渲染正常 |
+| M4 | 完整兼容:光影包、抗锯齿、连接纹理;第三方模组(尤其依赖 NeoForge 渲染钩子的) | 与 OptiFabric 在 Fabric 上的验收口径对齐,四个版本分别验收 |
+| M5 | 发布:版本脚本、发布说明、CurseForge / Modrinth 元数据 | 能一条命令出包并发布,四个产物各自打包 |
+
+每条线按同样的里程碑推进,但各自独立验收。本线的 M1 要先回答"切换点在哪":元数据文件名与命名空间的分界一旦确认,四个版本才能各自定下实现。
+
+## 提交纪律
+
+- 分支互相独立:`1.20.x`、`1.21.x`、`26.x` 各自有自己的 `README`、矩阵、构建配置和文档,不做跨分支的合并,也不跨线复制版本号。
+- 线内也要按版本立据:`1.20.1` 与 `1.20.6` 的结论不能互相顶替,写文档时要说清是哪一个版本。
+- 文档与实测口径要一致:没在真实游戏里验证过的东西写成计划,不写成结论。
+- OptiFine 的 jar 不进仓库,也不随产物分发。
