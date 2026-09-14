@@ -719,3 +719,33 @@ vanillaName=<resolved> per listener by calling VanillaClientListeners
 "?" - on the control run the call itself fails, so the first thing to fix is the
 probe's own reflective lookup (wrong method signature or visibility), and then
 compare the resolved names between the two runs.
+## 2026-09-15: the name lookup resolves fine, so that is not the cause either
+
+ReloadProbe now prints the vanilla name NeoForge's sort resolves for every
+listener (asked reflectively through the listener's own class loader, because the
+loader jar cannot see NeoForge's classes). Both runs, same probe:
+
+    control, no OptiFine:  0 ClientNeoForgeMod$$Lambda vanillaName=null
+                           1 BrandingControl$$Lambda  vanillaName=null
+                           2 LanguageManager          vanillaName=minecraft:language_manager
+                           ...  22 before updateListenersFrom, 26 after, reload 26
+                           (4 nulls: the two NeoForge lambdas + ObjLoader + AnimationLoader)
+
+    with OptiFine:         0 LanguageManager          vanillaName=minecraft:language_manager
+                           1 TextureManager           vanillaName=minecraft:texture_manager
+                           ...  22 before updateListenersFrom, 48 after, reload 50
+                           (6 nulls)
+
+So every vanilla listener resolves to the same name in both runs, and the
+hypothesis that needsToBeLinkedToVanilla misjudges them because their name does
+not resolve is wrong. The input to the sort is the same 22 entries, the lookups
+agree, and yet the sorted result carries the vanilla block twice. A topological
+sort over 24-26 nodes cannot produce 48 entries unless the graph it is handed is
+shaped differently, and the graph is built in SortedReloadListenerEvent from the
+passed list plus the dependencies added for it, with sortListeners linking each
+registry entry to getLastVanillaListener() when needsToBeLinkedToVanilla says so.
+
+So the next measurement is that anchor rather than the names: log what
+getLastVanillaListener() returns (and the registry size) in both runs. With
+OptiFine that answer is the one thing that can still differ, since everything else
+in the path has now been shown to agree.

@@ -164,7 +164,11 @@ public final class ReloadProbe {
 			return "n/a";
 		}
 		try {
-			Class<?> lookup = Class.forName("net.neoforged.neoforge.client.resources.VanillaClientListeners");
+			// Resolved through the listener's own class loader: this jar sits in the transformer
+			// layer and cannot see NeoForge's classes itself, while a game listener can.
+			ClassLoader loader = listener.getClass().getClassLoader();
+			Class<?> lookup = Class.forName("net.neoforged.neoforge.client.resources.VanillaClientListeners",
+					true, loader);
 			Object name = lookup.getMethod("getNameForClass", Class.class).invoke(null, listener.getClass());
 			return String.valueOf(name);
 		} catch(Throwable cannotAsk) {
