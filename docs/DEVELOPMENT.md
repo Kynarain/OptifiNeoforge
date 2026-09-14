@@ -162,3 +162,31 @@ java.lang.NoSuchMethodError: 'void com.mojang.blaze3d.pipeline.RenderTarget.<ini
 - 需要真实语义的两个成员(`getListeners`、`updateListenersFrom`)排除在批量之外,仍由各自的 fix 精确还原,因此不依赖 ModLauncher 的转型器执行顺序。
 
 **结果:游戏越过了整个 `Minecraft.<init>`,进入加载界面的渲染循环**(`NeoForgeLoadingOverlay.render` → `DisplayWindow.render`),启动时长从 45 秒推到 60 秒。当前失败点是 FML 自己的早期窗口渲染器抛 `IllegalStateException: Already building.` —— 位置在 FML 内部,方向是某个被补成默认值的桩(或 OptiFine 替换掉的渲染相关类)让它进了不一致状态。下一步:把桩清单与这个失败点对上,优先把与渲染/缓冲区有关的成员从"默认值桩"升级成真实实现。
+
+### 当前阻塞点:被补成"默认值"的桩不够,FML 的早期显示进了不一致状态(2026-09-14)
+
+批量补齐之后启动走到了 `NeoForgeLoadingOverlay.render` → FML 的 `DisplayWindow.render`,然后抛:
+
+```
+java.lang.IllegalStateException: Already building.
+	at net.neoforged.fml.earlydisplay.SimpleBufferBuilder.begin(SimpleBufferBuilder.java:152)
+	at net.neoforged.fml.earlydisplay.RenderElement.renderText(RenderElement.java:252)
+```
+
+`-Dfml.earlyprogresswindow=false` 没有效果(NeoForge 21.4 仍然建自己的加载覆盖层)。查了清单里与渲染相关的条目,一共 7 个,其中 4 个是 NeoForge 的 GL 状态备份功能:
+
+```
+M com/mojang/blaze3d/platform/GlStateManager _backupGlState (Lnet/neoforged/neoforge/client/GlStateBackup;)V
+M com/mojang/blaze3d/platform/GlStateManager _restoreGlState (Lnet/neoforged/neoforge/client/GlStateBackup;)V
+M com/mojang/blaze3d/systems/RenderSystem backupGlState (Lnet/neoforged/neoforge/client/GlStateBackup;)V
+M com/mojang/blaze3d/systems/RenderSystem restoreGlState (Lnet/neoforged/neoforge/client/GlStateBackup;)V
+M com/mojang/blaze3d/vertex/VertexFormatElement$Usage getExtensionInfo ()Lnet/neoforged/fml/common/asm/enumextension/ExtensionInfo;
+M com/mojang/blaze3d/vertex/VertexFormatElement findNextId ()I
+M net/minecraft/client/renderer/chunk/SectionCompiler compile (...)
+```
+
+**判断**:把这四个备份/恢复方法补成"什么都不做的桩"是不对的 —— 它们是渲染状态机的一部分。下一步不该继续加桩,而是**把桩换成真身**:
+
+> 在离线阶段从运行时类里把缺失成员的**原始字节码**抽出来(字段 + 方法体),打成"供体(donor)类"随 jar 一起发;运行时转型器把这些成员连同方法体整体复制进 OptiFine 的替换版本。这样"补回去"就是真的补回去,而不是"让它不崩"。少数方法体的常量池会指向 OptiFine 改名过的成员而失效,这类会在日志里显形,再单独处理。
+
+这条是下一轮的第一件事。
