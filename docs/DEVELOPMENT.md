@@ -672,3 +672,18 @@ reload 1: 50 listeners
 2. **NeoForge 内部还有一份原版监听器的来源**(例如 `VanillaClientListeners` 自己往图里注册了一遍),与游戏注册的那 22 个各自成组。
 
 区分办法很直接:在 `updateListenersFrom` 返回处把结果清单**按对象身份**(`System.identityHashCode`)打出来 —— 如果两组 22 个的 identity 相同,就是机制 1;如果 identity 不同,就是机制 2(两组是不同实例)。这比继续读字节码快得多。
+
+### 实测:是**同一个对象**出现了两次(2026-09-15 凌晨)
+
+探针打上了 identity,结果很干净:
+
+```
+8   net.minecraft.client.resources.model.ModelManager  @2007522934   <- bakes the models
+32  net.minecraft.client.resources.model.ModelManager  @2007522934   <- bakes the models
+```
+
+两组里对应位置的 identity **完全相同** —— 所以不是"两份不同的实例",而是**同一批对象被排进了结果两次**:机制 1 那一侧。50 条里只有 28 个不同的类名,也印证了这一点。
+
+结合前面读到的两段实现(事件构造器用 `LinkedHashMap` 注册、`sortListeners` 走 guava 图),最合理的解释是:**结果 = 「按原版名字排列的那一组」前缀 + 「走拓扑排序得到的那一组」**,而后者本来也应该包含模组监听器;当事件构造时传进来的 `getListeners()` **已经含那 22 个原版监听器**时,它们就同时出现在这两部分里。
+
+也就是说,问题可能不在"谁注册了两次",而在**事件构造的时刻**:这一个运行里 22 次注册发生在 `updateListenersFrom` 之前。下一轮要做一次**对照测量**:用同一套探针,在**只装 NeoForge、不打 OptiFine 补丁**的情况下跑一遍(需要一个只含 loader 与探针、不含 OptiFine 的 jar),看原版 NeoForge 在这个时刻 `getListeners()` 是不是空的、`updateListenersFrom` 前后各是多少 —— 这能直接判定"顺序被谁改了",而不必继续猜。

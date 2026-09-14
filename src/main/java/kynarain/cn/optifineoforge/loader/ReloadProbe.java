@@ -42,8 +42,10 @@ public final class ReloadProbe {
 		report.append("reload ").append(RELOADS.incrementAndGet()).append(": ").append(listeners.size())
 				.append(" listeners");
 		for(int index = 0; index < listeners.size(); index++) {
-			String name = listeners.get(index).getClass().getName();
-			report.append("\n    ").append(index).append("  ").append(name);
+			Object listener = listeners.get(index);
+			String name = listener == null ? "null" : listener.getClass().getName();
+			report.append("\n    ").append(index).append("  ").append(name)
+					.append("  @").append(System.identityHashCode(listener));
 			if(MODEL_MANAGER.equals(name)) {
 				report.append("   <- bakes the models");
 			} else if(BLOCK_RENDER_DISPATCHER.equals(name)) {
