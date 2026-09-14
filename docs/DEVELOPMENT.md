@@ -126,6 +126,33 @@ java.lang.NoSuchMethodError: 'void com.mojang.blaze3d.pipeline.RenderTarget.<ini
 
 方向:OptiFine 的补丁改过 `RenderTarget` 的构造函数,而 `MainTarget` 这一侧仍是原版形状 —— 两者要**成对**应用。可能是补丁应用顺序(OptiFine 的转型器与 NeoForge 自己的转型器在同一批类上先后运行)、也可能某个 xdelta 没有成功应用。下一步就是把这个配对问题查清楚。
 
+### 查清了:OptiFine 的整类替换会丢掉 NeoForge 侧还在用的成员
+
+对比三份 `RenderTarget`(都是 javap 出来的):
+
+| 来源 | 构造函数 |
+|---|---|
+| NeoForge 运行时(NeoForm `client-1.21.4-...-srg.jar`) | `RenderTarget(boolean)`、`RenderTarget(boolean, boolean)` —— 一参那个只是转调二参 |
+| NeoForge 的 `MainTarget` | 调 `super(ZZ)` |
+| OptiFine 补丁产物(`srg/com/mojang/blaze3d/pipeline/RenderTarget.class`) | **只有 `RenderTarget(boolean)`** |
+
+也就是说:OptiFine 用**自己编译的一份** RenderTarget 顶掉了 NeoForge 的那份,而那份是按 Forge 的形状编的,少了 NeoForge 调用方要的重载。同一个模式还会丢字段 —— 修掉构造函数之后,下一个错误就是 NeoForge 的 `MainTarget.allocateDepthAttachment` 找不到字段 `useStencil`(OptiFine 那份把它改名成了 `stencilEnabled`)。
+
+**处理办法**:加一个我们自己的 ModLauncher 转型服务(`OptifiNeoforgeTransformationService` + `RenderTargetFix`),在 `TargetType.CLASS` 阶段把 OptiFine 丢掉的成员补回去(目前是那个二参构造函数,转调一参)。实测:
+
+```
+[OptifiNeoforge/]: OptifiNeoforgeTransformationService.onLoad, alongside [mixin, OptiFine, fml, OptifiNeoforge]
+[OptifiNeoforge/]: OptifiNeoforgeTransformationService.transformers
+```
+
+服务与 OptiFine 的服务同时被加载,`NoSuchMethodError: RenderTarget.<init>(ZZ)` 消失,失败点推进到下一个缺失成员(`NoSuchFieldError: ... MainTarget does not have member field 'boolean useStencil'`)。**结论:修复方向对了,只是要逐项补齐 OptiFine 替换掉的成员**(字段 + 方法),这一类修复可以继续按同样方式加。
+
+### 测试台踩到的三个坑
+
+- **FML 6 不接受 `mods/` 里没有元数据的 jar**(日志:`not a valid mod file`)——"transformer jar 不需要 mod 元数据"这条老规矩在这里不成立。测试台的做法是把我们的服务类塞进那个已经被接受的 OptiFine jar,并把服务文件**追加**一行(一个服务文件可以列多个实现)。
+- **PowerShell 变量名不区分大小写**:`$Out` 与 `$out` 是同一个变量,脚本里同时用作输出路径与流对象时会互相覆盖。
+- **.NET Framework 的 `ZipFile.CreateFromDirectory` 写出的条目名用反斜杠**,而 SecureJar 的 union 文件系统只认正斜杠,表现为 `UnionFileSystem$NoSuchFileException: kynarain/cn/.../RenderTargetFix.class`。手工按 `/` 写条目即可。
+
 ## 尚未确认
 
 - 上面第 3 条之外还有多少 `net.minecraftforge.*` 引用需要处理(1.21.4 的 OptiFine 里有一批)。
