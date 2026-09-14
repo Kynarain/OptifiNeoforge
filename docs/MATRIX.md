@@ -98,3 +98,29 @@ Process note: the attempt left the working tree dirty on 1.20.x because the buil
 was run before deciding whether to keep the change, and the branch switch in the
 finally block was refused for that reason. Reverted; the lesson is to make the tree
 clean before switching, not after.
+## 2026-09-15: what the 1.20.x build actually asked for, and what it means
+
+Two attempts, each with the exact coordinate the toolchain demanded:
+
+    net.neoforged.moddev (2.0.147 and 1.0.23) -> Could not find net.neoforged:neoforge:1.20.1-47.1.106
+    net.neoforged.moddev.legacyforge (2.0.147) -> Could not find net.minecraftforge:forge:1.20.1-47.1.106
+
+NeoForge publishes this line as net.neoforged:forge:1.20.1-47.1.106 (the pom under
+that artifact id returns 200 and names "forge"; the "neoforge" path does not exist).
+The normal plugin always asks for net.neoforged:neoforge. The legacy plugin - which
+NeoForged's ModDevGradle 2 announcement says covers "Forge 1.17 to 1.20.1 and
+NeoForge 1.20.1" - asks for net.minecraftforge:forge, i.e. it treated 47.1.106 as a
+MinecraftForge version, and Forge's 47.1.x line does not have that build.
+
+So the remaining question for this line is how the legacy plugin is told that the
+artifact lives under net.neoforged rather than net.minecraftforge. Two candidates,
+to try in that order: a fully qualified coordinate in legacyForge.version, or the
+plugin generation from before ModDevGradle that shipped alongside NeoForge 1.20.1.
+
+Worth recording too, because it changes what this line needs beyond the build
+script: NeoForge 1.20.1 is the Forge-compatible line, so it runs on ModLauncher-era
+FML - the loader layer our 1.21.x line already uses applies as it is, and OptiFine's
+own jar may be accepted without the FML refusals that start at 1.20.6. This line's
+mod metadata is also different: 1.20.1 reads META-INF/mods.toml with the Forge-style
+dependency entries, not the META-INF/neoforge.mods.toml the other lines ship, so the
+resource has to be written for this line rather than copied.
