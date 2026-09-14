@@ -186,11 +186,30 @@ public final class OptifineJar {
 	 * to repeat on a cached copy.</p>
 	 */
 	public static void rewriteMetadata(Path in, Path out, String metadataName, String metadataText) throws IOException {
+		rewrite(in, out, metadataName, metadataText, false);
+	}
+
+	/**
+	 * The jar a NeoForge instance should be given, built from the OptiFine jar the user dropped in.
+	 *
+	 * <p>Two things stand between the two. Its metadata is Forge's, and NeoForge validates the
+	 * loader version it declares. And the installer entry points have to go: NeoForge refuses a
+	 * jar whose {@code optifine/Installer.class} it can see, so the copy handed to the loader is
+	 * stripped of them while the original stays untouched for the patcher to use.</p>
+	 *
+	 * @return the number of installer entries removed
+	 */
+	public static int prepareForLoader(Path in, Path out, String metadataName, String metadataText) throws IOException {
+		return rewrite(in, out, metadataName, metadataText, true);
+	}
+
+	private static int rewrite(Path in, Path out, String metadataName, String metadataText, boolean stripInstaller) throws IOException {
 		Path parent = out.toAbsolutePath().getParent();
 		if(parent != null) {
 			Files.createDirectories(parent);
 		}
 		Path temp = Files.createTempFile(parent, "optifine-", ".jar");
+		int stripped = 0;
 		try {
 			try(ZipFile zip = new ZipFile(in.toFile());
 					ZipOutputStream target = new ZipOutputStream(Files.newOutputStream(temp))) {
@@ -199,6 +218,10 @@ public final class OptifineJar {
 					String name = entry.getName();
 					if(FORGE_METADATA.equals(name) || NEOFORGE_METADATA.equals(name)) {
 						continue; // replaced below
+					}
+					if(stripInstaller && isInstallerEntry(name)) {
+						stripped++;
+						continue;
 					}
 					ZipEntry copy = new ZipEntry(name);
 					copy.setTime(entry.getTime());
@@ -220,6 +243,19 @@ public final class OptifineJar {
 		} finally {
 			Files.deleteIfExists(temp);
 		}
+		return stripped;
+	}
+
+	/**
+	 * Whether NeoForge would recognise this entry as OptiFine's installer.
+	 *
+	 * <p>NeoForge's mod discovery carries a dedicated reason for exactly this: it probes for
+	 * {@code optifine/Installer.class} and skips the whole jar when it finds it, because a stock
+	 * OptiFine jar is a launcher installer rather than a mod. The installer frame classes go with
+	 * it - they are only reachable from that entry point.</p>
+	 */
+	static boolean isInstallerEntry(String name) {
+		return name.equals("optifine/Installer.class") || name.startsWith("optifine/InstallerFrame");
 	}
 
 	private static String suffixOf(String name) {
