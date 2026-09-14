@@ -42,6 +42,10 @@ bin/
 test-downloads/
 reference/
 
+# Scratch space for the offline tools: compiled classes and the tables they emit.
+# The tables are derived from Mojang's mappings, so they are generated locally and never committed.
+build-tools/
+
 # The game writes its logs beside its working directory
 logs/
 

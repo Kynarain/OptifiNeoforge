@@ -919,3 +919,47 @@ NeoForm 官方 jar、vanilla 混淆 jar、slim、extra、`neoforge-*-client.jar`
 NeoForm 1.20.4 自带的两份映射也查了:`-mappings.txt` 是 `tsrg2 obf srg id` 但 srg 列与 obf 列**逐字相同**
 (`cuz cuz 1657`)且全文无 `m_` 名,`-mappings-merged.txt` 是 `tsrg2 left right` = obf→官方名。
 所以重映射要用的 SRG↔official 表**不在 NeoForm 里**,来源问题见 `docs/MATRIX.md` 末节。
+
+## 2026-09-15:SRG→official 表建成并全量验证通过(3844/3844)
+
+新增离线工具 `SrgMemberMap`,输入 MCPConfig 的 `config/joined.tsrg`(`tsrg2 obf srg id`)与 NeoForm 的
+`-mappings-merged.txt`(`tsrg2 obf official`),以**混淆名**为连接键合成 SRG→official 成员表:
+
+    table: 5742 owners with fields, 7428 with methods (35232 + 65393 names);
+           0 classes and 4 members had no counterpart
+
+连接率是 0 缺口,说明两份映射覆盖同一批混淆名。然后用它去改写 OptiFine 1.20.4 **全部**类里的每一个
+SRG 引用,再逐个问 NeoForge 20.4 运行时是否真有这个成员:
+
+    runtime index: 69571 methods, 35583 fields, 7794 classes with a superclass
+    SRG references: 3844
+    resolved:       3844 (100.00%)  = 3248 on the referenced class + 596 through a superclass
+    unresolved:     0
+    wrote 1330 rewrite pairs to build-tools/srg1204.tsv (86412 bytes)
+
+**100% 命中,而且只需要 1330 条改写对 / 86 KB** —— 完整表有 10 万个名字,真正被引用的只有千余条,
+所以这张表可以随 jar 发出去,不必在用户机器上生成。
+
+过程中踩到两个坑,都记下来,因为它们都是"看起来对"的错误:
+
+1. **连接键必须带描述符。** 混淆方法名只在"名字 + 描述符"上唯一,一个类里两个重载都叫 `a` 时,
+   只按名字连接就会互相覆盖。表现是 `m_118316_`(实际是 `getSprite`)被解析成了 `dumpContents`,
+   于是 841 条引用报"宿主类在、成员不在"。两份文件的描述符都在混淆命名空间(`(Lahg;)Lgen;`),
+   可以直接比较。
+2. **引用的 owner 不一定是声明类。** `invokevirtual BlockState.m_60734_` 引用一个声明在父类里的成员
+   是合法的,而表是按声明类建的,所以查不到时要沿继承链上溯。修好后正好补上那 596 条
+   (先前全部计入"表里没有这个条目")。
+
+验证器里的继承链上溯只是**测量**用的;真正发给 loader 的表按**引用里写的 owner** 建键
+(改写只改成员名,不动 owner),这样 loader 侧不需要类层次、也就不会提前加载任何类。
+
+compile/run 方式(ASM 9.8 取自 Gradle 缓存,用 jdk-21):
+
+    javac -cp asm-9.8.jar;asm-tree-9.8.jar -d build-tools/srgmap src/main/java/.../SrgMemberMap.java
+    java -cp "build-tools/srgmap;<asm>" kynarain.cn.optifineoforge.optifine.SrgMemberMap \
+      --emit build-tools/srg1204.tsv <mcp1204-joined.tsrg> <...-mappings-merged.txt> \
+      OptiFine_1.20.4_HD_U_I7.jar client-1.20.4-...-srg.jar neoforge-20.4.251-client.jar
+
+**下一步**:把 emit 接进 `OptifinePipeline`(打补丁之后跑,因为补丁产物 `srg/net/minecraft/**` 自己也带
+SRG 引用),再在 loader 的 transformer 里用 ASM `Remapper` 按这张表改写成员名。1.20.2 用
+`mcp_config-1.20.2.zip` 同样生成一份(已确认该坐标存在,HTTP 200)。
