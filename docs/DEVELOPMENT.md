@@ -963,3 +963,34 @@ compile/run 方式(ASM 9.8 取自 Gradle 缓存,用 jdk-21):
 **下一步**:把 emit 接进 `OptifinePipeline`(打补丁之后跑,因为补丁产物 `srg/net/minecraft/**` 自己也带
 SRG 引用),再在 loader 的 transformer 里用 ASM `Remapper` 按这张表改写成员名。1.20.2 用
 `mcp_config-1.20.2.zip` 同样生成一份(已确认该坐标存在,HTTP 200)。
+
+## 2026-09-15:改写器跑完,1.20.4 载荷里的 SRG 名归零
+
+上面那句"在 loader 的 transformer 里改写"是**错的方案,已放弃**。这个项目本来就在离线阶段重打包
+OptiFine 的 jar、离线跑 `optifine.Patcher`,需要改名的类在游戏启动前就全都在手上;而 ModLauncher 的
+transformer 必须**预先声明 targets**,需要改的类有几千个,声明不现实。所以改名做成**构建步骤**
+(`SrgRemap`),loader 侧一行都不用改,而且对每条线都能同样地跑(1.20.6 起的线找不到 SRG 名,原样复制)。
+
+用 `ClassRemapper` 而不是手改引用,原因是**载荷里的 SRG 名同时出现在声明和引用两处**:
+
+    before: SRG references: 3844        SRG-named members the payload still declares: 108
+    after : SRG references: 0           SRG-named members the payload still declares: 0
+    rewrote 3457 method and 1400 field names, 0 could not be resolved
+    0 SRG-shaped string constants were left alone
+
+那 108 个声明正是只改引用会漏掉的东西:OptiFine 替换掉的游戏类**自己声明**成员,`net.optifine.BlockPosM`
+里就有 `m_123341_()I` 覆盖 `Vec3i.getX()`。只把调用点改掉而留着 SRG 的声明,等于把"覆盖"悄悄变成"另一个
+方法",编译得通、运行不报错、行为错。`ClassRemapper` 对声明和引用走同一个方法,所以两边必然一致。
+
+**踩到的坑:同一个类名在 jar 里有两份。** OptiFine 的 jar 给自家每个类都存了两份 —— `srg/**` 对着重命名
+过的游戏,`notch/**` 对着混淆过的游戏。第一版只按类名建超类表,于是两份互相覆盖,`notch/` 那份赢了:
+
+    superOf(net/optifine/BlockPosM) = hx        ← 混淆名,继承链到此断掉
+    hierarchy(net/optifine/BlockPosM) = [net/optifine/BlockPosM, hx]
+
+结果是 371 个名字报"表里没有这个条目",而表里其实都有 —— `BlockPosM extends net.minecraft.core.BlockPos`
+这一跳根本没走到 `Vec3i`。`SrgRemap.isUnusedNamespace` 现在显式跳过 `notch/**`,这一条也写进了注释,
+因为"同一份数据在 jar 里有第二份、而且会悄悄赢"不是能从代码看出来的事。
+
+**还剩什么**:把 `SrgRemap` 接进 rig 的构建流程(在丢掉 `notch/` 之后、合并之前跑),用 1.20.4 打出
+合并 jar 并实机启动。改名本身已经验证完毕,不再是未知数。

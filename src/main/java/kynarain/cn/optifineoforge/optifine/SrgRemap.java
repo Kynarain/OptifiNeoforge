@@ -1,0 +1,255 @@
+/*
+ * OptifiNeoforge - loads OptiFine into NeoForge.
+ * Licensed under MPL-2.0; see LICENSE at the repository root.
+ */
+
+package kynarain.cn.optifineoforge.optifine;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+import java.util.zip.ZipOutputStream;
+
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.commons.ClassRemapper;
+import org.objectweb.asm.commons.Remapper;
+import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.FieldNode;
+import org.objectweb.asm.tree.LdcInsnNode;
+import org.objectweb.asm.tree.MethodNode;
+
+/**
+ * Rewrites an OptiFine payload's SRG member names to the official ones NeoForge's runtime uses.
+ *
+ * <p>This is a build step, not a loader transformer, and that is the point: this project already
+ * repacks OptiFine's jar and patches the game jar offline, so every class that needs new member names
+ * is in hand before the game starts. Doing it here also sidesteps ModLauncher, whose transformers have
+ * to declare their targets up front - and the classes to rewrite are thousands.</p>
+ *
+ * <p>{@link ClassRemapper} is used rather than editing references by hand because a payload's SRG
+ * names appear in <em>declarations</em> as well as in references: OptiFine's replacement of a game
+ * class declares its own members, and it declares them with SRG names, so a class that only had its
+ * call sites rewritten would satisfy nobody. The remapper maps both through the same method, which is
+ * what keeps a declaration and the calls to it consistent.</p>
+ *
+ * <p>Class names are left alone: since 1.17 the payload already uses official class names and only
+ * the members are SRG. Descriptors are left alone for the same reason.</p>
+ *
+ * <p>On a line where OptiFine already speaks official names (1.20.6 and later) this finds no SRG
+ * names and copies the jar through unchanged, so it is safe to leave in every line's pipeline.</p>
+ */
+public final class SrgRemap {
+	/** SRG field and method names, which is exactly what has to be rewritten. */
+	private static final Pattern SRG_NAME = Pattern.compile("^[mf]_\\d+_$");
+
+	private SrgRemap() {
+	}
+
+	/** What one pass did, so a build can print something checkable instead of "done". */
+	public static final class Report {
+		int methodNames;
+		int fieldNames;
+		int stringConstants;
+		final Map<String, Integer> misses = new TreeMap<>();
+		final Map<String, String> missSamples = new LinkedHashMap<>();
+
+		public int rewritten() {
+			return methodNames + fieldNames;
+		}
+
+		public int missed() {
+			int total = 0;
+			for(int count : misses.values()) {
+				total += count;
+			}
+			return total;
+		}
+
+		/** SRG names found as string constants, which the remapper cannot touch. */
+		public int stringConstants() {
+			return stringConstants;
+		}
+
+		public String describe() {
+			return "rewrote " + methodNames + " method and " + fieldNames + " field names, "
+					+ missed() + " could not be resolved; " + stringConstants
+					+ " SRG-shaped string constants were left alone";
+		}
+	}
+
+	/**
+	 * Whether an entry belongs to a namespace this project does not use.
+	 *
+	 * <p>OptiFine's jar holds two copies of every one of its own classes: {@code srg/**} against the
+	 * renamed game and {@code notch/**} against the obfuscated one. Only {@code srg/**} is ever
+	 * loaded - OptiFine's own transformer reads {@code patch/srg} and {@code srg} and never touches
+	 * {@code notch} - and mixing the two is not a harmless redundancy: both copies carry the same
+	 * class name, so the obfuscated one silently wins whichever record is written second. That is
+	 * exactly what happened here, leaving {@code net.optifine.BlockPosM}'s supertype as {@code hx}
+	 * and hiding every member it inherits.</p>
+	 */
+	static boolean isUnusedNamespace(String entryName) {
+		return entryName.startsWith("notch/") || entryName.startsWith("patch/notch/");
+	}
+
+	/**
+	 * Rewrites every class of {@code in} into {@code out}, resolving names against the runtime jars.
+	 */
+	public static Report rewrite(SrgMemberMap map, SrgMemberMap.RuntimeIndex runtime, Path in, Path out)
+			throws IOException {
+		Report report = new Report();
+		Remapper remapper = new Remapper() {
+			@Override
+			public String mapMethodName(String owner, String name, String descriptor) {
+				if(!SRG_NAME.matcher(name).matches()) {
+					return name;
+				}
+				String official = resolve(map, runtime, owner, name, descriptor, true);
+				if(official != null) {
+					report.methodNames++;
+					return official;
+				}
+				miss(report, map, runtime, owner, name, descriptor, true);
+				return name;
+			}
+
+			@Override
+			public String mapFieldName(String owner, String name, String descriptor) {
+				if(!SRG_NAME.matcher(name).matches()) {
+					return name;
+				}
+				String official = resolve(map, runtime, owner, name, descriptor, false);
+				if(official != null) {
+					report.fieldNames++;
+					return official;
+				}
+				miss(report, map, runtime, owner, name, descriptor, false);
+				return name;
+			}
+		};
+
+		try(ZipFile zip = new ZipFile(in.toFile());
+				ZipOutputStream sink = new ZipOutputStream(Files.newOutputStream(out))) {
+			for(Enumeration<? extends ZipEntry> entries = zip.entries(); entries.hasMoreElements(); ) {
+				ZipEntry entry = entries.nextElement();
+				byte[] data;
+				try(InputStream stream = zip.getInputStream(entry)) {
+					data = stream.readAllBytes();
+				}
+				if(entry.getName().endsWith(".class") && !isUnusedNamespace(entry.getName())) {
+					data = rewriteClass(data, remapper, report);
+				}
+				ZipEntry copy = new ZipEntry(entry.getName());
+				copy.setTime(entry.getTime());
+				sink.putNextEntry(copy);
+				sink.write(data);
+				sink.closeEntry();
+			}
+		}
+		return report;
+	}
+
+	/** Rewrites one class body, and counts the SRG names that survive as string constants. */
+	private static byte[] rewriteClass(byte[] data, Remapper remapper, Report report) {
+		ClassReader reader = new ClassReader(data);
+		ClassWriter writer = new ClassWriter(0);
+		reader.accept(new ClassRemapper(writer, remapper), 0);
+
+		ClassNode node = new ClassNode();
+		reader.accept(node, ClassReader.SKIP_DEBUG);
+		for(MethodNode method : node.methods) {
+			for(AbstractInsnNode instruction = method.instructions.getFirst(); instruction != null; instruction = instruction.getNext()) {
+				if(instruction instanceof LdcInsnNode ldc && ldc.cst instanceof String text
+						&& SRG_NAME.matcher(text).matches()) {
+					report.stringConstants++;
+				}
+			}
+		}
+		return writer.toByteArray();
+	}
+
+	/**
+	 * Finds the official name for an SRG name, walking the owner's ancestors.
+	 *
+	 * <p>The walk is needed because a reference may name a subclass for a member declared higher up,
+	 * and the table is built from declaring classes.</p>
+	 */
+	private static String resolve(SrgMemberMap map, SrgMemberMap.RuntimeIndex runtime, String owner, String name,
+			String descriptor, boolean method) {
+		for(String candidate : runtime.hierarchy(owner)) {
+			String official = method ? map.method(candidate, name) : map.field(candidate, name);
+			if(official == null) {
+				continue;
+			}
+			// The name only counts as resolved when the runtime really has the member: a payload
+			// compiled against a different game build would otherwise be renamed into a second
+			// failure instead of being reported as it is.
+			boolean present = method ? runtime.methods.contains(candidate + "." + official + descriptor)
+					: runtime.fields.contains(candidate + "." + official + descriptor);
+			return present ? official : null;
+		}
+		return null;
+	}
+
+	/** Records why a name could not be rewritten, distinguishing a missing entry from a moved member. */
+	private static void miss(Report report, SrgMemberMap map, SrgMemberMap.RuntimeIndex runtime, String owner,
+			String name, String descriptor, boolean method) {
+		boolean known = false;
+		for(String candidate : runtime.hierarchy(owner)) {
+			if((method ? map.method(candidate, name) : map.field(candidate, name)) != null) {
+				known = true;
+				break;
+			}
+		}
+		String reason = known ? "the member changed shape" : "no table entry for the " + (method ? "method" : "field");
+		report.misses.merge(reason, 1, Integer::sum);
+		report.missSamples.putIfAbsent(reason, owner + "." + name + descriptor);
+	}
+
+	/**
+	 * Development aid: {@code SrgRemap <mcp joined.tsrg> <neoform merged> <in jar> <out jar>
+	 * <runtime jar> [more runtime jars...]}.
+	 *
+	 * <p>Point the result at {@link SrgMemberMap}'s verifier to check the job: a payload that has been
+	 * rewritten properly reports zero remaining SRG references.</p>
+	 */
+	public static void main(String[] args) throws IOException {
+		if(args.length < 5) {
+			System.err.println("usage: SrgRemap <mcp joined.tsrg> <neoform merged> <in jar> <out jar>"
+					+ " <runtime jar> [more runtime jars...]");
+			System.exit(2);
+		}
+		SrgMemberMap map = SrgMemberMap.build(Path.of(args[0]), Path.of(args[1]));
+		SrgMemberMap.RuntimeIndex runtime = new SrgMemberMap.RuntimeIndex();
+		for(int index = 4; index < args.length; index++) {
+			runtime.add(Path.of(args[index]));
+		}
+		// The payload contributes its own supertypes, so an inherited member reached through one of
+		// OptiFine's own classes (BlockPosM extends BlockPos) can still be found.
+		runtime.addHierarchy(Path.of(args[2]));
+		System.out.println("runtime index: " + runtime.methods.size() + " methods, " + runtime.fields.size()
+				+ " fields, " + runtime.superOf.size() + " classes with a superclass");
+		Report report = rewrite(map, runtime, Path.of(args[2]), Path.of(args[3]));
+		System.out.println(report.describe());
+		for(Map.Entry<String, Integer> entry : report.misses.entrySet()) {
+			System.out.println("  " + entry.getValue() + " x " + entry.getKey());
+		}
+		List<String> samples = new ArrayList<>(report.missSamples.values());
+		for(int index = 0; index < Math.min(5, samples.size()); index++) {
+			System.out.println("  sample: " + samples.get(index));
+		}
+	}
+}

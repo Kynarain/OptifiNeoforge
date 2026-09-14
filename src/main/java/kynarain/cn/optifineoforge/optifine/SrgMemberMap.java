@@ -253,36 +253,65 @@ public final class SrgMemberMap {
 		return new Member(tokens[0], tokens[1], false, null);
 	}
 
-	/** The members and hierarchy of the runtime jars, which is what a rewritten reference has to hit. */
-	private static final class RuntimeIndex {
+	/**
+	 * The members and hierarchy of the runtime jars, which is what a rewritten reference has to hit.
+	 *
+	 * <p>Package-private rather than private because {@link SrgRemap} needs the same index: a
+	 * reference's owner is not always the declaring class, so the rewriter resolves through this
+	 * hierarchy exactly as the verifier does.</p>
+	 */
+	static final class RuntimeIndex {
 		final Set<String> methods = new HashSet<>();
 		final Set<String> fields = new HashSet<>();
 		final Map<String, String> superOf = new HashMap<>();
 		final Map<String, List<String>> interfacesOf = new HashMap<>();
 
+		/** Adds a game jar: its members are the ones a rewritten reference has to hit, and its hierarchy. */
 		void add(Path jar) throws IOException {
+			forEachClass(jar, node -> {
+				recordHierarchy(node);
+				for(FieldNode field : node.fields) {
+					fields.add(node.name + "." + field.name + field.desc);
+				}
+				for(MethodNode method : node.methods) {
+					methods.add(node.name + "." + method.name + method.desc);
+				}
+			});
+		}
+
+		/**
+		 * Adds only what a jar says about supertypes, not what it declares.
+		 *
+		 * <p>The payload being rewritten has to contribute its own hierarchy: OptiFine's classes
+		 * extend and implement game classes ({@code BlockPosM extends BlockPos}), and an inherited
+		 * member is only reachable by walking through them. Its declarations must not join the member
+		 * sets, though - those are the runtime's, and they are what the rewrite is checked against.</p>
+		 */
+		void addHierarchy(Path jar) throws IOException {
+			forEachClass(jar, this::recordHierarchy);
+		}
+
+		private void recordHierarchy(ClassNode node) {
+			if(node.superName != null) {
+				superOf.put(node.name, node.superName);
+			}
+			if(node.interfaces != null && !node.interfaces.isEmpty()) {
+				interfacesOf.put(node.name, node.interfaces);
+			}
+		}
+
+		private static void forEachClass(Path jar, java.util.function.Consumer<ClassNode> action) throws IOException {
 			try(ZipFile zip = new ZipFile(jar.toFile())) {
 				for(java.util.Enumeration<? extends ZipEntry> entries = zip.entries(); entries.hasMoreElements(); ) {
 					ZipEntry entry = entries.nextElement();
-					if(!entry.getName().endsWith(".class")) {
+					if(!entry.getName().endsWith(".class") || SrgRemap.isUnusedNamespace(entry.getName())) {
 						continue;
 					}
 					ClassNode node = new ClassNode();
 					try(InputStream stream = zip.getInputStream(entry)) {
 						new ClassReader(stream.readAllBytes()).accept(node, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG);
 					}
-					if(node.superName != null) {
-						superOf.put(node.name, node.superName);
-					}
-					if(node.interfaces != null && !node.interfaces.isEmpty()) {
-						interfacesOf.put(node.name, node.interfaces);
-					}
-					for(FieldNode field : node.fields) {
-						fields.add(node.name + "." + field.name + field.desc);
-					}
-					for(MethodNode method : node.methods) {
-						methods.add(node.name + "." + method.name + method.desc);
-					}
+					action.accept(node);
 				}
 			}
 		}
@@ -354,15 +383,36 @@ public final class SrgMemberMap {
 		int total = 0;
 		int direct = 0;
 		int inherited = 0;
+		int declared = 0;
+		String firstDeclared = null;
 		try(ZipFile zip = new ZipFile(payload.toFile())) {
 			for(java.util.Enumeration<? extends ZipEntry> entries = zip.entries(); entries.hasMoreElements(); ) {
 				ZipEntry entry = entries.nextElement();
-				if(!entry.getName().endsWith(".class")) {
+				if(!entry.getName().endsWith(".class") || SrgRemap.isUnusedNamespace(entry.getName())) {
 					continue;
 				}
 				ClassNode node = new ClassNode();
 				try(InputStream stream = zip.getInputStream(entry)) {
 					new ClassReader(stream.readAllBytes()).accept(node, ClassReader.SKIP_DEBUG);
+				}
+				// A payload's SRG names appear in declarations as well as references, so both have to
+				// be counted: a jar that names its own members in SRG satisfies nobody even when every
+				// call site has been fixed.
+				for(FieldNode field : node.fields) {
+					if(SRG_NAME.matcher(field.name).matches()) {
+						declared++;
+						if(firstDeclared == null) {
+							firstDeclared = node.name + "." + field.name + " " + field.desc;
+						}
+					}
+				}
+				for(MethodNode method : node.methods) {
+					if(SRG_NAME.matcher(method.name).matches()) {
+						declared++;
+						if(firstDeclared == null) {
+							firstDeclared = node.name + "." + method.name + method.desc;
+						}
+					}
 				}
 				List<String[]> references = new ArrayList<>();
 				collect(node, references);
@@ -411,6 +461,8 @@ public final class SrgMemberMap {
 				+ String.format("%.2f", total == 0 ? 0.0 : 100.0 * resolved / total) + "%)"
 				+ "  = " + direct + " on the referenced class + " + inherited + " through a superclass");
 		System.out.println("unresolved:     " + (total - resolved));
+		System.out.println("SRG-named members the payload still declares: " + declared
+				+ (firstDeclared == null ? "" : "  (first: " + firstDeclared + ")"));
 		for(Map.Entry<String, Integer> entry : reasons.entrySet()) {
 			System.out.println("  " + entry.getValue() + " x " + entry.getKey());
 		}
