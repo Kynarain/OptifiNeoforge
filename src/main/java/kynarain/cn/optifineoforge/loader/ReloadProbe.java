@@ -153,6 +153,21 @@ public final class ReloadProbe {
 		return count;
 	}
 
+	/**
+	 * How many elements a collection holds, for the list the sort hands back.
+	 *
+	 * <p>The reload ends up with 48 entries when OptiFine is installed and 26 when it is not, while
+	 * the sort is handed the same 26-entry registry and FML's sort is Kahn's algorithm, which cannot
+	 * emit a node twice. Measuring the returned list itself says whether the difference is already
+	 * in the sort's answer or appears after it.</p>
+	 */
+	public static void list(Object values, String label) {
+		if(!enabled()) {
+			return;
+		}
+		LOGGER.info("list " + label + ": " + countOf(values) + " of " + describe(values));
+	}
+
 	/** How many listeners a list holds, for following the list through registration. */
 	public static void size(List<?> listeners, String label) {		if(!enabled()) {
 			return;

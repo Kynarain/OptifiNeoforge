@@ -8,8 +8,10 @@ package kynarain.cn.optifineoforge.loader;
 import java.util.Set;
 
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
@@ -69,6 +71,18 @@ public final class SortProbeFix implements ITransformer<ClassNode> {
 			report.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "graph",
 					"(Ljava/lang/Object;Ljava/lang/String;)V", false));
 			method.instructions.insert(report);
+			// ReloadProbe.list(<what sort returns>, "sort result")
+			for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+				if(insn.getOpcode() != Opcodes.ARETURN) {
+					continue;
+				}
+				InsnList result = new InsnList();
+				result.add(new InsnNode(Opcodes.DUP));
+				result.add(new LdcInsnNode("sort result"));
+				result.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "list",
+						"(Ljava/lang/Object;Ljava/lang/String;)V", false));
+				method.instructions.insertBefore(insn, result);
+			}
 		}
 		return input;
 	}

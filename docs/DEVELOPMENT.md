@@ -807,3 +807,29 @@ probe separates those two by logging the size of the list sort() itself returns,
 inside sort(), and by getting the graph numbers out of the OptiFine run - that
 line printed on the control and not there, which is itself unexplained and needs
 to be fixed before its absence is read as anything.
+## 2026-09-15: with OptiFine, two probes inside sort() print nothing while the others do
+
+SortProbeFix now inserts three calls at the head of ReloadListenerSort.sort - the
+anchor, the registry size, the graph shape - and one before its return, the size of
+the list it hands back. On the control run all four print. On the OptiFine run only
+the first two do:
+
+    OptiFine run:  value lastVanillaListener: PeriodicNotificationManager
+                   count registry: 26
+                   (no graph line, no sort-result line)
+                   size before updateListenersFrom: 22
+                   size after updateListenersFrom: 48
+
+The graph probe logs on both its success and its failure path, and the sort-result
+probe cannot throw on a list, so neither can be silent by accident: with OptiFine
+present those two insertions are not running at all, while two insertions in the
+same instruction list, in the same method, do run. That is now the most informative
+thing in the picture and it has to be explained before anything else is inferred
+from it - including whether the 48-entry result really comes from this method.
+
+A plausible direction, not yet checked: the class may be loaded and transformed
+twice in that run (once early, before all of this service's transformers are in
+place, once later), leaving the running copy with only part of the insertions. That
+is testable cheaply by logging which insertions each transformed copy received
+(the transform method already logs the class it saw), instead of guessing from the
+absence of output.
