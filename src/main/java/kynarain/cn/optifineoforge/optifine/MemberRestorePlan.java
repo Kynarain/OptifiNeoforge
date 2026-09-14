@@ -30,6 +30,12 @@ import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.JumpInsnNode;
+import org.objectweb.asm.tree.LabelNode;
+import org.objectweb.asm.tree.LineNumberNode;
+import org.objectweb.asm.tree.LookupSwitchInsnNode;
+import org.objectweb.asm.tree.TableSwitchInsnNode;
+import org.objectweb.asm.tree.VarInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 
@@ -62,6 +68,8 @@ public final class MemberRestorePlan {
 	private static final String RENDER_SYSTEM = "com/mojang/blaze3d/systems/RenderSystem";
 	/** How far the reference closure may grow before it gives up. */
 	private static final int MAX_CLOSURE_ROUNDS = 8;
+	/** The name restored fields are initialised through, added to every constructor. */
+	public static final String INITIALISER_PREFIX = "optifineoforge$init$";
 
 	/**
 	 * Members whose donor body must not be used, only stubbed.
@@ -312,6 +320,14 @@ public final class MemberRestorePlan {
 		donor.interfaces = new ArrayList<>(runtime.interfaces);
 		for(FieldNode field : fields) {
 			donor.fields.add(new FieldNode(widened(field.access), field.name, field.desc, field.signature, field.value));
+			if((field.access & Opcodes.ACC_STATIC) == 0) {
+				MethodNode initialiser = initialiser(runtime, internalName, field);
+				if(initialiser != null) {
+					donor.methods.add(initialiser);
+				} else {
+					System.out.println("  no safe initialiser for field " + internalName + "." + field.name);
+				}
+			}
 		}
 		for(MethodNode method : methods) {
 			boolean fits = referencesOnlyExisting(method, internalName, replacement, fields, methods)
@@ -421,6 +437,66 @@ public final class MemberRestorePlan {
 	 * The same member, but reachable: a dropped member was usually reachable from the code that calls
 	 * it, so a private or package-private copy would only move the failure to IllegalAccessError.
 	 */
+	/**
+	 * The sequence that initialises one field, lifted out of the runtime class's constructor.
+	 *
+	 * <p>A restored field is nobody's responsibility: NeoForge added it, OptiFine's compilation of the
+	 * class knows nothing about it, and so it stays null until the {@code putfield} that would have
+	 * set it is found and copied. That is what happened to {@code Gui.layerManager}: the stub never
+	 * touched it, the real body called {@code initModdedLayers()} on it at once.</p>
+	 *
+	 * <p>Only straight-line initialisations are lifted - the usual {@code this.x = new Y(...)} or
+	 * {@code this.x = argument} shape, touching no local but slot 0 - because a slice with a branch in
+	 * it cannot be moved without also moving the code the branch came from. Anything else is left
+	 * null and said so, rather than guessed at.</p>
+	 *
+	 * @return a static method taking the instance, or {@code null} when nothing safe was found
+	 */
+	private static MethodNode initialiser(ClassNode runtime, String internalName, FieldNode field) {
+		for(MethodNode constructor : runtime.methods) {
+			if(!"<init>".equals(constructor.name) || constructor.instructions == null) {
+				continue;
+			}
+			for(AbstractInsnNode insn = constructor.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+				if(!(insn instanceof FieldInsnNode store) || store.getOpcode() != Opcodes.PUTFIELD) {
+					continue;
+				}
+				if(!internalName.equals(store.owner) || !field.name.equals(store.name) || !field.desc.equals(store.desc)) {
+					continue;
+				}
+
+				// Walk back to the start of the straight-line run that produced the value.
+				List<AbstractInsnNode> slice = new ArrayList<>();
+				boolean safe = true;
+				for(AbstractInsnNode back = insn.getPrevious(); back != null; back = back.getPrevious()) {
+					if(back instanceof LabelNode || back instanceof JumpInsnNode || back instanceof TableSwitchInsnNode
+							|| back instanceof LookupSwitchInsnNode || back instanceof LineNumberNode) {
+						break;
+					}
+					if(back instanceof VarInsnNode var && var.var != 0) {
+						safe = false; // depends on a constructor argument or another local
+						break;
+					}
+					slice.add(0, back);
+				}
+				if(!safe || slice.isEmpty()) {
+					continue;
+				}
+
+				MethodNode initialiser = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+						INITIALISER_PREFIX + field.name, "(L" + internalName + ";)V", null, null);
+				for(AbstractInsnNode step : slice) {
+					initialiser.instructions.add(step);
+				}
+				initialiser.instructions.add(new FieldInsnNode(Opcodes.PUTFIELD, internalName, field.name, field.desc));
+				initialiser.instructions.add(new InsnNode(Opcodes.RETURN));
+				initialiser.maxStack = 8;
+				initialiser.maxLocals = 1;
+				return initialiser;
+			}
+		}
+		return null;
+	}
 	private static boolean isPlannedMember(List<FieldNode> plannedFields, List<MethodNode> plannedMethods, String name, String desc) {
 		if(desc.startsWith("(")) {
 			for(MethodNode method : plannedMethods) {

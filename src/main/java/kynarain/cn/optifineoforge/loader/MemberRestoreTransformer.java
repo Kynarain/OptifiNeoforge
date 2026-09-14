@@ -10,15 +10,24 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.MethodInsnNode;
+import org.objectweb.asm.tree.VarInsnNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.MethodNode;
+
+import kynarain.cn.optifineoforge.optifine.MemberRestorePlan;
 
 import cpw.mods.modlauncher.api.ITransformer;
 import cpw.mods.modlauncher.api.ITransformerVotingContext;
@@ -99,6 +108,7 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 				restored++;
 			}
 		}
+		List<String> initialisers = new ArrayList<>();
 		for(MethodNode method : donor.methods) {
 			if(!hasMethod(input, method.name, method.desc)) {
 				MethodNode copy = new MethodNode(method.access, method.name, method.desc, method.signature,
@@ -107,6 +117,32 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 				input.methods.add(copy);
 				restored++;
 			}
+			if(method.name.startsWith(MemberRestorePlan.INITIALISER_PREFIX)) {
+				initialisers.add(method.name);
+			}
+		}
+		if(!initialisers.isEmpty()) {
+			// A restored field needs the assignment NeoForge's own class would have made; the donor
+			// carries that sequence as a static method, and every constructor calls it once.
+			for(MethodNode constructor : input.methods) {
+				if(!"<init>".equals(constructor.name) || constructor.instructions == null) {
+					continue;
+				}
+				for(AbstractInsnNode insn = constructor.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+					if(insn.getOpcode() != Opcodes.RETURN) {
+						continue;
+					}
+					InsnList call = new InsnList();
+					call.add(new VarInsnNode(Opcodes.ALOAD, 0));
+					for(String name : initialisers) {
+						call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, input.name, name, "(L" + input.name + ";)V", false));
+					}
+					constructor.instructions.insertBefore(insn, call);
+				}
+				constructor.maxStack = Math.max(constructor.maxStack, 1);
+				constructor.maxLocals = Math.max(constructor.maxLocals, 1);
+			}
+			LOGGER.info("Initialised " + initialisers.size() + " restored fields in " + input.name);
 		}
 		if(restored > 0) {
 			LOGGER.info("Restored " + restored + " members in " + input.name + " from its donor");

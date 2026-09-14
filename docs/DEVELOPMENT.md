@@ -366,3 +366,24 @@ java.lang.NullPointerException: Cannot invoke "GuiLayerManager.initModdedLayers(
 `layerManager` 是 NeoForge 给 `Gui` 加的字段 —— 我们**补了字段**(所以不再是 `NoSuchFieldError`),但**没人在构造函数里初始化它**。之前它是桩方法、根本不解引用,所以看不出来;换成真身之后立刻显形。
 
 **下一步**:补字段时一并补"初始化" —— 在运行时类的构造器里找到给该字段 `putfield` 的那段指令,把它照搬进替换版本的构造器(而不是猜一个默认值)。这和"构造函数重载"是同一类问题的两个面。
+
+### 补字段的初始化(2026-09-14)
+
+按上一节的方案做了:供体里为每个补回来的**实例字段**多带一个静态方法
+
+```
+public static void optifineoforge$init$<字段>(<类> self)
+```
+
+它的方法体就是**从运行时类的构造器里原样搬出来的那段初始化指令**(例如 `self.layerManager = new GuiLayerManager()`),只搬"直线段"——遇到跳转/标签/switch 就放弃,涉及除 slot 0 以外局部变量的也放弃(否则搬过去就不成立),放弃时打印 `no safe initialiser for field ...`。
+
+转型器把这批初始化方法一起放进类里,并在**每个构造函数的每个 `RETURN` 之前**插入调用。实测确实生效:
+
+```
+[OptifiNeoforge]: Initialised 1 restored fields in net/minecraft/client/gui/Gui
+[OptifiNeoforge]: Initialised 1 restored fields in net/minecraft/client/gui/Font
+[OptifiNeoforge]: Initialised 1 restored fields in net/minecraft/client/multiplayer/ClientLevel
+[OptifiNeoforge]: Initialised 1 restored fields in net/minecraft/client/resources/model/ModelManager
+```
+
+**当前新问题(未解决)**:转型器在读取某个供体时抛异常(`MemberRestoreTransformer.donor:161`),把这次启动打断了 —— 需要看完整消息确认是哪个供体、以及是不是新加的初始化方法让那个类文件写坏了(例如被搬的指令段其实不完整)。
