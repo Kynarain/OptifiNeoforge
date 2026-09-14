@@ -152,3 +152,13 @@ java.lang.NoSuchMethodError: 'void com.mojang.blaze3d.pipeline.RenderTarget.<ini
 ## 灏氭湭纭
 
 - `notch/net/minecraftforge/**`(70 涓被,鎬昏绾?56鈥?4 KB)鏄畬鏁村疄鐜拌繕鏄々;1.21.11 鐨?`srg/net/optifine/shaders/ShadersRender` 閲屾湁**纭紩鐢?* `net/minecraftforge/client/event/ViewportEvent$ComputeCameraAngles`,鑰?NeoForge 涓婃槸 `net.neoforged.neoforge.*` 鈥斺€?杩欐槸宸茬煡鐨勭涓€涓繀鐒惰淇殑鐐广€?- 1.20.6 璧?璐熻浇宸叉槸瀹樻柟鍚?杩欐潯瑙勫垯鏄粠 7 涓瀯寤哄鎺ㄧ殑,`1.21`銆乣1.21.3`銆乣1.21.4`銆乣1.21.8`銆乣1.21.9`銆乣1.21.10` 鏈€愪釜纭銆?- OptiFine 杩愯鏈熶細鐢?MD5 鏍￠獙琛ヤ竵缁撴灉,鑰?NeoForge 鑷繁涔熶細鏀瑰師鐗堢被 鈥斺€?涓よ€呭彔鍔犲悗鏍￠獙鏄惁杩橀€氳繃,鍙兘鍦ㄧ湡鏈轰笂鐪嬨€?- 鏈満娌℃湁 JDK 25,26.1.2 鐨?NeoForge 瀹炰緥杩樿捣涓嶆潵,鍥犳"鑳戒笉鑳借繘娓告垙"杩欎竴灞傚皻鏈獙璇併€?
+### 成批补齐:132 个成员,一次修完(2026-09-14)
+
+把"逐个崩、逐个修"换成了离线推导 + 运行时批量补齐:
+
+- `MemberRestorePlan`(离线工具)拿**补丁产物**与**运行时**的 NeoForm client jar 逐个类比对成员集合,输出"运行时有的、OptiFine 那份没有的"清单;
+- 实测:**比对 248 个被替换的类,得到 134 个待补成员**(`Gui` 一个类就占 16 个);
+- 清单作为资源打进 jar(`optifineoforge/member-restores.txt`),`MemberRestoreTransformer` 在 `TargetType.CLASS` 阶段按清单补:字段按原类型补,方法补一个返回类型默认值的桩,**每个桩都打日志**(所以"哪些只是不崩、哪些是真还原"始终可见);
+- 需要真实语义的两个成员(`getListeners`、`updateListenersFrom`)排除在批量之外,仍由各自的 fix 精确还原,因此不依赖 ModLauncher 的转型器执行顺序。
+
+**结果:游戏越过了整个 `Minecraft.<init>`,进入加载界面的渲染循环**(`NeoForgeLoadingOverlay.render` → `DisplayWindow.render`),启动时长从 45 秒推到 60 秒。当前失败点是 FML 自己的早期窗口渲染器抛 `IllegalStateException: Already building.` —— 位置在 FML 内部,方向是某个被补成默认值的桩(或 OptiFine 替换掉的渲染相关类)让它进了不一致状态。下一步:把桩清单与这个失败点对上,优先把与渲染/缓冲区有关的成员从"默认值桩"升级成真实实现。
