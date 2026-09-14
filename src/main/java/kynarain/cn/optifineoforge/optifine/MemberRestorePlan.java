@@ -390,8 +390,15 @@ public final class MemberRestorePlan {
 				// OptiFine's compilation of a class can extend something else entirely, and then the
 				// copied body fails with "Bad invokespecial instruction: current class isn't
 				// assignable to reference class".
-				if(call.getOpcode() == Opcodes.INVOKESPECIAL && owner != null && !owner.equals(internalName)
-						&& !owner.equals(replacement.superName)) {
+				//
+				// A constructor call is not a super call, even though both are invokespecial: it acts
+				// on a freshly allocated object of some other class, and nothing about the class it
+				// is copied into can make it fail. Refusing those cost real bodies - NeoForge's
+				// SimpleBakedModel.bakeElements builds its result through
+				// SimpleBakedModel$Builder's constructor, and the refusal turned the method that every
+				// model bake goes through into a stub that answered null.
+				boolean superCall = call.getOpcode() == Opcodes.INVOKESPECIAL && !"<init>".equals(call.name);
+				if(superCall && owner != null && !owner.equals(internalName) && !owner.equals(replacement.superName)) {
 					return false;
 				}
 			}

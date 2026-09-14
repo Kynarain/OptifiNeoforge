@@ -518,3 +518,47 @@ enter BlockRenderDispatcher.onResourceManagerReload
 顺带记一个**诊断陷阱**,它浪费了两次运行:`ITransformer.transform` 拿到的 `ClassNode.name` 是**斜杠内部名**,而 ModLauncher 的 `Target.targetClass` 用的是**点号名**。把两者混用会让探针静默失效(日志里 `probed 0`),看起来就像"这个类根本没被转换"。判据是同一行日志里打印的类名 —— 带斜杠的就是内部名。
 
 下一步很明确:`bakeWithTopModelValues`(NeoForge 给 `UnbakedModel` 加的静态助手)会把调用转给 `IUnbakedModelExtension.bake(TextureSlots, ModelBaker, ModelState, boolean, boolean, ItemTransforms, ContextMap)`(七个参数、最后一个 `ContextMap`,由 `UnbakedModel` 继承的 NeoForge 扩展接口声明)。OptiFine **没有**替换 `BlockModel`(补丁清单里没有它的 xdelta),所以 null 是从 NeoForge 这条路上出来的 —— 要读的是 `IUnbakedModelExtension` 里那个默认实现的函数体(它不在 `neoforge-...-client.jar` 里,得去别的 NeoForge 产物里找),确认它在什么条件下返回 null。
+
+### 空模型的真因找到了:被我们自己"打成桩"的方法(2026-09-14 深夜)
+
+顺着上一节继续打探针,`BlockModel.bake`(七参、带 `ContextMap`)每一次返回都是 `null`:
+
+```
+value BlockModel.bake (...ContextMap;)Lnet/minecraft/client/resources/model/BakedModel;: null
+value UnbakedModel.bakeWithTopModelValues (...): null
+```
+
+也就是说 null 不是"传丢了",而是从烘焙里出来的。`IUnbakedModelExtension`(在 `neoforge-...-universal.jar` 里)的默认实现只是老老实实转调六参 `UnbakedModel.bake`,NeoForge 的 `BlockModel.bake(七参)` 最后一行是 `SimpleBakedModel.bakeElements(...)` —— 于是问题落在这个**静态助手**上。
+
+查供体就一目了然:
+
+```
+public static BakedModel bakeElements(...);
+Code:
+0: aconst_null
+1: areturn
+```
+
+**它是被 `MemberRestorePlan` 打成桩的**:`referencesOnlyExisting` 判定"函数体引用了不存在的成员"时,会写一个返回默认值的桩,而桩对对象返回类型就是 `aconst_null`。这条路径一个模型都活不下来 —— 这既是空模型的真因,也是"补回来的成员看着对了、其实全是空壳"这类问题的样本。
+
+**为什么会被判不合格?** 规则里有一条"super 调用只有在被复制进去的类的父类相同时才成立"(防止 `VerifyError: Bad invokespecial`)。但它的写法把**所有** `INVOKESPECIAL` 都当成 super 调用,包括 `new SimpleBakedModel$Builder(...)` 这种**构造别的类**的调用 —— 而 `SimpleBakedModel$Builder` 恰好被 OptiFine 替换过,于是这一句被误判,进而把整个 `bakeElements` 打成了桩。
+
+修法只有一行语义:构造器调用不是 super 调用(`invokespecial` 但名字是 `<init>`,作用在刚分配出来的别的类的对象上,跟被复制进去的类的父类无关)。改完之后:
+
+- 构建输出里 **`stub (body would not verify)` 一行都没有了**(此前有,只是没被我打印出来看);
+- 供体里的 `SimpleBakedModel.bakeElements` 是真正的函数体(会 `new SimpleBakedModel$Builder(...)`、逐个 `bakeFace`、最后 `builder.build(...)`)。
+
+这套"静默打桩"值得当作一条教训记下来:**桩是最后的兜底,但它的失败方式是静默的**,只有拿到具体症状(模型全空)才暴露。以后每次构建都该看一眼有哪些桩,而不是让它悄悄存在。
+
+修完后旧症状消失(`BlockModelShaper.getBlockModel` 返回 null 的 NPE 不再出现、`Cowardly refusing ... broken mod state` 也没了),但紧接着换成一个**明确得多**的错误 —— OptiFine 替换过的 `SimpleBakedModel$Builder` 构造器里读了 Forge 类:
+
+```
+java.lang.NoSuchFieldError: Class net.minecraftforge.client.RenderTypeGroup does not have member
+  field 'net.minecraftforge.client.RenderTypeGroup EMPTY'
+  at net.minecraft.client.resources.model.SimpleBakedModel$Builder.<init>(SimpleBakedModel.java:215)
+  at net.minecraft.client.resources.model.SimpleBakedModel.bakeElements(SimpleBakedModel.java:100)
+```
+
+我们为 Forge 类生成的**空壳**(`ForgeApiShims`)只有类名、没有成员,而 OptiFine 的代码要读 `RenderTypeGroup.EMPTY` 这个静态字段。这就是下一步:让 Forge 空壳带上 OptiFine 真正引用的成员(字段给常量/占位实例,方法给默认返回),而不是只有一个空类 —— 否则每修好一处就会撞上下一个。
+
+另外记一句好消息:这一轮 OptiFine 的功能已经在跑 —— 日志里有 `[OptiFine] ConnectedTextures: optifine/ctm/default/00_glass_white/glass_white.properties`、`CustomItems: Registering sprites`、`BetterGrass: Parsing default configuration`,贴图集也在正常拼接。

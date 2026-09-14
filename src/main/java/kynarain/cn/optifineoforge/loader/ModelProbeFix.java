@@ -8,6 +8,7 @@ package kynarain.cn.optifineoforge.loader;
 import java.util.Set;
 
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InsnList;
@@ -41,6 +42,9 @@ public final class ModelProbeFix implements ITransformer<ClassNode> {
 	/** The class that does the baking, and the method that hands the models over. */
 	static final String MODEL_BAKERY = "net.minecraft.client.resources.model.ModelBakery";
 	private static final String BAKE_MODELS = "bakeModels";
+	/** The interface whose static bake helper answers the missing model, and the class it bakes. */
+	static final String UNBAKED_MODEL = "net.minecraft.client.resources.model.UnbakedModel";
+	static final String BLOCK_MODEL = "net.minecraft.client.renderer.block.model.BlockModel";
 	private static final String PROBE = "kynarain/cn/optifineoforge/loader/ReloadProbe";
 	private static final org.apache.logging.log4j.Logger LOGGER =
 			org.apache.logging.log4j.LogManager.getLogger("OptifiNeoforge");
@@ -56,6 +60,10 @@ public final class ModelProbeFix implements ITransformer<ClassNode> {
 			probed = probeOnReload(input);
 		} else if(MODEL_BAKERY.equals(name)) {
 			probed = probeBakeModels(input);
+		} else if(UNBAKED_MODEL.equals(name)) {
+			probed = probeReturns(input, "UnbakedModel.bakeWithTopModelValues");
+		} else if(BLOCK_MODEL.equals(name)) {
+			probed = probeReturns(input, "BlockModel.bake");
 		}
 		if(ReloadProbe.enabled()) {
 			StringBuilder names = new StringBuilder();
@@ -135,6 +143,32 @@ public final class ModelProbeFix implements ITransformer<ClassNode> {
 		return probed;
 	}
 
+	/** Names what every method returning a model hands back, so a null answer can be placed. */
+	private static int probeReturns(ClassNode input, String label) {
+		int probed = 0;
+		for(MethodNode method : input.methods) {
+			boolean bakes = "bake".equals(method.name) || "bakeWithTopModelValues".equals(method.name);
+			Type returned = Type.getReturnType(method.desc);
+			boolean isModel = returned.getSort() == Type.OBJECT && returned.getInternalName().contains("BakedModel");
+			if(!bakes || !isModel) {
+				continue;
+			}
+			probed++;
+			for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+				if(insn.getOpcode() != Opcodes.ARETURN) {
+					continue;
+				}
+				InsnList naming = new InsnList();
+				naming.add(new InsnNode(Opcodes.DUP));
+				naming.add(new LdcInsnNode(label + " " + method.desc));
+				naming.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "value",
+						"(Ljava/lang/Object;Ljava/lang/String;)V", false));
+				method.instructions.insertBefore(insn, naming);
+			}
+		}
+		return probed;
+	}
+
 	private static InsnList call(String name, LdcInsnNode label) {
 		InsnList list = new InsnList();
 		list.add(label);
@@ -150,7 +184,7 @@ public final class ModelProbeFix implements ITransformer<ClassNode> {
 	@Override
 	public Set<Target<ClassNode>> targets() {
 		return Set.of(Target.targetClass(MODEL_MANAGER), Target.targetClass(BLOCK_RENDER_DISPATCHER),
-				Target.targetClass(MODEL_BAKERY));
+				Target.targetClass(MODEL_BAKERY), Target.targetClass(UNBAKED_MODEL), Target.targetClass(BLOCK_MODEL));
 	}
 
 	@Override

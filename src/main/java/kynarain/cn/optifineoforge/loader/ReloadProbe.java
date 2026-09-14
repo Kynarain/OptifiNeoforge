@@ -90,6 +90,14 @@ public final class ReloadProbe {
 				+ ", blockStates=" + size(read(value, "blockStateModels")));
 	}
 
+	/** The value a method hands back, named - for questions about a call that answers null. */
+	public static void value(Object value, String label) {
+		if(!enabled()) {
+			return;
+		}
+		LOGGER.info("value " + label + ": " + describe(value));
+	}
+
 	private static Object read(Object instance, String name) {
 		for(Class<?> type = instance.getClass(); type != null; type = type.getSuperclass()) {
 			try {
