@@ -71,3 +71,30 @@ gave a smaller answer than expected:
 So bringing 1.21.x up is copying the implementation plus writing that line's
 build configuration rather than porting it, and 26.x is the only line that needs
 genuinely new code.
+## 2026-09-15: the 1.20.x line needs a different NeoForge coordinate
+
+The implementation and this line's build configuration are committed on 1.20.x
+(ee908cb), but its build does not resolve the plugin's dependency:
+
+    Could not find net.neoforged:neoforge:1.20.1-47.1.106.
+      Searched in .../net/neoforged/neoforge/1.20.1-47.1.106/neoforge-1.20.1-47.1.106.pom
+
+NeoForge publishes that version under a different artifact id, which was checked
+rather than assumed - fetching
+https://maven.neoforged.net/releases/net/neoforged/forge/1.20.1-47.1.106/forge-1.20.1-47.1.106.pom
+returns 200 and names the artifact "forge", while the "neoforge" path does not
+exist. ModDevGradle 2.0.147 asks for net.neoforged:neoforge, and trying 1.0.23 -
+the generation from that era - asks for the same thing, so the version string alone
+does not select the artifact.
+
+So this line needs either the plugin generation that knows about the forge artifact
+(the net.neoforged.gradle.userdev line, which predates ModDevGradle) or an explicit
+dependency on net.neoforged:forge with the plugin's resolver out of the way. That is
+the next thing to try for 1.20.x; nothing else about the line is blocked, and the
+implementation is in place and compiles wherever this line's build is set up to
+resolve its dependencies.
+
+Process note: the attempt left the working tree dirty on 1.20.x because the build
+was run before deciding whether to keep the change, and the branch switch in the
+finally block was refused for that reason. Reverted; the lesson is to make the tree
+clean before switching, not after.
