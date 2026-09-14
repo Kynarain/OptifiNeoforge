@@ -1,4 +1,4 @@
-# Mod metadata for this line. ModDevGradle expands the ${...} placeholders from
+# Mod metadata for this line. ModDevGradle expands the placeholders below from
 # gradle.properties at build time (see build.gradle), and NeoForge reads this file from
 # META-INF/neoforge.mods.toml inside the jar.
 #
