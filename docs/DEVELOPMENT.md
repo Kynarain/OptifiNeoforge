@@ -54,6 +54,25 @@ curl.exe -sSL -o preview_OptiFine_26.1.2_HD_U_K1_pre2.jar `
 
 也就是说:**未混淆的 26.1.2 上,OptiFine 自己的补丁器可以正常工作,产出的补丁类已经是运行期用的官方名 —— 这一线不需要任何重映射**。这是整条链上第二个被离线验证的环节(第一个是 1.20.1,见 `docs/RESEARCH-optifine.md` 与上表)。
 
+## 补丁产物的拆分(2026-09-14)
+
+补丁器的输出还要拆成两份,`OptifinePipeline.split` 做这件事:一份给 classpath(OptiFine 自己的类与资源),一份是被补丁的游戏类(按内部名索引,用于顶替原版)。两条规则:
+
+- **只取 `srg/` 那一份变体** —— 转型器读的就是它,`notch/` 那份丢弃,免得多出一套同名的类。
+- **丢掉安装器**:`optifine/Installer*`、`optifine/Patcher*`、`optifine/Differ*`、`optifine/xdelta/**`、`optifine/json/**` —— 我们自己跑补丁器,运行期不需要它们,而 loader 只要看见 `optifine/Installer.class` 就会拒绝整个 jar(见 `docs/RESEARCH-neoforge.md`)。其余一切(OptiFine 的 `assets/`、`doc/`、`META-INF/services/**`)原样保留。
+
+实测:
+
+| | 26.1.2 | 1.20.1 |
+|---|---|---|
+| 补丁耗时 | 1.5 秒 | 1.2 秒 |
+| 补丁器输出 | 7,898,538 字节 / 4611 条目 | 6,638,739 字节 / 4049 条目 |
+| 拆分后 classpath jar | 2,789,483 字节 / 2616 条目(`assets/` 1785、`net/optifine/` 759、`doc/` 39、根 `optifine/` 19、`META-INF/` 5) | 2,638,138 字节 / 2489 条目 |
+| 被补丁的游戏类 | **566**(其中 `net/minecraft` 486) | **412**(其中 `net/minecraft` 354) |
+| `optifine/Installer.class` | 不存在(已剔除) | 不存在(已剔除) |
+
+拆出来的类是否**可验证**(JVM 校验通过)还没测 —— 那需要 ASM 或 `ClassLoader` 层面的检查,以及真机加载。
+
 ## 这对加载器意味着什么
 
 | MC | OptiFine 负载的命名空间 | NeoForge 运行期命名空间 | 结论 |
