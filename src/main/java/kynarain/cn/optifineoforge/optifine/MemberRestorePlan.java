@@ -314,7 +314,7 @@ public final class MemberRestorePlan {
 			donor.fields.add(new FieldNode(widened(field.access), field.name, field.desc, field.signature, field.value));
 		}
 		for(MethodNode method : methods) {
-			boolean fits = referencesOnlyExisting(method, internalName, replacement)
+			boolean fits = referencesOnlyExisting(method, internalName, replacement, fields, methods)
 					&& !STUB_ONLY.contains(internalName + " " + method.name + " " + method.desc);
 			MethodNode copy = new MethodNode(widened(method.access), method.name, method.desc, method.signature,
 					method.exceptions == null ? null : method.exceptions.toArray(new String[0]));
@@ -341,7 +341,8 @@ public final class MemberRestorePlan {
 	}
 
 	/** Whether every reference the body makes to its own class is present in the replacement. */
-	private static boolean referencesOnlyExisting(MethodNode method, String internalName, ClassNode replacement) {
+	private static boolean referencesOnlyExisting(MethodNode method, String internalName, ClassNode replacement,
+			List<FieldNode> plannedFields, List<MethodNode> plannedMethods) {
 		if(method.instructions == null) {
 			return false;
 		}
@@ -365,7 +366,11 @@ public final class MemberRestorePlan {
 			if(owner == null || !owner.equals(internalName)) {
 				continue;
 			}
-			if(!hasMember(replacement, name, desc)) {
+			// The member may be one the plan already restores: the class this body lands in will have
+			// it, so the body verifies. Checking against the raw replacement refused bodies that are
+			// in fact fine - ASM's verifier accepts them once the plan is applied, and
+			// LiquidBlockRenderer is the case that showed it.
+			if(!hasMember(replacement, name, desc) && !isPlannedMember(plannedFields, plannedMethods, name, desc)) {
 				return false;
 			}
 		}
@@ -416,6 +421,23 @@ public final class MemberRestorePlan {
 	 * The same member, but reachable: a dropped member was usually reachable from the code that calls
 	 * it, so a private or package-private copy would only move the failure to IllegalAccessError.
 	 */
+	private static boolean isPlannedMember(List<FieldNode> plannedFields, List<MethodNode> plannedMethods, String name, String desc) {
+		if(desc.startsWith("(")) {
+			for(MethodNode method : plannedMethods) {
+				if(method.name.equals(name) && method.desc.equals(desc)) {
+					return true;
+				}
+			}
+			return false;
+		}
+		for(FieldNode field : plannedFields) {
+			if(field.name.equals(name) && field.desc.equals(desc)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private static int widened(int access) {
 		return (access & ~(Opcodes.ACC_PRIVATE | Opcodes.ACC_PROTECTED)) | Opcodes.ACC_PUBLIC;
 	}

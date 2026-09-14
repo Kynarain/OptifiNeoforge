@@ -339,3 +339,30 @@ stub (body would not verify): net/minecraft/client/renderer/block/LiquidBlockRen
 - 那就意味着失败来自别处 —— 描述符/父类/字段可见性/调用点形态,或者方法体里用了 OptiFine 那份类**不具备的泛型签名与接口**。
 
 **下一轮该做的是把这个判断换成证据**:拿一个具体的"校验不过"的方法(例如 `ModelBlockRenderer.tesselateBlock`),把**复制后的类**交给校验器(ASM 的 `CheckClassAdapter`,或直接 `ClassLoader.defineClass` 看 VerifyError 的详细信息),"到底是什么让它不过"就不再靠猜。
+
+### 用校验器取证:真身其实能过,是我们的判据太严(2026-09-14)
+
+新工具 `DonorVerifier` 把"替换版本 + 全部缺失成员(带原始方法体)"合成一个类,交给 ASM 的 `CheckClassAdapter` 校验,直接把"为什么不过"打出来。第一条结论就很关键:
+
+```
+### net/minecraft/client/renderer/block/LiquidBlockRenderer
+  verifies clean with every body copied in          ← 全部复制进去是能过的!
+### net/minecraft/client/renderer/block/ModelBlockRenderer
+  ClassNotFoundException: net.minecraftforge.client.extensions.IForgeBakedModel   ← 只是校验器看不到我们的桩类
+```
+
+也就是说,`referencesOnlyExisting` 的判据(要求被引用的成员**已经存在于替换版本**)过于严格:实际运行时,那些成员**本来就会被计划补进去**(闭包补的),所以方法体能过。改成"对着**补完计划之后的类**判断"后,一批原本降级成桩的方法重新变成了真身。
+
+### 新暴露的问题:补回来的**字段**没人初始化
+
+失败点随即往前移了一格(这次是 `Initializing game`):
+
+```
+java.lang.NullPointerException: Cannot invoke "GuiLayerManager.initModdedLayers()" because "this.layerManager" is null
+	at net.minecraft.client.gui.Gui.initModdedOverlays(Gui.java:1457)
+	at net.neoforged.neoforge.client.ClientHooks.initClientHooks(ClientHooks.java:1015)
+```
+
+`layerManager` 是 NeoForge 给 `Gui` 加的字段 —— 我们**补了字段**(所以不再是 `NoSuchFieldError`),但**没人在构造函数里初始化它**。之前它是桩方法、根本不解引用,所以看不出来;换成真身之后立刻显形。
+
+**下一步**:补字段时一并补"初始化" —— 在运行时类的构造器里找到给该字段 `putfield` 的那段指令,把它照搬进替换版本的构造器(而不是猜一个默认值)。这和"构造函数重载"是同一类问题的两个面。
