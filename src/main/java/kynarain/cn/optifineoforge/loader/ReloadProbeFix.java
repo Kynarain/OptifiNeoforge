@@ -13,8 +13,10 @@ import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.VarInsnNode;
 
 import cpw.mods.modlauncher.api.ITransformer;
 import cpw.mods.modlauncher.api.ITransformerVotingContext;
@@ -40,27 +42,68 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 	/** The method that turns the list into a reload, and the field it reads to get it. */
 	private static final String CREATE_RELOAD = "createReload";
 	private static final String LISTENERS = "listeners";
+	/** Where listeners enter the list, and where the list is replaced by the sorted one. */
+	private static final String REGISTER = "registerReloadListener";
+	private static final String UPDATE = "updateListenersFrom";
 	private static final String PROBE = "kynarain/cn/optifineoforge/loader/ReloadProbe";
 
 	@Override
 	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
 		for(MethodNode method : input.methods) {
-			if(!CREATE_RELOAD.equals(method.name)) {
-				continue;
-			}
-			for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
-				if(!(insn instanceof FieldInsnNode field) || field.getOpcode() != Opcodes.GETFIELD
-						|| !input.name.equals(field.owner) || !LISTENERS.equals(field.name)) {
-					continue;
+			if(CREATE_RELOAD.equals(method.name)) {
+				probeCreateReload(input, method);
+			} else if(REGISTER.equals(method.name)) {
+				// Who is registered, and when - the list ends up holding some of them twice.
+				InsnList call = new InsnList();
+				call.add(new VarInsnNode(Opcodes.ALOAD, 1));
+				call.add(new LdcInsnNode("registerReloadListener"));
+				call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "value",
+						"(Ljava/lang/Object;Ljava/lang/String;)V", false));
+				method.instructions.insert(call);
+			} else if(UPDATE.equals(method.name)) {
+				probeSize(input, method, "before updateListenersFrom");
+				for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+					if(insn.getOpcode() == Opcodes.RETURN) {
+						insertSize(input, method, insn, "after updateListenersFrom");
+					}
 				}
-				InsnList probe = new InsnList();
-				probe.add(new InsnNode(Opcodes.DUP));
-				probe.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "listeners", "(Ljava/util/List;)V", false));
-				method.instructions.insert(insn, probe);
-				return input;
 			}
 		}
 		return input;
+	}
+
+	/** Hands the list the reload will actually run to the probe. */
+	private static void probeCreateReload(ClassNode input, MethodNode method) {
+		for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if(!(insn instanceof FieldInsnNode field) || field.getOpcode() != Opcodes.GETFIELD
+					|| !input.name.equals(field.owner) || !LISTENERS.equals(field.name)) {
+				continue;
+			}
+			InsnList probe = new InsnList();
+			probe.add(new InsnNode(Opcodes.DUP));
+			probe.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "listeners", "(Ljava/util/List;)V", false));
+			method.instructions.insert(insn, probe);
+			return;
+		}
+	}
+
+	private static void probeSize(ClassNode input, MethodNode method, String label) {
+		method.instructions.insert(sizeCall(input, label));
+	}
+
+	private static void insertSize(ClassNode input, MethodNode method, AbstractInsnNode before, String label) {
+		method.instructions.insertBefore(before, sizeCall(input, label));
+	}
+
+	/** Reads the manager's own listener list and reports how long it is. */
+	private static InsnList sizeCall(ClassNode input, String label) {
+		InsnList call = new InsnList();
+		call.add(new VarInsnNode(Opcodes.ALOAD, 0));
+		call.add(new FieldInsnNode(Opcodes.GETFIELD, input.name, LISTENERS, "Ljava/util/List;"));
+		call.add(new LdcInsnNode(label));
+		call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "size",
+				"(Ljava/util/List;Ljava/lang/String;)V", false));
+		return call;
 	}
 
 	@Override

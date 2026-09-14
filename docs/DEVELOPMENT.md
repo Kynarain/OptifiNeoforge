@@ -634,3 +634,25 @@ at net.minecraft.client.resources.model.ModelManager.apply
 也就是说:**`TextureAtlas.upload` 在 `clearTextureData()` 里关掉的,正是它接下来要上传的那批精灵** —— `clearTextureData` 本意是释放**上一批**精灵的 ticker 与插值数据,这里却关到了新的那批,于是 `SpriteContents.uploadFirstFrame` 一上传就撞上 `Image is not allocated.`(30k 这个数量级也和方块贴图集的精灵数吻合)。
 
 最可能的原因就是上一节记下的那个缺陷:**监听器清单里每个原版监听器出现了两次**。同一批精灵被两轮上传/清理交叉处理时,第二轮的 `clearTextureData` 关掉的正是第一轮刚建好的精灵。下一轮第一件事:查清这份清单为什么会重复 —— 需要对照 OptiFine 替换后的 `Minecraft`(Forge 时代那版)与 NeoForge 的注册顺序,以及 `ReloadableResourceManager.updateListenersFrom` 到底该替换还是追加。
+
+### 重复清单的来源缩到 NeoForge 自己的排序里(2026-09-15 凌晨)
+
+探针扩到 `registerReloadListener`(打印被注册的监听器)与 `updateListenersFrom`(替换前后各打印一次清单长度)。实测序列非常干净:
+
+```
+registerReloadListener: LanguageManager … PeriodicNotificationManager   ← 22 个原版监听器
+size before updateListenersFrom: 22
+size after  updateListenersFrom: 48      ← 确实是"替换",不是追加
+registerReloadListener: (匿名类) ×2                                      ← OptiFine 的 TextureUtils$1/$2
+reload 1: 50 listeners
+```
+
+于是先前的猜测被排除两条,也定位到真正的范围:
+
+- **`updateListenersFrom` 是对的**(替换而非追加)。离线读供体字节码就是这个: `this.listeners = ReloadListenerSort.sort(event)` —— 供体是 NeoForge 自己的实现,一行不差。
+- **`Minecraft` 没有被 OptiFine 替换**(补丁清单里没有它),所以那 22 次注册就是游戏自己的。
+- **重复发生在排序结果内部**:替换后立刻就是 48 条,而 48 = 原版 22 + 2 个 NeoForge lambda + **原版 22 又一遍** + ObjLoader/AnimationLoader;最后 OptiFine 的 2 个匿名监听器是在替换之后再注册的,于是变成 50。
+
+调用链也读清了:`ClientHooks.initClientHooks(Minecraft, ReloadableResourceManager)` 里 `new AddClientReloadListenersEvent(resourceManager)` → `ModLoader.postEvent(event)` → `resourceManager.updateListenersFrom(event)`,而这个事件的构造器就是把 `ReloadableResourceManager.getListeners()`(那 22 个)交给 `SortedReloadListenerEvent`。
+
+也就是:**当 `getListeners()` 里已经有原版监听器时,NeoForge 的这条排序路径会把它们再算一遍**。下一轮要读的是 `SortedReloadListenerEvent` 的图/注册表构建与 `ReloadListenerSort.sortListeners`,确认原版那一组是从哪里第二次进来的,再决定修在我们这边(例如事件构造前让 `getListeners()` 只给出模组新增的那些)还是在替换类上补一个等价物。

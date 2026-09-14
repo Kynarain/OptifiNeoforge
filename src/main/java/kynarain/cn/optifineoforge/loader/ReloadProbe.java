@@ -98,6 +98,14 @@ public final class ReloadProbe {
 		LOGGER.info("value " + label + ": " + describe(value));
 	}
 
+	/** How many listeners a list holds, for following the list through registration. */
+	public static void size(List<?> listeners, String label) {
+		if(!enabled()) {
+			return;
+		}
+		LOGGER.info("size " + label + ": " + (listeners == null ? "null" : Integer.toString(listeners.size())));
+	}
+
 	/** Who called in, briefly - for a method that should not be running yet. */
 	public static void trace(String label) {
 		if(!enabled()) {
