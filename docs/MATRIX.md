@@ -208,3 +208,38 @@ a per-line copy of the loader sources compiled against 10.0.9, or a small versio
 shim in this repository that both APIs can compile against. The pipeline itself needs
 nothing else - steps 1 to 3 (repack, patch, member-restore plan) already ran for
 1.20.1, which is the larger half.
+## 2026-09-15: the exact shape of the 10.0.9 transformer API
+
+Read from modlauncher-10.0.9.jar, so the adaptation is mechanical rather than探索:
+
+    public interface ITransformer<T> {
+        T transform(T, ITransformerVotingContext);
+        TransformerVoteResult castVote(ITransformerVotingContext);
+        Set<ITransformer$Target> targets();
+        default String[] labels();
+    }
+    public final class ITransformer$Target {            // nested, and NOT generic
+        public static Target targetClass(String);
+        public static Target targetPreClass(String);
+        public static Target targetMethod(String, String, String);
+        public static Target targetField(String, String);
+        public TargetType getTargetType();              // the type travels on the target
+    }
+    public final class ITransformer$TargetType extends Enum { CLASS, METHOD, FIELD, PRE_CLASS }
+
+Against 11.0.4, where Target<T> and TargetType<T> are top-level and generic and
+ITransformer declares TargetType<T> getTargetType(), the per-line changes are:
+
+1. imports: Target and TargetType are nested types of ITransformer on 10.0.9
+   (cpw.mods.modlauncher.api.ITransformer$Target), so the import lines change, and the
+   TargetType import disappears entirely;
+2. targets(): Set<Target> rather than Set<Target<ClassNode>> - Target is not generic;
+3. the getTargetType() override is removed: the method does not exist on 10.0.9, and the
+   type is carried by each Target instead;
+4. the factory call Target.targetClass(name) is the same name in both, so the bodies of
+   targets() otherwise stay as they are.
+
+That is nine files - MemberRestoreTransformer, TagHelperFix, PackRootsFix, ReloadProbeFix,
+ModelProbeFix, NativeImageProbeFix, SortProbeFix, RenderTargetFix,
+ReloadableResourceManagerFix - and the transformation service itself needs nothing: its
+List<? extends ITransformer<?>> signature is the same in both APIs.
