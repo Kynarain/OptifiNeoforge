@@ -124,3 +124,31 @@ own jar may be accepted without the FML refusals that start at 1.20.6. This line
 mod metadata is also different: 1.20.1 reads META-INF/mods.toml with the Forge-style
 dependency entries, not the META-INF/neoforge.mods.toml the other lines ship, so the
 resource has to be written for this line rather than copied.
+## 2026-09-15: the toolchain composes the coordinate itself, and cannot name 1.20.1
+
+Handing the plugin a fully qualified coordinate shows how it builds one:
+
+    Supplied String module notation
+    'net.neoforged:neoforge:net.neoforged:forge:1.20.1-47.1.106' is invalid.
+
+It takes the version string and prepends group and artifact itself -
+net.neoforged:neoforge in the mode it chose here, net.minecraftforge:forge in the
+run before - so a coordinate cannot be passed through that field, and neither mode
+asks for the artifact NeoForge actually published this line under
+(net.neoforged:forge:1.20.1-47.1.106, pom verified).
+
+That closes the Gradle question for 1.20.1 with the plugins tried: the main plugin
+(2.0.147, 1.0.23) wants net.neoforged:neoforge, the legacy plugin wants either that
+or net.minecraftforge:forge depending on the mode it picks. What is left for the
+build script is the plugin generation from that era - NeoGradle's userdev - which is
+a different DSL, or leaving this line's Gradle build open and noting it.
+
+None of that blocks the line's actual work: the 1.21.4 verification never went
+through Gradle. The rig builds the loader by compiling the sources against
+ModLauncher, ASM and log4j, repacks OptiFine, patches the game jar, plans the
+restores and combines the result into a mod jar. That pipeline is what produced every
+measurement on the 1.21.x line, and for 1.20.1 it needs only an OptiFine jar for that
+version (already in test-downloads) and a NeoForge 1.20.1 instance to launch.
+
+So the order for this line becomes: verify it through the rig first, and treat the
+Gradle build as a separate item that is understood, not mysterious.
