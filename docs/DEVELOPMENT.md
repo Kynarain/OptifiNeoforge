@@ -1,17 +1,18 @@
 # 开发记录(26.x 线)
 
+本文件记录本线自己的实测,以及跨线共用的两个调研结论的入口:`docs/RESEARCH-optifine.md`(OptiFine jar 的结构与补丁机制,7 个构建逐个拆开看)与 `docs/RESEARCH-neoforge.md`(NeoForge/FML 侧每个版本允许什么)。
+
 ## 怎么读 OptiFine 的 jar
 
-`src/main/java/kynarain/cn/optifineoforge/optifine/OptifineJar.java` 只依赖 JDK,不依赖 Minecraft、NeoForge 或任何 loader,所以可以直接用 `javac` 编译后对着真实 jar 跑:
+`src/main/java/kynarain/cn/optifineoforge/optifine/OptifineJar.java` 与 `OptifineConfig.java` 只依赖 JDK,不依赖 Minecraft、NeoForge 或任何 loader,所以可以直接 `javac` 编译后对着真实 jar 跑:
 
 ```powershell
-javac -d out src\main\java\kynarain\cn\optifineoforge\optifine\OptifineJar.java
+javac -d out src\main\java\kynarain\cn\optifineoforge\optifine\*.java
 java -cp out kynarain.cn.optifineoforge.optifine.OptifineJar <OptiFine jar 路径>
+java -cp out kynarain.cn.optifineoforge.optifine.OptifineConfig <OptiFine jar 路径>
 ```
 
-它输出 jar 的元数据文件名、ModLauncher 服务、顶层目录构成、补丁负载的后缀,以及 manifest 的主要字段;第二种调用形式会把重写元数据后的副本写到指定路径。
-
-OptiFine 的 jar 不进仓库(`test-downloads/` 已忽略)。下载走第三方镜像,注意**它返回的 302 里 `Location` 是相对路径**,`curl -L` 有时跟不下去,直接用镜像的 maven 路径更稳:
+OptiFine 的 jar 不进仓库(`test-downloads/` 已忽略)。下载走第三方镜像,注意**它返回的 302 里 `Location` 是相对路径**,`curl -L` 不一定跟得下去,直接用镜像的 maven 路径更稳:
 
 ```powershell
 curl.exe -sSL -o preview_OptiFine_26.1.2_HD_U_K1_pre2.jar `
@@ -20,7 +21,7 @@ curl.exe -sSL -o preview_OptiFine_26.1.2_HD_U_K1_pre2.jar `
 
 ## 实测:7 个构建的结构(2026-09-14)
 
-| OptiFine 构建 | 大小 | 条目 | 元数据 | 转换服务 | `notch/` | `srg/` | `patch/` |
+| OptiFine 构建 | 大小 | 条目 | 元数据 | ModLauncher 服务 | `notch/` | `srg/` | `patch/` |
 |---|---|---|---|---|---|---|---|
 | 1.20.1 HD_U_I6 | 7,145,205 | 6493 | `mods.toml` | 有 | 703 | 635 | 4888 |
 | 1.20.4 HD_U_I7 | 7,232,045 | 6568 | `mods.toml` | 有 | 711 | 643 | 4948 |
@@ -30,49 +31,44 @@ curl.exe -sSL -o preview_OptiFine_26.1.2_HD_U_K1_pre2.jar `
 | 1.21.11 HD_U_J9 | 8,045,105 | 7351 | `mods.toml` | 有 | 827 | 756 | 5496 |
 | 26.1.2 HD_U_K1_pre2 | 7,797,229 | 7356 | `mods.toml` | 有 | 829 | 759 | 5490 |
 
-从 1.20.1 到 26.1.2,**每一个构建的结构都一样**:
+1. **全都是安装器形态**:带 `patch/`(xdelta 差分包 + 同名 `.md5`)与 `optifine/Installer`。
+2. **元数据一律是 Forge 的** `META-INF/mods.toml`(`modLoader="javafml"`,`loaderVersion="[14,)"`,`modId="optifine"`),**没有一个构建带 `neoforge.mods.toml`** —— 包括 26.1.2。
+3. **每个构建都注册 ModLauncher 服务**:`META-INF/services/cpw.mods.modlauncher.api.ITransformationService` → `optifine.OptiFineTransformationService`,转型器是 `optifine.OptiFineTransformer`(26.1.2 里改名为 `OptiFineBaseTransformer`,常量值不变),只依赖 ModLauncher、ASM 与 log4j。
+4. **`patch/` 下有三个前缀**,不是一个:`patch/srg/`、`patch/notch/`、`patch/assets/`(1.20.1:824 / 822 / 3242 条)。转型器只读 `patch/srg/` 与 `srg/`,**从不碰 `notch/`**。
+5. **补丁负载的命名空间在 1.20.6 换过一次**:1.20.1 / 1.20.2 / 1.20.4 的负载里是**真正的 SRG 成员名**(`f_127499_` 之类),OptiFine 自己的 `srg/net/optifine/**` 也是;从 **1.20.6** 起负载与自家类里**一个 SRG 成员都没有**,已经是 Mojang 官方名 —— `srg/` 从那时起只是沿用的目录名。
+6. **26.1.2 走得更远**:`patch/srg` 与 `patch/notch` 的 566 个同名负载**逐字节相同**,负载里没有任何混淆名,`patch2.cfg` 把 srg 映射成恒等;它同时**自带 NeoForge 自己的 SPI**:`META-INF/services/net.neoforged.neoforgespi.transformation.ClassProcessor` 与 `...locating.IModFileCandidateLocator` 都指向 `optifine.OptiFineClassProcessor`,manifest 里还有 `FMLModType: LIBRARY`。
 
-1. **全都是安装器形态**:带 `patch/`(xdelta 差分包)与 `optifine/Installer`。
-2. **元数据一律是 Forge 的** `META-INF/mods.toml`(`modLoader="javafml"`,`loaderVersion="[14,)"`,`modId="optifine"`),**没有一个构建带 `neoforge.mods.toml`** —— 包括 26.1.2。要 NeoForge 认它,这一份必须重写。
-3. **每个构建都注册同一个 ModLauncher 服务**:`META-INF/services/cpw.mods.modlauncher.api.ITransformationService` → `optifine.OptiFineTransformationService`;转型器是 `optifine.OptiFineTransformer implements cpw.mods.modlauncher.api.ITransformer<ClassNode>`,两个类的常量池里都没有 `net.minecraftforge.*`。这是"复用 OptiFine 自己的转换服务"这条路线的依据。
-4. **同一套类有两个命名空间变体**:`net/optifine/Config.class`、`net/optifine/BetterGrass.class` 之类在 `notch/` 与 `srg/` 下各有一份;而游戏类只在 `notch/` 下有(`notch/net/minecraft/client/ClientBrandRetriever.class` 存在,`srg/` 下没有)。补丁负载则统一挂在 `patch/srg/` 下(`patch/srg/com/mojang/blaze3d/...class.xdelta` + 同名 `.md5`)。
-5. **26.1.2 的补丁负载明显更薄**:同样是 `patch/srg/` 布局,但未混淆版本上很多条目是 12 字节的 xdelta(等于"无需改动"),而不是 1.20.1 那种几 KB 的真实差异 —— 与"游戏本身已经未混淆"一致。
+## 26.1.2:客户端 jar 与离线补丁实测(2026-09-14)
 
-## 这对加载器意味着什么
+本机从 Mojang 官方清单取到 26.1.2 的 client jar(38,113,927 字节,30,675 个条目),确认它**未混淆**:`net/minecraft/client/Minecraft.class` 存在,形如 `a.class` 的混淆类 **0 个**。
 
-- **路线 A(复用 OptiFine 的转换服务)在整个版本区间上都成立**:服务类与转型器在 1.20.1 到 26.1.2 的每一个构建里都在,且只依赖 ModLauncher。要做的第一件事是把 Forge 的 `mods.toml` 换成 NeoForge 读的那份。
-- **命名空间的选择有据可依**:jar 里同时带 `notch/` 与 `srg/` 变体,所以"用哪一份"取决于目标运行期命名空间(1.20.x/1.21.x 的 NeoForge 用 SRG 还是官方名,以及 26.1.2 的未混淆官方名)。这一点还没定论,见 `docs/VERSIONS.md` 的待确认项。
-- **补丁负载是 xdelta**,不是整类替换:OptiFabric 的做法(调用 `optifine.Patcher`)在我们的场景里仍然适用,前提是拿到它期望的那份原版 jar。
-
-## 离线跑通补丁器(2026-09-14)
-
-OptiFabric 在运行期做的第一步,可以完全离线复现 —— 用反射调 `optifine.Patcher`,不需要 Minecraft、也不需要任何 loader:
-
-```java
-try (URLClassLoader loader = new URLClassLoader(new URL[] {optifineJar.toURI().toURL()})) {
-	Class<?> patcher = loader.loadClass("optifine.Patcher");
-	Method process = patcher.getDeclaredMethod("process", File.class, File.class, File.class);
-	process.invoke(null, minecraftJar, optifineJar, outputJar); // 顺序:(原版 jar, OptiFine jar, 输出 jar)
-}
-```
-
-实测:1.20.1 `HD_U_I6` + 官方 1.20.1 client jar(23,028,853 字节)。
+用同一套反射调用对它跑 OptiFine 的补丁器:
 
 | 项目 | 结果 |
 |---|---|
-| 耗时 | 1.4 秒 |
-| 输出 | 6,638,739 字节,4049 个条目 |
-| 输出的目录构成 | `assets/` 1787、`notch/` 1114、`srg/` 1047、`optifine/` 50、`doc/` 39、`META-INF/` 3 |
-| 原版 jar 的条目 | 不在输出里(20953 → 4049),输出只含 OptiFine 自己的类与**被补丁的游戏类** |
-| `net/minecraft/**` | 不存在 —— 补丁类分别挂在 `notch/` 与 `srg/` 前缀下,两个命名空间各一份 |
+| 耗时 | 1.5 秒 |
+| 输出 | 7,898,538 字节,4611 个条目 |
+| 输出的目录构成 | `assets/` 1785、`notch/` 1395、`srg/` 1325、`optifine/` 53、`doc/` 39,另有 `patch.cfg` / `patch2.cfg` |
+| 被补丁的游戏类 | 972 个,名字都是官方名(与"游戏未混淆"一致) |
+| 报错 | 无;退出码 0 |
 
-也就是说 `Patcher.process` 产出的是"OptiFine 抽取 + 已打补丁"的中间产物,正是接下来要去做 folderfy、重建 lambda、重映射的输入。**这一步在本机离线跑通了**,它是整条管线里唯一不依赖 loader 的环节。
+也就是说:**未混淆的 26.1.2 上,OptiFine 自己的补丁器可以正常工作,产出的补丁类已经是运行期用的官方名 —— 这一线不需要任何重映射**。这是整条链上第二个被离线验证的环节(第一个是 1.20.1,见 `docs/RESEARCH-optifine.md` 与上表)。
+
+## 这对加载器意味着什么
+
+| MC | OptiFine 负载的命名空间 | NeoForge 运行期命名空间 | 结论 |
+|---|---|---|---|
+| 1.20.1 | SRG | SRG(`net.neoforged:forge:47.x`) | 跑补丁器后用 `srg/` 那份即可,**不需要重映射** |
+| 1.20.2 / 1.20.4 | SRG | 官方名(20.2 起) | 跑补丁器后要**把 SRG 重映射成官方名** |
+| 1.20.6 – 1.21.8 | 官方名 | 官方名 | 负载直接可用;元数据必须改写;**这一区间仍能复用 OptiFine 自己的 ModLauncher 转换服务**(≤ FML 9) |
+| 1.21.9 – 1.21.11 | 官方名 | 官方名 | **ModLauncher 已被 NeoForge 移除**,而这三版 OptiFine 既没有 `ClassProcessor` 也没有可用的入口 → 只能由我们跑补丁器并实现 `ClassProcessor` |
+| 26.1.2 | 官方名(未混淆) | 官方名(未混淆) | OptiFine **自带 NeoForge 的 `ClassProcessor`**,我们的工作是重新打包 jar(元数据 + 去掉安装器入口)并把补丁类接上 |
+
+两条已知的硬约束(见 `docs/RESEARCH-neoforge.md`):从 **1.20.6** 起 FML 有一条针对原版 OptiFine jar 的拒绝规则(探针是 `optifine/Installer.class`),所以必须重新打包;**1.21.3** 起 OptiFine 声明的 `loaderVersion` 会校验失败,元数据必须改写。
 
 ## 尚未确认
 
-- ~~NeoForge 各版本的运行期命名空间~~ —— 已由 `docs/RESEARCH-neoforge.md` 从 FML/NeoForge 的 jar 里确认:1.20.1 是 SRG,20.2 起是官方名,26.1.1/26.1 起未混淆。
-- ~~第三方的 `ITransformationService` 还能不能从 `mods/` 里被发现~~ —— 已确认:FML 10 之前(≤ 1.21.8)可以,21.9 起 ModLauncher 被移除,改用 `net.neoforged.neoforgespi.transformation.ClassProcessor`。
-- OptiFine 的 `patch/srg/` 前缀在 26.1.2 上究竟是"SRG 名"还是只是沿用的目录名(条目名看起来就是官方名)。
-- `optifine.Patcher` 在**未混淆**游戏 jar(26.1.2)上的行为:1.20.1 已实测可行,26.1.2 尚未试。
-- 补丁类在 NeoForge 自己打过补丁的类上还能不能对齐(OptiFine 的 MD5 校验是否会因此拒绝)。
-
+- `notch/net/minecraftforge/**`(70 个类,总计约 56–64 KB)是完整实现还是桩;1.21.11 的 `srg/net/optifine/shaders/ShadersRender` 里有**硬引用** `net/minecraftforge/client/event/ViewportEvent$ComputeCameraAngles`,而 NeoForge 上是 `net.neoforged.neoforge.*` —— 这是已知的第一个必然要修的点。
+- 1.20.6 起"负载已是官方名"这条规则是从 7 个构建外推的,`1.21`、`1.21.3`、`1.21.4`、`1.21.8`、`1.21.9`、`1.21.10` 未逐个确认。
+- OptiFine 运行期会用 MD5 校验补丁结果,而 NeoForge 自己也会改原版类 —— 两者叠加后校验是否还通过,只能在真机上看。
+- 本机没有 JDK 25,26.1.2 的 NeoForge 实例还起不来,因此"能不能进游戏"这一层尚未验证。
