@@ -109,6 +109,50 @@ public final class ReloadProbe {
 		LOGGER.info("count " + label + ": " + (map == null ? "null" : Integer.toString(map.size())));
 	}
 
+	/**
+	 * How many nodes and edges the sort's graph holds.
+	 *
+	 * <p>The other inputs to {@code ReloadListenerSort.sort} were measured and agree between a run
+	 * with OptiFine and one without, while the sorted result differs - 26 entries against 48 - so the
+	 * graph is the one thing left that can differ. Asked reflectively because it is a guava type the
+	 * loader does not compile against.</p>
+	 */
+	public static void graph(Object graph, String label) {
+		if(!enabled()) {
+			return;
+		}
+		if(graph == null) {
+			LOGGER.info("graph " + label + ": null");
+			return;
+		}
+		try {
+			// Asked through guava's public interface rather than the object's own class: the
+			// implementation is a package-private ForwardingGraph, and reflecting on that fails with
+			// "cannot access a member of class com.google.common.graph.ForwardingGraph".
+			ClassLoader loader = graph.getClass().getClassLoader();
+			Class<?> type = Class.forName("com.google.common.graph.Graph", true, loader);
+			Object nodes = type.getMethod("nodes").invoke(graph);
+			Object edges = type.getMethod("edges").invoke(graph);
+			// Counted by iterating, not by calling size(): the objects handed back are package-private
+			// guava types (MapIteratorCache$1), which reflection refuses to touch.
+			LOGGER.info("graph " + label + ": nodes=" + countOf(nodes) + ", edges=" + countOf(edges));
+		} catch(Throwable cannotAsk) {
+			LOGGER.info("graph " + label + ": ?" + cannotAsk);
+		}
+	}
+
+	/** How many elements an iterable holds, without asking its own class anything. */
+	private static int countOf(Object values) {
+		if(!(values instanceof Iterable<?> iterable)) {
+			return -1;
+		}
+		int count = 0;
+		for(Object ignored : iterable) {
+			count++;
+		}
+		return count;
+	}
+
 	/** How many listeners a list holds, for following the list through registration. */
 	public static void size(List<?> listeners, String label) {		if(!enabled()) {
 			return;

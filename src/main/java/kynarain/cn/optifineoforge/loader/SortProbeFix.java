@@ -61,6 +61,13 @@ public final class SortProbeFix implements ITransformer<ClassNode> {
 			report.add(new LdcInsnNode("registry"));
 			report.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "count",
 					"(Ljava/util/Map;Ljava/lang/String;)V", false));
+			// ReloadProbe.graph(event.getGraph(), "graph before sorting")
+			report.add(new VarInsnNode(Opcodes.ALOAD, 0));
+			report.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, EVENT, "getGraph",
+					"()Lcom/google/common/graph/Graph;", false));
+			report.add(new LdcInsnNode("graph before sorting"));
+			report.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "graph",
+					"(Ljava/lang/Object;Ljava/lang/String;)V", false));
 			method.instructions.insert(report);
 		}
 		return input;
