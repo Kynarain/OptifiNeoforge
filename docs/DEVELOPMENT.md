@@ -274,3 +274,27 @@ Caused by: java.lang.NoClassDefFoundError: Could not initialize class net.optifi
 修法:供体校验再加一条 —— 方法体里凡是 `INVOKESPECIAL` 且 owner 不是本类的(即 `super` 调用),只有在**替换版本的父类与运行时一致**时才允许复制,否则降级成桩。
 
 修掉之后 `VerifyError` 消失,启动回到同一个阻塞点(FML 加载覆盖层的 `Already building.`),而且这次是**正常的崩溃报告**,不是连锁的初始化失败。**目前 1.21.4 上唯一的阻塞点就是它。**
+
+### 突破:FML 早期显示可以用配置关掉,游戏随即跑进资源加载(2026-09-14)
+
+翻 `FMLConfig$ConfigValue` 的枚举常量时发现它除了窗口尺寸,还有两个开关:`earlyWindowControl` 与 `earlyWindowProvider`,而配置来自**游戏目录的 `config/fml.toml`**。写上:
+
+```toml
+earlyWindowControl = false
+```
+
+再启动,那个纠缠了十几轮的 `SimpleBufferBuilder.begin -> Already building.` **直接消失**,失败点整个换了一层:
+
+```
+Description: Rendering overlay
+java.lang.NullPointerException: Cannot invoke "BakedModel.getParticleIcon()" because the return value
+  of "BlockModelShaper.getBlockModel(BlockState)" is null
+	at LiquidBlockRenderer.setupSprites(LiquidBlockRenderer.java:43)
+	at BlockRenderDispatcher.onResourceManagerReload(BlockRenderDispatcher.java:157)
+	at ResourceManagerReloadListener...
+	at Minecraft.runTick(Minecraft.java:1211) -> Minecraft.run
+```
+
+也就是说:**游戏已经在跑主循环、在重载资源、在烘焙模型**了 —— 不再是启动早期的类加载/签名扫描问题,而是"某个模型查不到"。方向很明确:清单里就有 `ModelManager`(4 个成员)、`BlockRenderDispatcher`(4 个)、`LiquidBlockRenderer`(3 个)、`SimpleBakedModel`(5 个)这些与模型烘焙直接相关的类,它们的成员是**桩**(返回 null)还是真身,决定了这条链能不能通 —— 正是"按成员区分补法"要解决的那类。
+
+结论进 `docs/DEVELOPMENT.md`,并记下测试台要求:`config/fml.toml` 里 `earlyWindowControl = false` 是跑 1.21.4 的必要条件。
