@@ -27,6 +27,7 @@ import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
+import org.objectweb.asm.tree.FrameNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
@@ -319,7 +320,11 @@ public final class MemberRestorePlan {
 		donor.superName = runtime.superName;
 		donor.interfaces = new ArrayList<>(runtime.interfaces);
 		for(FieldNode field : fields) {
-			donor.fields.add(new FieldNode(widened(field.access), field.name, field.desc, field.signature, field.value));
+			// Final is dropped: a final instance field may only be assigned from the class's own
+			// <init>, and the initialisation is carried out by a restored method, which the JVM
+			// rejects with "Update to non-static final field ... attempted from a different method".
+			donor.fields.add(new FieldNode(widened(field.access) & ~Opcodes.ACC_FINAL, field.name, field.desc,
+					field.signature, field.value));
 			if((field.access & Opcodes.ACC_STATIC) == 0) {
 				MethodNode initialiser = initialiser(runtime, internalName, field);
 				if(initialiser != null) {
@@ -470,7 +475,7 @@ public final class MemberRestorePlan {
 				boolean safe = true;
 				for(AbstractInsnNode back = insn.getPrevious(); back != null; back = back.getPrevious()) {
 					if(back instanceof LabelNode || back instanceof JumpInsnNode || back instanceof TableSwitchInsnNode
-							|| back instanceof LookupSwitchInsnNode || back instanceof LineNumberNode) {
+							|| back instanceof LookupSwitchInsnNode || back instanceof LineNumberNode || back instanceof FrameNode) {
 						break;
 					}
 					if(back instanceof VarInsnNode var && var.var != 0) {

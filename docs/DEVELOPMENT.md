@@ -387,3 +387,20 @@ public static void optifineoforge$init$<字段>(<类> self)
 ```
 
 **当前新问题(未解决)**:转型器在读取某个供体时抛异常(`MemberRestoreTransformer.donor:161`),把这次启动打断了 —— 需要看完整消息确认是哪个供体、以及是不是新加的初始化方法让那个类文件写坏了(例如被搬的指令段其实不完整)。
+
+### 两个供体侧的修复:栈帧与 final 字段(2026-09-14)
+
+**① 搬初始化指令时不能带上栈帧。** 把构造器里的初始化片段搬到供体的静态方法里时,原片段可能夹着 `FrameNode`;搬过去之后帧与新的方法上下文对不上,**写入时直接抛 `ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1`**,把整个启动打断。现在遇到 `FrameNode` 就当作片段边界(直线段本来不需要帧)。
+
+顺带做了一件一直缺的事:**离线校验器**。`CheckDonors`(单文件 Java,用 ASM 把供体里每个方法单独写一遍)一次性指出是 `SimpleBakedModel` 的供体坏了 —— 这类问题本来要跑一次完整启动才能看到,现在离线几秒就能定位。
+
+**② 补回来的字段不能带 `final`。** 初始化由我们的静态方法执行,而 JVM 规定**非静态 final 字段只能在本类的 `<init>` 里赋值**:
+
+```
+IllegalAccessError: Update to non-static final field ModelManager.modelBakery attempted from a different
+  method (optifineoforge$init$modelBakery) than the initializer method <init>
+```
+
+补字段时去掉 `final` 即可(语义上仍是"构造期赋值一次")。
+
+修完这两处,启动回到**同一个模型链阻塞点**,但路面已经明显不同:真身比例大幅提高(`Gui` 17 个成员 + 1 个字段初始化、`ModelManager` 5 个成员 + 1 个字段初始化、`ClientLevel` 10 个成员……),而且**不再有 VerifyError / IllegalAccessError / 供体读取失败**这类结构性错误。
