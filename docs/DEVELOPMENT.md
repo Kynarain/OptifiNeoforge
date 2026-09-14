@@ -882,3 +882,40 @@ Measured on the 1.21.4 rig after both fixes: reload 1 runs 28 listeners, the
 "Caught error loading resourcepacks", no NullPointerException, no "Failed to wait"
 and no "Image is not allocated" - the atlas failure that started this whole line of
 investigation is gone.
+
+## 2026-09-15:1.20.4 基线能启动,以及两侧命名空间的字节码级实测
+
+安装器这次第 1 轮就完成,三个派生 jar(`-srg` / `-slim` / `-extra`)与 `neoforge-20.4.251-client.jar`
+都已生成。基线启动:
+
+    launch-neoforge.ps1 -Profile neoforge-20.4.251 -NoMods -JavaExe "<jdk-17>\bin\java.exe"
+    → VERDICT: STARTED (40s, marker: Sound engine started)
+      ModLauncher 10.0.9+10.0.9+main.dcd20f30 / Java 17.0.15
+      NeoForge mod loading, version 20.4.251, for MC 1.20.4 with MCP 20240627.114801
+
+也就是说 1.20.4 这一行的**实例本身没有问题**,后面再出问题都是 mod 的问题。
+
+命名空间这一次量的是常量池,不是目录名。对 `srg/net/optifine/Config.class` 取 `javap -v -p` 输出,
+按常量池条目类型给 `m_\d{4,6}_` / `f_\d{4,6}_` 分类:
+
+| 构建 | `Methodref`/`Fieldref` | `String` |
+|---|---|---|
+| 1.20.1 I6 | 49 | 0 |
+| 1.20.4 I7 | 47 | 0 |
+| 1.21.4 J3 | 0 | 0 |
+
+带 SRG 名的是**引用**不是字符串,所以 1.20.4 的类确实是照 SRG 命名的 Minecraft 编译的,
+不是"自带一张对照表"。对面 NeoForge 20.4 的运行时取
+
+    javap -p client-1.20.4-20240627.114801-srg.jar 里的 net.minecraft.world.item.Item
+    → getId / byId / builtInRegistryHolder / onUseTick / BY_BLOCK / MAX_STACK_SIZE
+
+**全是官方名,一个 `m_` 都没有**;文件名里的 `srg` 只是安装器那一步留下的名字,不代表内容。
+
+顺带否证了一条捷径:想用 `patch/srg/*.class.md5` 反推"补丁是针对哪个 jar 打的",427 个 md5 对
+NeoForm 官方 jar、vanilla 混淆 jar、slim、extra、`neoforge-*-client.jar`、`neoforge-*-universal.jar`
+全部 0 命中,`patch/notch` 对 vanilla 混淆 jar 也是 0/426 —— **这些 md5 不是输入的校验和**,不能用它判定命名空间。
+
+NeoForm 1.20.4 自带的两份映射也查了:`-mappings.txt` 是 `tsrg2 obf srg id` 但 srg 列与 obf 列**逐字相同**
+(`cuz cuz 1657`)且全文无 `m_` 名,`-mappings-merged.txt` 是 `tsrg2 left right` = obf→官方名。
+所以重映射要用的 SRG↔official 表**不在 NeoForm 里**,来源问题见 `docs/MATRIX.md` 末节。

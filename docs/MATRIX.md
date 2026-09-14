@@ -290,3 +290,59 @@ collect the "Downloading library from <url>" lines it reports as timed out, fetc
 exact URLs with Invoke-WebRequest and retries, repeat until it prints "Successfully
 installed client into launcher" - at which point the three derived jars exist and
 1.20.4 can be brought up like 1.20.1 was.
+
+## 2026-09-15:1.20.4 已能启动,剩下的阻塞是命名空间而不是安装器
+
+上一节推演的两半都得到了实测确认。
+
+**安装器**:第 1 轮就完成了。三个派生 jar 现在都在
+
+    libraries/net/minecraft/client/1.20.4-20240627.114801/client-1.20.4-20240627.114801-srg.jar   (17,348,932)
+    libraries/net/minecraft/client/1.20.4-20240627.114801/client-1.20.4-20240627.114801-slim.jar  (13,383,682)
+    libraries/net/minecraft/client/1.20.4-20240627.114801/client-1.20.4-20240627.114801-extra.jar (11,061,879)
+    libraries/net/neoforged/neoforge/20.4.251/neoforge-20.4.251-client.jar                        ( 5,299,238)
+
+`launch-neoforge.ps1 -Profile neoforge-20.4.251 -NoMods -JavaExe jdk-17` 的基线启动结果是
+
+    VERDICT: STARTED (40s, marker: Sound engine started)
+
+Java 17、ModLauncher 10.0.9、`NeoForge mod loading, version 20.4.251, for MC 1.20.4 with MCP
+20240627.114801`。**1.20.4 这一行的实例本身是好的**,再出问题就是我们的 mod 的问题。
+
+**命名空间**:两侧确实不一致,而且这次是字节码级证据,不是靠目录名推断。
+
+1. OptiFine 的载荷引用的是**真正的 SRG 名**。取 `srg/net/optifine/Config.class`,用 `javap -v` 分类常量池里
+   `m_\d{4,6}_` / `f_\d{4,6}_` 的出现形式:
+
+   | 构建 | `Methodref`/`Fieldref` | `String` |
+   |---|---|---|
+   | 1.20.1 I6 | 49 | 0 |
+   | 1.20.4 I7 | 47 | 0 |
+   | 1.21.4 J3 | 0 | 0 |
+
+   关键是第二列:它们是**直接引用**,不是映射表里的字符串。所以"那只是 OptiFine 自带的对照表数据"这个
+   解释不成立 —— 1.20.4 的类就是照着一个 SRG 命名的 Minecraft 编译的。
+
+2. NeoForge 20.4 的运行时是**官方名**。`client-1.20.4-20240627.114801-srg.jar` 里
+   `net/minecraft/world/item/Item` 的成员是 `getId`、`byId`、`builtInRegistryHolder`、`onUseTick`,
+   `BY_BLOCK`/`MAX_STACK_SIZE`,**没有一个 `m_`**。文件名里的 `srg` 只是安装器那一步的历史名字,
+   不代表内容是 SRG。
+
+   这也解释了为什么已验证的两条线能跑:1.20.1 的 NeoForge 20.1 本身就是 SRG,两边同构;
+   1.21.1 起 OptiFine 也换成官方名,两边同构。**只有 1.20.2 / 1.20.4 这一带两边不同构。**
+
+**那么重映射要用的表从哪来 —— 这里有个缺口。** NeoForm 1.20.4 自带的两个映射文件都查过了:
+
+- `neoform-1.20.4-20240627.114801-mappings.txt` 的表头是 `tsrg2 obf srg id`。但 srg 那一列**与 obf 完全相同**
+  (`cuz cuz 1657`),全文**一个 `m_` 名都没有**,第三列是数字 ID。也就是说 NeoForm 对 1.20.4 **不发布 SRG 名**。
+- `neoform-1.20.4-20240627.114801-mappings-merged.txt` 的表头是 `tsrg2 left right`,内容是 obf → 官方名
+  (`a com/mojang/math/Axis`)。
+
+所以"该版本的 SRG ↔ official 映射表"**不能从 NeoForm 拿**。候选来源只有两条:MCPConfig
+(`de.oceanlabs.mcp:mcp_config:1.20.4`,待确认是否发布过) 或拿 Forge 自己的 SRG 命名 client jar 与
+NeoForge 的官方命名 jar 做结构比对(两者同源、类名一致,按描述符在类内配对即可反推)。
+
+**一个被否证的捷径**:本来想用 `patch/srg/*.class.md5` 判定"OptiFine 是针对哪个 jar 打的补丁",
+结果 427 个 md5 对本地所有候选 jar 全部 0 命中 —— NeoForm 官方 jar、vanilla 混淆 jar、slim、extra、
+`neoforge-*-client.jar`、`neoforge-*-universal.jar` 逐个比对都是 0;`patch/notch` 对 vanilla 混淆 jar 也是
+0/426。结论是**这些 md5 不是输入校验和**(很可能校验的是 xdelta 之后的产物),这条路不能用来判定命名空间。
