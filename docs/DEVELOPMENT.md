@@ -1005,3 +1005,68 @@ transformer 必须**预先声明 targets**,需要改的类有几千个,声明不
 
 这个数字顺便从另一个方向印证了整条结论:1.20.1 运行时里有 **49667** 个 SRG 名成员,1.20.4 运行时里是
 **0** 个。所谓"1.20.2/1.20.4 这一带两边不同构",在两个方向上都是量出来的。
+
+## 2026-09-15:打补丁要的是**混淆**jar,不是 SRG jar(修正上一条推断)
+
+把 1.20.4 接进 rig 时第一步就停住:
+
+    OptiFine's patcher failed on client-1.20.4-20240627.114801-srg.jar
+    Caused by: java.io.IOException: Base resource not found: eon.class
+        at optifine.Patcher.applyPatch(Patcher.java:148)
+
+`eon` 是**混淆名**(`eon` = `com/mojang/blaze3d/pipeline/RenderTarget`),而给进去的是官方名的 NeoForm jar,
+所以它找不到 base。之前那句"补丁需要该版本的 SRG 命名 jar"是**错的**:OptiFine 的 `Patcher.applyPatch`
+用 `getPatchBase(...)` 把补丁条目名换算成**混淆 base 名**,再在输入 jar 里找 —— 它要的是**原版混淆 jar**,
+也就是启动器 `versions/1.20.4/1.20.4.jar` 那一份(OptiFine 自己的安装器就是往版本 jar 里打补丁)。
+
+把输入换成原版混淆 jar 之后,同一个补丁步骤立刻通过:
+
+    patched in 1271 ms -> optifine-patched.jar (6,724,767 bytes)
+    roots: {=9, META-INF/=3, assets/=1787, doc/=39, notch/=1137, optifine/=49, srg/=1070}
+    patched game classes: 427 (369 net/minecraft)
+
+顺带说明 1.21.4 那一行之前为什么没暴露这个问题:`test-downloads/1.21.4-client.jar` 其实是**原版混淆 jar**
+(5723 个两字母根类名,`net/minecraft/*` 只有 29 条),一直就是对的输入。**两边一致,不是特例。**
+
+## 2026-09-15:补丁产物也是 SRG 名,所以改名要跑在补丁之后
+
+`optifine-patched.jar` 里 `srg/com/mojang/blaze3d/pipeline/RenderTarget.class` 的成员是
+`f_166194_`、`f_83915_`、`f_83919_` —— **补丁产物(427 个游戏类)是 SRG 名**,和 OptiFine 自家类一样。
+所以 `SrgRemap` 必须作用在**补丁产物**上,而且这是主战场:
+
+    rewrote 21089 method and 17455 field names, 107 could not be resolved
+    0 SRG-shaped string constants were left alone
+
+对比只改 OptiFine 自家类时的 3457 + 1400,补丁类贡献了 **85% 的改名量**。这也是个顺序约束:
+`MemberRestorePlan` 是拿补丁产物和 NeoForge 官方名运行时比的,所以**改名必须排在计划之前**,否则整个计划
+都是拿 SRG 名去比官方名,结论没有意义。
+
+剩下 107 个(38544 里的 0.28%)已经查到具体原因,不是表的问题:
+
+    candidate 顺序 net/minecraft/core/BlockPos$MutableBlockPos -> below
+                  net/minecraft/core/BlockPos                 -> below
+                  net/minecraft/core/Vec3i                    -> below
+
+同一个 SRG 名会被**协变覆写**的多个声明共用(`Vec3i`/`BlockPos`/`MutableBlockPos` 的 `below()` 都叫
+`m_7495_`,只是 id 不同),所以"名字在表里、但该类并不声明它"不是终点,必须继续往上走一层。修掉之后
+那 49 条"成员形状变了"里还剩 48 条属于另一类,见下。
+
+**另一类(字段族)是类名不一致**:Mojang 的映射把局部 record 叫 `net/minecraft/client/gui/Gui$1DisplayEntry`
+(`$1` 前缀),而 OptiFine 打出来的补丁类是 `Gui$DisplayEntry`。对运行时验一下:
+
+    Gui$1DisplayEntry.class            在运行时: 有
+    Gui$DisplayEntry.class             在运行时: 无
+    MultiBufferSource$BufferSource     在运行时: 有
+    MultiBufferSource$1BufferSource    在运行时: 无
+
+两边各有各的叫法,不是单向偏差。规模也不大:369 个补丁过的 `net/minecraft` 类里,只有 **5 个**的名字
+运行时没有 —— `Util$3`、`Util$4`、`Gui$DisplayEntry`、`ParticleEngine$ParticleDefinition`、
+`LevelChunkSection$BlockCounter`。
+
+**下一步**:架一座类名桥 —— 补丁条目名(`patch/srg/<OptiFine 的名字>.class.xdelta`)与它换算出的混淆 base
+名是一对,把它和 merged 的混淆→官方名串起来,就得到"OptiFine 名 → 运行时名";用它修掉那 5 个类、并让
+表按运行时的类名查。然后就能接着跑 `MemberRestorePlan`、Forge shims、loader 并实机启动。
+
+rig 那边同时修了一处:`build-rig-jar.ps1` 原来手写四个 ASM jar(9.8),没有 `asm-commons`,于是
+`ClassRemapper`/`Remapper` 直接编译不过;现在按模块名解析,自动带上 `asm-commons`,版本也跟
+`gradle.properties` 的 `asm_version=9.10.1` 一致。

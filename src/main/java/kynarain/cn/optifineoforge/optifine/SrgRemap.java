@@ -199,7 +199,14 @@ public final class SrgRemap {
 			// failure instead of being reported as it is.
 			boolean present = method ? runtime.methods.contains(candidate + "." + official + descriptor)
 					: runtime.fields.contains(candidate + "." + official + descriptor);
-			return present ? official : null;
+			if(present) {
+				return official;
+			}
+			// A hit that the runtime does not declare here is not the end of the search. SRG names are
+			// shared by covariant overrides - Vec3i, BlockPos and MutableBlockPos all call their
+			// override of below() m_7495_ - so the name can be present on the referenced class while
+			// the declaration, and therefore the runtime member, lives higher up. Bailing out here
+			// left 49 members renamed-or-not depending on which class the reference happened to name.
 		}
 		return null;
 	}
