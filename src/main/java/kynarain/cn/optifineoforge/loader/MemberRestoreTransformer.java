@@ -31,7 +31,6 @@ import kynarain.cn.optifineoforge.optifine.MemberRestorePlan;
 
 import cpw.mods.modlauncher.api.ITransformer;
 import cpw.mods.modlauncher.api.ITransformerVotingContext;
-import cpw.mods.modlauncher.api.TargetType;
 import cpw.mods.modlauncher.api.TransformerVoteResult;
 
 /**
@@ -228,16 +227,12 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 	}
 
 	@Override
-	public Set<Target<ClassNode>> targets() {
-		Set<Target<ClassNode>> result = new LinkedHashSet<>();
+	public Set<Target> targets() {
+		Set<Target> result = new LinkedHashSet<>();
 		for(String name : targets) {
 			result.add(Target.targetClass(name));
 		}
 		return result;
 	}
 
-	@Override
-	public TargetType<ClassNode> getTargetType() {
-		return TargetType.CLASS;
-	}
 }

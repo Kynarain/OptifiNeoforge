@@ -20,7 +20,6 @@ import org.objectweb.asm.tree.VarInsnNode;
 
 import cpw.mods.modlauncher.api.ITransformer;
 import cpw.mods.modlauncher.api.ITransformerVotingContext;
-import cpw.mods.modlauncher.api.TargetType;
 import cpw.mods.modlauncher.api.TransformerVoteResult;
 
 /**
@@ -182,13 +181,9 @@ public final class ModelProbeFix implements ITransformer<ClassNode> {
 	}
 
 	@Override
-	public Set<Target<ClassNode>> targets() {
+	public Set<Target> targets() {
 		return Set.of(Target.targetClass(MODEL_MANAGER), Target.targetClass(BLOCK_RENDER_DISPATCHER),
 				Target.targetClass(MODEL_BAKERY), Target.targetClass(UNBAKED_MODEL), Target.targetClass(BLOCK_MODEL));
 	}
 
-	@Override
-	public TargetType<ClassNode> getTargetType() {
-		return TargetType.CLASS;
-	}
 }

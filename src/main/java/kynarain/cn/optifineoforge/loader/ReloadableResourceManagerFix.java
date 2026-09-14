@@ -18,7 +18,6 @@ import org.objectweb.asm.tree.VarInsnNode;
 
 import cpw.mods.modlauncher.api.ITransformer;
 import cpw.mods.modlauncher.api.ITransformerVotingContext;
-import cpw.mods.modlauncher.api.TargetType;
 import cpw.mods.modlauncher.api.TransformerVoteResult;
 
 /**
@@ -139,12 +138,8 @@ public final class ReloadableResourceManagerFix implements ITransformer<ClassNod
 	}
 
 	@Override
-	public Set<Target<ClassNode>> targets() {
+	public Set<Target> targets() {
 		return Set.of(Target.targetClass(RESOURCE_MANAGER));
 	}
 
-	@Override
-	public TargetType<ClassNode> getTargetType() {
-		return TargetType.CLASS;
-	}
 }

@@ -61,7 +61,7 @@ public class OptifiNeoforgeTransformationService implements ITransformationServi
 	}
 
 	@Override
-	public List<? extends ITransformer<?>> transformers() {
+	public List<ITransformer> transformers() {
 		LOGGER.info("OptifiNeoforgeTransformationService.transformers");
 		return List.of(new RenderTargetFix(), new ReloadableResourceManagerFix(), new TagHelperFix(),
 				new PackRootsFix(), new ReloadProbeFix(), new ModelProbeFix(), new NativeImageProbeFix(),
