@@ -242,6 +242,16 @@ public final class SrgRemap {
 		runtime.addHierarchy(Path.of(args[2]));
 		System.out.println("runtime index: " + runtime.methods.size() + " methods, " + runtime.fields.size()
 				+ " fields, " + runtime.superOf.size() + " classes with a superclass");
+
+		// A runtime that names its own members in SRG is the 1.20.1 shape, where OptiFine's payload and
+		// the game already agree and rewriting would be the mistake. Refusing loudly is the point: run
+		// by habit on the wrong line, this would otherwise rename every member to a name that line's
+		// game does not have, which reads as an unrelated failure much later.
+		if(srgNamedMembers(runtime) > 0) {
+			System.err.println("refusing to rewrite: this runtime is SRG-named (" + srgNamedMembers(runtime)
+					+ " members match m_/f_), so the payload needs no rewriting on this line");
+			System.exit(2);
+		}
 		Report report = rewrite(map, runtime, Path.of(args[2]), Path.of(args[3]));
 		System.out.println(report.describe());
 		for(Map.Entry<String, Integer> entry : report.misses.entrySet()) {
@@ -251,5 +261,24 @@ public final class SrgRemap {
 		for(int index = 0; index < Math.min(5, samples.size()); index++) {
 			System.out.println("  sample: " + samples.get(index));
 		}
+	}
+
+	/** How many of the runtime's members still carry SRG names. */
+	private static int srgNamedMembers(SrgMemberMap.RuntimeIndex runtime) {
+		int count = 0;
+		for(String member : runtime.methods) {
+			if(SRG_NAME.matcher(member.substring(member.lastIndexOf('.') + 1, member.indexOf('('))).matches()) {
+				count++;
+			}
+		}
+		for(String member : runtime.fields) {
+			int dot = member.lastIndexOf('.');
+			String name = member.substring(dot + 1);
+			int colon = name.indexOf(':');
+			if(SRG_NAME.matcher(colon < 0 ? name : name.substring(0, colon)).matches()) {
+				count++;
+			}
+		}
+		return count;
 	}
 }
