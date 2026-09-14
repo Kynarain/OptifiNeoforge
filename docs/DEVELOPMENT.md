@@ -258,3 +258,19 @@ java.lang.IllegalStateException: Rendersystem called from wrong thread
 
 - `-Dfml.earlyprogresswindow=false` 在 NeoForge 21.4 上**无效**(jar 里也找不到可用的开关字符串),所以没法用配置绕过早期显示;
 - FML 的早期显示**完全用自己的类**(`SimpleBufferBuilder` / `SimpleFont` / `Format` / `Mode`)与 LWJGL,不用 Minecraft 的 `VertexFormat`/`GlStateManager` —— 因此问题不在"OptiFine 替换了哪个渲染类",而在**某一帧的绘制中途抛了异常**,把 `building` 留成了 true(下一帧的第一次 `begin` 就炸)。下一轮要抓的是**第一帧里被吞掉的那个异常**。
+
+### 供体校验再补一条:不许复制 `super` 调用(2026-09-14)
+
+完整日志翻出了**真正的第一处异常** —— 不是 `Already building`,而是**类校验失败**:
+
+```
+java.lang.VerifyError: Bad invokespecial instruction: current class isn't assignable to reference class.
+Caused by: java.lang.ExceptionInInitializerError: Exception java.lang.VerifyError ...
+Caused by: java.lang.NoClassDefFoundError: Could not initialize class net.optifine.reflect.Reflector
+```
+
+出错的字节码是 `aload_0; invokevirtual …; aload_0; aload_1; aload_2; invokespecial …; areturn` —— 典型的"复制过来的方法体里有一句 `super.xxx(...)`"。**OptiFine 那份的父类未必和运行时那份一样**,于是一句 `invokespecial` 指向的父类对不上,整个类过不了校验。
+
+修法:供体校验再加一条 —— 方法体里凡是 `INVOKESPECIAL` 且 owner 不是本类的(即 `super` 调用),只有在**替换版本的父类与运行时一致**时才允许复制,否则降级成桩。
+
+修掉之后 `VerifyError` 消失,启动回到同一个阻塞点(FML 加载覆盖层的 `Already building.`),而且这次是**正常的崩溃报告**,不是连锁的初始化失败。**目前 1.21.4 上唯一的阻塞点就是它。**

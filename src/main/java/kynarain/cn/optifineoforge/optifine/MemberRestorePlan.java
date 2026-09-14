@@ -208,6 +208,15 @@ public final class MemberRestorePlan {
 				owner = field.owner; name = field.name; desc = field.desc;
 			} else if(insn instanceof MethodInsnNode call) {
 				owner = call.owner; name = call.name; desc = call.desc;
+				// A super call only verifies if the class it is copied into has the same superclass.
+				// OptiFine's compilation of a class can extend something else entirely, and then the
+				// copied body fails with "Bad invokespecial instruction: current class isn't
+				// assignable to reference class" - which is how the first real failure of the donor
+				// approach showed itself.
+				if(call.getOpcode() == Opcodes.INVOKESPECIAL && owner != null && !owner.equals(internalName)
+						&& !owner.equals(replacement.superName)) {
+					return false;
+				}
 			}
 			if(owner == null || !owner.equals(internalName)) {
 				continue;
