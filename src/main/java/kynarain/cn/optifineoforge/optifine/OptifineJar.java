@@ -353,7 +353,7 @@ public final class OptifineJar {
 			return;
 		}
 		System.err.println("usage: OptifineJar <jar>");
-		System.err.println("       OptifineJar <in> <out> <metadata file> <template file> [--no-forge-stubs] [--no-forge-stubs]");
+		System.err.println("       OptifineJar <in> <out> <metadata file> <template file> [--no-forge-stubs]");
 		System.exit(2);
 	}
 }
