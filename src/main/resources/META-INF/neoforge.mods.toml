@@ -1,0 +1,34 @@
+# Mod metadata for this line. ModDevGradle expands the placeholders below from
+# gradle.properties at build time (see build.gradle), and NeoForge reads this file from
+# META-INF/neoforge.mods.toml inside the jar.
+#
+# 26.1.2 is a client-side concern only: OptiFine is a client mod and so is this loader.
+
+modLoader = "javafml"
+# The FancyModLoader version range this mod needs. NeoForge's own FML is always present,
+# so this stays permissive; it is not the NeoForge version.
+loaderVersion = "[1,)"
+license = "MPL-2.0"
+issueTrackerURL = "https://github.com/Kynarain/OptifiNeoforge/issues"
+
+[[mods]]
+modId = "optifineoforge"
+version = "${version}"
+displayName = "OptifiNeoforge"
+# Keep this short: it is what the mod list shows.
+description = '''Loads OptiFine into NeoForge. Put the OptiFine jar for ${minecraft_version} next to this mod; OptifiNeoforge patches and applies it at runtime. OptiFine itself is not bundled or redistributed.'''
+authors = "kynarain"
+
+[[dependencies.optifineoforge]]
+modId = "neoforge"
+type = "required"
+versionRange = "[${neoforge_version},)"
+ordering = "NONE"
+side = "CLIENT"
+
+[[dependencies.optifineoforge]]
+modId = "minecraft"
+type = "required"
+versionRange = "[${minecraft_version},${minecraft_version}]"
+ordering = "NONE"
+side = "CLIENT"

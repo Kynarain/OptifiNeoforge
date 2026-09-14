@@ -1,0 +1,25 @@
+// 1.20.x line: Minecraft 1.20.1, 1.20.2, 1.20.4 and 1.20.6, Java 17 (21 on 1.20.6).
+// One branch per release line - see docs/PLAN.md and docs/MATRIX.md. This project is the whole mod
+// for this line; the default Minecraft/NeoForge target is in gradle.properties, and a single
+// version of the line can be built with -Pmc (and -Pneoforge, see build.gradle).
+pluginManagement {
+    repositories {
+        // ModDevGradle lives here as well as on the Gradle plugin portal.
+        maven {
+            name = 'NeoForged'
+            url = 'https://maven.neoforged.net/releases'
+        }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+plugins {
+    // ModDevGradle is NeoForge's own Gradle plugin: it resolves Minecraft and NeoForge,
+    // sets up the development runs and produces the mod jar. The version is the same as the 26.x
+    // line starts with; if it turns out not to cover this line's NeoForge versions, the build
+    // fails loudly and the version gets pinned per line instead.
+    id 'net.neoforged.moddev' version '2.0.147' apply false
+}
+
+rootProject.name = 'OptifiNeoforge-1.20.x'
