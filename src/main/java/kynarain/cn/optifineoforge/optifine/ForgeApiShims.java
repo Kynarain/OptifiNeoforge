@@ -201,20 +201,34 @@ public final class ForgeApiShims {
 		ClassWriter writer = new ClassWriter(0);
 		int access = Opcodes.ACC_PUBLIC | (isInterface ? Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT : Opcodes.ACC_SUPER);
 		writer.visit(Opcodes.V17, access, internalName, null, "java/lang/Object", null);
-		if(!isInterface) {
-			writeConstructor(writer, "()V");
+		boolean tracksEmptiness = !isInterface && shape.methods.containsKey("isEmpty ()Z");
+		if(tracksEmptiness) {
+			// A shell that is asked isEmpty() can answer it correctly if it remembers which
+			// constructor produced it: the no-argument one means "the EMPTY constant", the one
+			// OptiFine calls means a group it built itself.
+			writer.visitField(Opcodes.ACC_PRIVATE, EMPTY_FLAG, "Z", null, null).visitEnd();
 		}
+		if(!isInterface) {
+			writeConstructor(writer, internalName, "()V", tracksEmptiness);
+		}
+		java.util.List<String> selfTypedConstants = new java.util.ArrayList<>();
 		for(FieldReference field : shape.fields.values()) {
 			int fieldAccess = Opcodes.ACC_PUBLIC | (field.isStatic ? Opcodes.ACC_STATIC : 0);
 			if(isInterface) {
 				fieldAccess |= Opcodes.ACC_STATIC | Opcodes.ACC_FINAL; // interfaces only have those
 			}
 			writer.visitField(fieldAccess, field.name, field.desc, null, null).visitEnd();
+			if(field.isStatic && ("L" + internalName + ";").equals(field.desc)) {
+				// A static field of its own type on an API class is a constant the API defines - Forge's
+				// RenderTypeGroup.EMPTY is one - and a null constant is what OptiFine then calls
+				// isEmpty() on. Each gets an instance in <clinit> instead.
+				selfTypedConstants.add(field.name);
+			}
 		}
 		for(MethodReference method : shape.methods.values()) {
 			if("<init>".equals(method.name)) {
 				if(!isInterface) {
-					writeConstructor(writer, method.desc);
+					writeConstructor(writer, internalName, method.desc, tracksEmptiness);
 				}
 				continue;
 			}
@@ -223,6 +237,16 @@ public final class ForgeApiShims {
 				// A call on the interface itself cannot be answered, and an abstract method is the
 				// shape that says so instead of pretending.
 				writer.visitMethod(methodAccess | Opcodes.ACC_ABSTRACT, method.name, method.desc, null, null).visitEnd();
+				continue;
+			}
+			if(tracksEmptiness && "isEmpty".equals(method.name) && "()Z".equals(method.desc)) {
+				MethodVisitor isEmpty = writer.visitMethod(methodAccess, method.name, method.desc, null, null);
+				isEmpty.visitCode();
+				isEmpty.visitVarInsn(Opcodes.ALOAD, 0);
+				isEmpty.visitFieldInsn(Opcodes.GETFIELD, internalName, EMPTY_FLAG, "Z");
+				isEmpty.visitInsn(Opcodes.IRETURN);
+				isEmpty.visitMaxs(1, 1);
+				isEmpty.visitEnd();
 				continue;
 			}
 			MethodVisitor body = writer.visitMethod(methodAccess, method.name, method.desc, null, null);
@@ -254,18 +278,44 @@ public final class ForgeApiShims {
 			body.visitMaxs(2, Math.max(1, locals));
 			body.visitEnd();
 		}
+		if(!selfTypedConstants.isEmpty()) {
+			MethodVisitor clinit = writer.visitMethod(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
+			clinit.visitCode();
+			for(String constant : selfTypedConstants) {
+				clinit.visitTypeInsn(Opcodes.NEW, internalName);
+				clinit.visitInsn(Opcodes.DUP);
+				clinit.visitMethodInsn(Opcodes.INVOKESPECIAL, internalName, "<init>", "()V", false);
+				clinit.visitFieldInsn(Opcodes.PUTSTATIC, internalName, constant, "L" + internalName + ";");
+			}
+			clinit.visitInsn(Opcodes.RETURN);
+			clinit.visitMaxs(2, 0);
+			clinit.visitEnd();
+		}
 		writer.visitEnd();
 		return writer.toByteArray();
 	}
 
-	/** A constructor that does nothing but chain to {@code Object}, for whatever arguments it takes. */
-	private static void writeConstructor(ClassWriter writer, String desc) {
+	/** The name of the field a shell uses to remember that it stands for the empty constant. */
+	private static final String EMPTY_FLAG = "optifineoforge$empty";
+
+	/**
+	 * A constructor that does nothing but chain to {@code Object}, for whatever arguments it takes.
+	 *
+	 * <p>When the shell tracks emptiness, the no-argument constructor is the empty constant and every
+	 * other one is a value OptiFine built, so which constructor ran is recorded for {@code isEmpty}.</p>
+	 */
+	private static void writeConstructor(ClassWriter writer, String internalName, String desc, boolean trackEmptiness) {
 		MethodVisitor constructor = writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", desc, null, null);
 		constructor.visitCode();
 		constructor.visitVarInsn(Opcodes.ALOAD, 0);
 		constructor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+		if(trackEmptiness) {
+			constructor.visitVarInsn(Opcodes.ALOAD, 0);
+			constructor.visitInsn("()V".equals(desc) ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+			constructor.visitFieldInsn(Opcodes.PUTFIELD, internalName, EMPTY_FLAG, "Z");
+		}
 		constructor.visitInsn(Opcodes.RETURN);
-		constructor.visitMaxs(1, Math.max(1, Type.getArgumentsAndReturnSizes(desc) >> 2));
+		constructor.visitMaxs(2, Math.max(1, Type.getArgumentsAndReturnSizes(desc) >> 2));
 		constructor.visitEnd();
 	}
 

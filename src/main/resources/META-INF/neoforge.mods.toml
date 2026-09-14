@@ -2,7 +2,7 @@
 # gradle.properties at build time (see build.gradle), and NeoForge reads this file from
 # META-INF/neoforge.mods.toml inside the jar.
 #
-# Client side only: OptiFine is a client mod, and so is this loader; there is no server use.
+# 26.1.2 is a client-side concern only: OptiFine is a client mod and so is this loader.
 
 modLoader = "javafml"
 # The FancyModLoader version range this mod needs. NeoForge's own FML is always present,

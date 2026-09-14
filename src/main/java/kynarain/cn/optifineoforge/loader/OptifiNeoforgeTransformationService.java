@@ -65,6 +65,6 @@ public class OptifiNeoforgeTransformationService implements ITransformationServi
 		LOGGER.info("OptifiNeoforgeTransformationService.transformers");
 		return List.of(new RenderTargetFix(), new ReloadableResourceManagerFix(), new TagHelperFix(),
 				new PackRootsFix(), new ReloadProbeFix(), new ModelProbeFix(), new NativeImageProbeFix(),
-				new MemberRestoreTransformer());
+				new SortProbeFix(), new MemberRestoreTransformer());
 	}
 }
