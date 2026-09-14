@@ -262,7 +262,9 @@ public final class OptifineJar {
 	 */
 	public static void main(String[] args) throws IOException {
 		if(args.length == 1) {
-			System.out.print(inspect(Path.of(args[0])).describe());
+			Path jar = Path.of(args[0]);
+			System.out.print(inspect(jar).describe());
+			OptifineConfig.describe(jar).forEach(line -> System.out.println(line));
 			return;
 		}
 		if(args.length == 4) {
