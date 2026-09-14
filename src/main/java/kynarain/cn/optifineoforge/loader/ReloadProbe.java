@@ -101,6 +101,14 @@ public final class ReloadProbe {
 		LOGGER.info("value " + label + ": " + describe(value));
 	}
 
+	/** How many entries a map holds, for the registry the sort builds its graph from. */
+	public static void count(java.util.Map<?, ?> map, String label) {
+		if(!enabled()) {
+			return;
+		}
+		LOGGER.info("count " + label + ": " + (map == null ? "null" : Integer.toString(map.size())));
+	}
+
 	/** How many listeners a list holds, for following the list through registration. */
 	public static void size(List<?> listeners, String label) {		if(!enabled()) {
 			return;

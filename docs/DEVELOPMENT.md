@@ -749,3 +749,24 @@ So the next measurement is that anchor rather than the names: log what
 getLastVanillaListener() returns (and the registry size) in both runs. With
 OptiFine that answer is the one thing that can still differ, since everything else
 in the path has now been shown to agree.
+## 2026-09-15: identical inputs, different output - the difference is inside the sort
+
+SortProbeFix logs what ReloadListenerSort.sort is handed, and the two runs agree
+on every input:
+
+    control, no OptiFine:  size before 22, registry 26, lastVanillaListener PeriodicNotificationManager, after 26
+    with OptiFine:         size before 22, registry 26, lastVanillaListener PeriodicNotificationManager, after 48
+
+Same registry (26 entries), same anchor class, same 22-entry list going in, and
+the sorted result is 26 in one run and 48 in the other. A topological sort over
+the same 26-node registry cannot return 48 entries, so the difference is not in
+what the sort is given but in how it treats it: sortListeners asks
+needsToBeLinkedToVanilla(nameLookup, graph, listener) per registry entry and edges
+the graph when the answer is yes, and since the name lookups were already shown to
+agree between the runs, the remaining variable is the graph - the dependencies
+registered before the sort ran.
+
+So the next probe belongs on the graph rather than on the listeners: node count,
+edge count, and needsToBeLinkedToVanilla's answer per entry. Printing the anchor's
+class was one step short of printing its identity, which should be included too -
+the class matched, and only identity rules out a different instance of it.
