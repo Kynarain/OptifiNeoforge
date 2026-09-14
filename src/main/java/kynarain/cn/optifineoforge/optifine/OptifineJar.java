@@ -228,7 +228,13 @@ public final class OptifineJar {
 					target.putNextEntry(copy);
 					if(!entry.isDirectory()) {
 						try(InputStream stream = zip.getInputStream(entry)) {
-							stream.transferTo(target);
+							if(OptifineJarFixer.handles(name)) {
+								// Its own path handling assumes a plain jar on disk; under a union
+								// filesystem it has to be repaired or the whole launch aborts.
+								target.write(OptifineJarFixer.fixServicePath(stream.readAllBytes()));
+							} else {
+								stream.transferTo(target);
+							}
 						}
 					}
 					target.closeEntry();

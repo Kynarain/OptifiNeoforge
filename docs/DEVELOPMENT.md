@@ -73,6 +73,36 @@ curl.exe -sSL -o preview_OptiFine_26.1.2_HD_U_K1_pre2.jar `
 
 拆出来的类是否**可验证**(JVM 校验通过)还没测 —— 那需要 ASM 或 `ClassLoader` 层面的检查,以及真机加载。
 
+## 首次真机实测:NeoForge 21.4.149(Minecraft 1.21.4,2026-09-14)
+
+本机装好了 JDK 21 与 25(`C:\Users\kynar\.jdks\`),于是可以真的启动一次 NeoForge。用的是用户启动器里已有的 `1.21.4-NeoForge_21.4.149`(FML 6.0.18、ModLauncher 11.0.4),配一个独立的游戏目录与独立的 `mods/`,不动用户自己的配置。测试脚本在仓库外的 `C:\Users\kynar\IdeaProjects\optifineoforge-test\launch-neoforge.ps1`。
+
+**对照(无模组)**:启动到标题界面,40 秒,`Sound engine started`,无崩溃报告 —— 测试台本身可用。
+
+**把重新打包过的 OptiFine 1.21.4(J3)放进 `mods/`**,依次出现三个问题,前两个已解决:
+
+1. **`NoSuchFileException: ...optifine-1.21.4-for-neoforge.jar#214`** —— OptiFine 用自己类的 code source 找 jar(`getProtectionDomain().getCodeSource().getLocation()`),在 NeoForge 下这是 union 文件系统路径 `union:/...jar%23214!/`,它只去掉结尾的 `!`,留下 `#214`,于是 `ZipFile` 打不开,ModLauncher 直接判定 `InvalidLauncherSetupException: Invalid Services found OptiFine`。
+   → **修法**:`OptifineJarFixer` 重写 `optifine.OptiFineTransformationService.toFile(URI)`,把 `!` 之后与 `#` 之后的部分一并截掉(重写后的方法要重算栈帧,否则 JVM 报 `Expected stackmap frame at this location`)。打包时自动应用。
+2. 修好之后,**OptiFine 自己的转换服务在 NeoForge 上跑起来了**:
+
+   ```
+   [optifine.OptiFineTransformationService]: OptiFine ZIP file: ...\mods\optifine-1.21.4-for-neoforge.jar
+   [optifine.OptiFineTransformer]: Target.PRE_CLASS is available
+   [optifine.OptiFineTransformer]: Forge JAR not available
+   [optifine.OptiFineTransformationService]: OptiFineTransformationService.transformers
+   [optifine.OptiFineTransformer]: Targets: 474
+   ```
+
+   即:服务被发现、jar 被打开、**474 个补丁目标注册成功**,ModLauncher 不再拒绝。这是整条路线的第一个真机证据。
+3. **下一个拦路的问题(尚未解决)**:FML 的早期窗口阶段 `DisplayWindow.updateModuleReads` 会去扫方法签名,而 OptiFine 的类引用了 **Forge 的 API 类型** `net.minecraftforge.client.extensions.IForgeVertexConsumer` —— NeoForge 上这个包不存在(`net.neoforged.neoforge.*`),于是 `ClassNotFoundException` 让启动中止。要往下走就得提供一层 API 兼容/桩类,或把这些引用改掉。
+
+## 尚未确认
+
+- 上面第 3 条之外还有多少 `net.minecraftforge.*` 引用需要处理(1.21.4 的 OptiFine 里有一批)。
+- 1.20.6 – 1.21.8 这条区间是否都像 1.21.4 一样能被 NeoForge 接受(1.20.6 起 FML 还会额外拒绝"原版 OptiFine jar",我们已剔除安装器入口,但未逐个实测)。
+- 补丁类被 NeoForge 应用后,OptiFine 运行期的 MD5 校验是否仍然通过。
+- 1.21.9 及以后:ModLauncher 已不存在,必须改用 NeoForge 的 `ClassProcessor`,这条路还没试。
+
 ## 这对加载器意味着什么
 
 | MC | OptiFine 负载的命名空间 | NeoForge 运行期命名空间 | 结论 |
