@@ -55,6 +55,8 @@ import org.objectweb.asm.tree.MethodNode;
 public final class MemberRestorePlan {
 	/** The patcher writes OptiFine's classes here. */
 	private static final String PATCHED_ROOT = "srg/";
+	/** How far the dependency closure may grow before it gives up. */
+	private static final int MAX_CLOSURE_ROUNDS = 8;
 	/** Where the environment assertions live that a copied body has to be freed of. */
 	private static final String RENDER_SYSTEM = "com/mojang/blaze3d/systems/RenderSystem";
 
@@ -125,6 +127,7 @@ public final class MemberRestorePlan {
 
 				List<FieldNode> fields = missingFields(mine, theirs);
 				List<MethodNode> methods = missingMethods(mine, theirs);
+				closeOverReferences(mine, theirs, fields, methods, internalName);
 				for(FieldNode field : fields) {
 					lines.add("F " + internalName + " " + field.name + " " + field.desc);
 				}
@@ -282,6 +285,93 @@ public final class MemberRestorePlan {
 			insn = next;
 		}
 		return dropped;
+	}
+
+	/**
+	 * Adds the members a restored body depends on, repeatedly.
+	 *
+	 * <p>A copied body often names another member of its own class that OptiFine also dropped, and
+	 * then the copy does not verify and falls back to a stub returning a default value - which is how
+	 * the model pipeline ended up handing null block models to the renderer. Following those
+	 * references and restoring what they point at closes the gap, so that "would not verify" means
+	 * "restore the chain it depends on" instead of "give up and return null".</p>
+	 *
+	 * <p>Bounded by rounds rather than by a graph walk; a cycle simply stops the additions, because a
+	 * member goes into the known set as soon as it has been added once.</p>
+	 */
+	private static void closeOverReferences(ClassNode replacement, ClassNode runtime, List<FieldNode> fields,
+			List<MethodNode> methods, String internalName) {
+		java.util.Set<String> known = new java.util.HashSet<>();
+		for(FieldNode field : replacement.fields) {
+			known.add("F " + field.name + " " + field.desc);
+		}
+		for(MethodNode method : replacement.methods) {
+			known.add("M " + method.name + " " + method.desc);
+		}
+		for(FieldNode field : fields) {
+			known.add("F " + field.name + " " + field.desc);
+		}
+		for(MethodNode method : methods) {
+			known.add("M " + method.name + " " + method.desc);
+		}
+
+		int added = 0;
+		for(int round = 0; round < MAX_CLOSURE_ROUNDS; round++) {
+			List<FieldNode> moreFields = new ArrayList<>();
+			List<MethodNode> moreMethods = new ArrayList<>();
+			for(MethodNode method : methods) {
+				if(method.instructions == null) {
+					continue;
+				}
+				for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+					String name;
+					String desc;
+					boolean isField;
+					if(insn instanceof FieldInsnNode field) {
+						if(!internalName.equals(field.owner)) {
+							continue;
+						}
+						name = field.name; desc = field.desc; isField = true;
+					} else if(insn instanceof MethodInsnNode call) {
+						if(!internalName.equals(call.owner)) {
+							continue;
+						}
+						name = call.name; desc = call.desc; isField = false;
+					} else {
+						continue;
+					}
+					String key = (isField ? "F " : "M ") + name + " " + desc;
+					if(known.contains(key)) {
+						continue;
+					}
+					known.add(key);
+					if(isField) {
+						for(FieldNode candidate : runtime.fields) {
+							if(candidate.name.equals(name) && candidate.desc.equals(desc)) {
+								moreFields.add(candidate);
+								break;
+							}
+						}
+					} else {
+						for(MethodNode candidate : runtime.methods) {
+							if(candidate.name.equals(name) && candidate.desc.equals(desc)) {
+								moreMethods.add(candidate);
+								break;
+							}
+						}
+					}
+				}
+			}
+			if(moreFields.isEmpty() && moreMethods.isEmpty()) {
+				break;
+			}
+			fields.addAll(moreFields);
+			methods.addAll(moreMethods);
+			added += moreFields.size() + moreMethods.size();
+		}
+		if(added > 0) {
+			System.out.println("  closure added " + added + " depended-on members: " + internalName);
+		}
 	}
 
 	private static int widened(int access) {
