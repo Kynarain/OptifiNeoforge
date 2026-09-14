@@ -327,7 +327,7 @@ public final class OptifineJar {
 	 * Development aid: {@code OptifineJar <jar>} prints the layout, and
 	 * {@code OptifineJar <in> <out> <metadata file>} writes the rewritten copy with the metadata
 	 * read from standard input... which is awkward from a shell, so the second form instead reads
-	 * a template file: {@code OptifineJar <in> <out> <metadata file> <template file>}.
+	 * a template file: {@code OptifineJar <in> <out> <metadata file> <template file> [--no-forge-stubs]}.
 	 */
 	public static void main(String[] args) throws IOException {
 		if(args.length == 1) {
@@ -336,7 +336,7 @@ public final class OptifineJar {
 			OptifineConfig.describe(jar).forEach(line -> System.out.println(line));
 			return;
 		}
-		if(args.length == 4) {
+		if(args.length == 4 || args.length == 5) {
 			Path in = Path.of(args[0]);
 			Path out = Path.of(args[1]);
 			String metadataName = args[2];
@@ -344,14 +344,16 @@ public final class OptifineJar {
 			Layout layout = inspect(in);
 			// The command line prepares a jar for the loader, so it does the whole job: metadata,
 			// installer entries and the obfuscated-namespace variant, plus the Forge API stubs.
-			prepareForLoader(in, out, metadataName, template);
+			// The Forge API stubs fill gaps on lines where NeoForge removed the Forge API; on 1.20.x that API is present, and a shell of the same name would shadow the real class.
+			boolean addForgeStubs = args.length < 5 || !"--no-forge-stubs".equals(args[4]);
+			prepareForLoader(in, out, metadataName, template, addForgeStubs);
 			System.out.println("wrote " + out + " (" + Files.size(out) + " bytes)");
 			System.out.println("was : " + (layout.metadataName() == null ? "(no metadata)" : layout.metadataName()));
 			System.out.println("now : " + inspect(out).metadataName());
 			return;
 		}
 		System.err.println("usage: OptifineJar <jar>");
-		System.err.println("       OptifineJar <in> <out> <metadata file> <template file>");
+		System.err.println("       OptifineJar <in> <out> <metadata file> <template file> [--no-forge-stubs] [--no-forge-stubs]");
 		System.exit(2);
 	}
 }
