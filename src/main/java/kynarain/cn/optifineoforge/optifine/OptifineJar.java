@@ -264,7 +264,7 @@ public final class OptifineJar {
 				target.closeEntry();
 
 				if(addForgeStubs) {
-					for(Map.Entry<String, byte[]> stub : ForgeApiShims.generate(in).entrySet()) {
+					for(Map.Entry<String, byte[]> stub : ForgeApiShims.generate(java.util.List.of(in)).entrySet()) {
 						ZipEntry shim = new ZipEntry(stub.getKey());
 						target.putNextEntry(shim);
 						target.write(stub.getValue());

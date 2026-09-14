@@ -562,3 +562,41 @@ java.lang.NoSuchFieldError: Class net.minecraftforge.client.RenderTypeGroup does
 我们为 Forge 类生成的**空壳**(`ForgeApiShims`)只有类名、没有成员,而 OptiFine 的代码要读 `RenderTypeGroup.EMPTY` 这个静态字段。这就是下一步:让 Forge 空壳带上 OptiFine 真正引用的成员(字段给常量/占位实例,方法给默认返回),而不是只有一个空类 —— 否则每修好一处就会撞上下一个。
 
 另外记一句好消息:这一轮 OptiFine 的功能已经在跑 —— 日志里有 `[OptiFine] ConnectedTextures: optifine/ctm/default/00_glass_white/glass_white.properties`、`CustomItems: Registering sprites`、`BetterGrass: Parsing default configuration`,贴图集也在正常拼接。
+
+### 三处连着的修复,模型终于真的烘焙出来了(2026-09-15 凌晨)
+
+**① Forge 空壳不再是空壳。** `ForgeApiShims` 现在除了类名,还带上 OptiFine 的类**真正读写的成员**:扫 OptiFine jar 里每个 class 的常量池(ASM `visitFieldInsn`/`visitMethodInsn`),把 owner 是 `net/minecraftforge/**` 的字段与方法按签名收集起来,生成到对应空壳里 —— 字段给默认值(null/0/false),方法给默认返回;接口的实例方法保持抽象(谎称能答不如说答不了),引用到的构造器补一个只调 `super()` 的。
+
+这里有个**关键的顺序问题**:需要成员的引用在**打完补丁的游戏类**里(例如 OptiFine 替换后的 `SimpleBakedModel$Builder` 读 `RenderTypeGroup.EMPTY`),而补丁输出是在重打包之后才有的。所以 rig 的构建脚本改成在 patch 步骤之后、用 `ForgeApiShims <输出目录> <patched jar> <OptiFine jar>` **重新生成**一遍空壳,并在合并时丢掉重打包阶段生成的那批空壳(否则会被"只添加不覆盖"的逻辑挡住)。实测:55 个 Forge 类型、54 个成员,`RenderTypeGroup` 现在有 `EMPTY`、`isEmpty()`、`block()`。
+
+**② 构造器也要补。** 修完 ①,下一个错误是:
+
+```
+NoSuchMethodError: 'void SimpleBakedModel.<init>(List, Map, boolean, boolean, boolean,
+  TextureAtlasSprite, ItemTransforms, net.neoforged.neoforge.client.RenderTypeGroup)'
+```
+
+这是 NeoForge 给 `SimpleBakedModel` 加的重载(第八个参数是 **NeoForge** 的 `RenderTypeGroup`),OptiFine 的替换版本只有 **Forge** 类型的那个同名重载;而我们补回来的 `SimpleBakedModel$Builder.build(...)` 正是要调 NeoForge 这个。计划里原先一句 `continue` 把所有 `<init>` 都跳过了("constructors are handled by the targeted fixes"),现在改成**构造器也进计划**,但有一条硬规则:**构造器不合格就不补,绝不打桩** —— 空构造器不会连 `super`,整个类都过不了验证,补一个坏的还不如不补(会打印 `constructor not restorable`)。计划成员数从 124 涨到 132(含这个构造器)。
+
+顺带修了一个会**互相打架**的地方:补字段的初始化方法此前会被插进**每个**构造器的每个 `RETURN` 之前,包括刚补进来的那个构造器 —— 而那个构造器自己已经赋了值,初始化方法再把默认值写回去,等于把值抹掉。现在只对那些**没有自己赋值**的字段插初始化调用。
+
+**结果(实测)**:模型链彻底通了 ——
+
+```
+result ModelBakery.bakeModels: missingModel=SimpleBakedModel, blockStates=27870
+leave ModelManager.apply: missingModel=SimpleBakedModel, blockStates=27870
+[OptiFine] Animated sprites: 2
+Created: 1024x1024x4 minecraft:textures/atlas/blocks.png-atlas
+Sound engine started
+```
+
+`missingModel` 是一个真的 `SimpleBakedModel`(不再是 null),方块贴图集 1024x1024 也建出来了,rig 判定 **`STARTED`**。
+
+**新的第一因(未解决)**:贴图集拼接报错,游戏随后自行恢复:
+
+```
+net.minecraft.ReportedException: Stitching texture atlas
+Caused by: java.lang.IllegalStateException: Image is not allocated.
+```
+
+这条大概率在 OptiFine 的自定义贴图/连接纹理路径上(`CustomItems`/`ConnectedTextures` 这一轮已经在跑),下一轮从这里开始。

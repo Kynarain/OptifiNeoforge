@@ -123,9 +123,23 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 		}
 		if(!initialisers.isEmpty()) {
 			// A restored field needs the assignment NeoForge's own class would have made; the donor
-			// carries that sequence as a static method, and every constructor calls it once.
+			// carries that sequence as a static method, and every constructor calls it once - except
+			// for the fields that constructor assigns itself. A restored constructor does exactly
+			// that, and calling the initialiser there afterwards would overwrite the value it just
+			// stored with the initialiser's default.
 			for(MethodNode constructor : input.methods) {
 				if(!"<init>".equals(constructor.name) || constructor.instructions == null) {
+					continue;
+				}
+				Set<String> assigned = assignedFields(constructor, input.name);
+				List<String> wanted = new ArrayList<>();
+				for(String name : initialisers) {
+					String field = name.substring(MemberRestorePlan.INITIALISER_PREFIX.length());
+					if(!assigned.contains(field)) {
+						wanted.add(name);
+					}
+				}
+				if(wanted.isEmpty()) {
 					continue;
 				}
 				for(AbstractInsnNode insn = constructor.instructions.getFirst(); insn != null; insn = insn.getNext()) {
@@ -134,7 +148,7 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 					}
 					InsnList call = new InsnList();
 					call.add(new VarInsnNode(Opcodes.ALOAD, 0));
-					for(String name : initialisers) {
+					for(String name : wanted) {
 						call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, input.name, name, "(L" + input.name + ";)V", false));
 					}
 					constructor.instructions.insertBefore(insn, call);
@@ -173,6 +187,21 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 			}
 		}
 		return false;
+	}
+
+	/** The names of the fields one constructor assigns on its own class. */
+	private static Set<String> assignedFields(MethodNode constructor, String owner) {
+		Set<String> assigned = new LinkedHashSet<>();
+		if(constructor.instructions == null) {
+			return assigned;
+		}
+		for(AbstractInsnNode insn = constructor.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if(insn instanceof org.objectweb.asm.tree.FieldInsnNode field
+					&& field.getOpcode() == Opcodes.PUTFIELD && owner.equals(field.owner)) {
+				assigned.add(field.name);
+			}
+		}
+		return assigned;
 	}
 
 	private static boolean hasMethod(ClassNode node, String name, String descriptor) {

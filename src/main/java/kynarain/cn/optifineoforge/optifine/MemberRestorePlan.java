@@ -307,14 +307,17 @@ public final class MemberRestorePlan {
 		}
 		List<MethodNode> missing = new ArrayList<>();
 		for(MethodNode method : theirs.methods) {
-			if("<clinit>".equals(method.name) || "<init>".equals(method.name)) {
-				continue; // constructors are handled by the targeted fixes
+			if("<clinit>".equals(method.name)) {
+				continue; // a class initialiser cannot be copied without the class it initialises
 			}
 			if(method.name.startsWith("lambda$") || method.name.startsWith("access$")) {
 				continue; // synthetic
 			}
 			String key = method.name + " " + method.desc;
 			if(!present.containsKey(key)) {
+				// Constructors count. NeoForge adds overloads of its own - SimpleBakedModel gained an
+				// eight-argument constructor taking a NeoForge RenderTypeGroup - and code restored
+				// from NeoForge calls them, so a replacement without them fails at the first bake.
 				missing.add(method);
 			}
 		}
@@ -348,6 +351,13 @@ public final class MemberRestorePlan {
 		for(MethodNode method : methods) {
 			boolean fits = referencesOnlyExisting(method, internalName, replacement, fields, methods)
 					&& !STUB_ONLY.contains(internalName + " " + method.name + " " + method.desc);
+			if(!fits && "<init>".equals(method.name)) {
+				// A constructor cannot be stubbed: an empty one never chains to super, so the class
+				// would not verify at all, and a caller that needed the constructor is no worse off
+				// without it than with a broken one. Left out, and said so.
+				System.out.println("  constructor not restorable: " + internalName + "." + method.desc);
+				continue;
+			}
 			MethodNode copy = new MethodNode(widened(method.access), method.name, method.desc, method.signature,
 					method.exceptions == null ? null : method.exceptions.toArray(new String[0]));
 			method.accept(copy);
