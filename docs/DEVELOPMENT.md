@@ -450,11 +450,42 @@ java.lang.UnsupportedOperationException: Path not associated with default file s
 
 修完这两条,rig 判定标记第一次走到 **`Sound engine started`**,资源重载跑完,崩溃点推进到渲染加载界面。
 
-**新的第一因(未解决):`ClientLanguage.componentStorage` 补回来了但没有值。** 计划为 `net/minecraft/client/resources/language/ClientLanguage` 补了字段 `componentStorage` 和两个方法(`appendFrom`、`getComponent`,都来自 NeoForge 客户端 jar 的供体),但 `Initialised ... restored fields` 里没有这个类:供体的赋值在 3 参构造器里是 `this.componentStorage = <第 3 个参数>`,片段读了局部变量(参数),按现有"只允许 slot 0"的规则被拒,字段保持 null,供体版 `getComponent` 一读就 NPE:
+**新的第一因(随后修掉,见下一节):`ClientLanguage.componentStorage` 补回来了但没有值。** 计划为 `net/minecraft/client/resources/language/ClientLanguage` 补了字段 `componentStorage` 和两个方法(`appendFrom`、`getComponent`,都来自 NeoForge 客户端 jar 的供体),但 `Initialised ... restored fields` 里没有这个类:供体的赋值在 3 参构造器里是 `this.componentStorage = <第 3 个参数>`,片段读了局部变量(参数),按现有"只允许 slot 0"的规则被拒,字段保持 null,供体版 `getComponent` 一读就 NPE:
 
 ```
 NullPointerException: Cannot invoke "java.util.Map.get(Object)" because "this.componentStorage" is null
   at ClientLanguage.getComponent(ClientLanguage.java:103)
 ```
 
-值得记下的是 OptiFine 的 `ClientLanguage` 是 **1.21.1 形状**(只有 2 参构造器、`appendFrom(String, List, Map)`、`getLanguageData()`),既没有 `componentStorage` 也没有 `loadFromJson` —— 说明这两个是 NeoForge 补丁成员,数据源在 NeoForge 自己的装载路径里。因此补一个"空 map 默认值"只是把 NPE 换成"翻译查不到",真正要做的是二者之一:**把带构造器参数赋值的片段也搬进供体**(为每个字段生成带参数的方法,按描述符在对应构造器里调用),或者**整类还原 NeoForge 形状**。
+值得记下的是 OptiFine 的 `ClientLanguage` 是 **1.21.1 形状**(只有 2 参构造器、`appendFrom(String, List, Map)`、`getLanguageData()`),既没有 `componentStorage` 也没有 `loadFromJson` —— 说明这两个是 NeoForge 补丁成员,数据源在 NeoForge 自己的装载路径里。顺带确认了"空 map 默认值"是安全的:NeoForge 的 `TranslatableContents.decompose` 拿到 null 就退回字符串查找(`getOrDefault`),并不会因此出错。
+
+### 补字段的第三个来源:委托构造器里的默认值(2026-09-14 晚)
+
+上面那条最后选了更小的做法:**值直接从"本类自己的短构造器"里取**。NeoForge 的 `ClientLanguage` 有两个构造器,3 参的那个 `this.componentStorage = <第 3 个参数>`,而 2 参的那个用 `Map.of()` 委托过去 —— 也就是说**当类里没有 3 参构造器时,NeoForge 自己认定的默认值就是 `Map.of()`**。
+
+`MemberRestorePlan` 现在这样处理:赋值右边**正好是一个参数加载**时(其余情形仍走原来的"直线段搬迁"),去找同类的另一个构造器对同一个 `<init>` 的委托调用,把那个位置上的实参取出来当默认值。实参只接受"单条、不需要从栈上取东西"的指令(常量、`GETSTATIC`、`NEW`、局部变量加载、零参 `INVOKESTATIC`),否则放弃并保持原样 —— 宁可留空也不猜。对 `ClientLanguage` 生成的正是:
+
+```
+public static void optifineoforge$init$componentStorage(ClientLanguage self) {
+    self.componentStorage = Map.of();
+}
+```
+
+这里还有一个小坑值得记:**局部变量加载必须算作"压栈而不弹栈"**。第一版把 `ILOAD/ALOAD` 一律判为不合格,于是"先读参数再委托"的构造器整个被否掉,`Map.of()` 那一路根本没被看到 —— 表现为供体里就是没有初始化方法。查这种问题不需要启动游戏,`javap` 供体类文件一眼就能看到。
+
+### 现状:游戏能启动并停在主循环(2026-09-14 晚)
+
+补上这条之后 rig 的判定第一次是 **`STARTED`**(不是崩溃):`OpenAL initialized` → `Sound engine started`,贴图集逐个建成并伴随 OptiFine 自己的日志(**`[OptiFine] Animated sprites: 0`**、`[OptiFine] Scaled too small texture: minecraft:missingno`),进程持续运行到 rig 主动结束,并留下了截图。
+
+首轮资源重载仍然报一次错,但**没有把游戏打掉**:
+
+```
+NullPointerException: BakedModel.getParticleIcon() ... BlockModelShaper.getBlockModel(BlockState) is null
+  at LiquidBlockRenderer.setupSprites(LiquidBlockRenderer.java:43)
+  at BlockRenderDispatcher.onResourceManagerReload(BlockRenderDispatcher.java:157)
+  at ResourceManagerReloadListener.lambda$reload$0(ResourceManagerReloadListener.java:16)
+```
+
+随后是 `Caught error loading resourcepacks, removing all selected resourcepacks`,游戏自己重试第二轮重载,第二轮贴图集正常建完 —— 也就是说**模型确实被烘焙过,只是第一轮里 `BlockRenderDispatcher` 的应用阶段跑在了 `ModelManager.apply` 之前**(两边的 `missingModel` 都只在 `apply(ReloadState, ProfilerFiller)` 里赋值,`javap` 已确认),`getModel` 于是拿 `missingModel` 这个 null 当兜底返回。第二轮能好,说明问题出在**第一轮的监听器集合/顺序**上,而不是模型数据本身。
+
+这条是下一轮的第一件事:把 `ReloadableResourceManager`(OptiFine 也替换了它,`ReloadableResourceManagerFix` 补的正是 NeoForge 的 `getListeners`/`updateListenersFrom`)在首轮重载时实际使用的监听器顺序打出来,与 `ModelManager`/`BlockRenderDispatcher` 的应有次序对照。

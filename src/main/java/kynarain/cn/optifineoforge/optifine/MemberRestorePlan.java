@@ -24,6 +24,7 @@ import java.util.zip.ZipFile;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
@@ -31,11 +32,14 @@ import org.objectweb.asm.tree.FrameNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.IntInsnNode;
 import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
+import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.LineNumberNode;
 import org.objectweb.asm.tree.LookupSwitchInsnNode;
 import org.objectweb.asm.tree.TableSwitchInsnNode;
+import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
@@ -462,6 +466,16 @@ public final class MemberRestorePlan {
 	 * it cannot be moved without also moving the code the branch came from. Anything else is left
 	 * null and said so, rather than guessed at.</p>
 	 *
+	 * <p>A field that is only ever assigned from a constructor parameter has no slice to lift: the
+	 * value belongs to a caller, and OptiFine's compilation of the class need not even have that
+	 * constructor. {@code ClientLanguage.componentStorage} is the case that found this - NeoForge
+	 * added the field, its three-argument constructor fills it from an argument, and OptiFine's
+	 * two-argument constructor never had one. There the value is taken from the class's own shorter
+	 * constructor instead: NeoForge's two-argument {@code ClientLanguage} delegates with
+	 * {@code Map.of()}, so that is the default a replacement without the longer constructor gets.
+	 * The substitute is only accepted when the delegating call's arguments are each a single
+	 * instruction that needs nothing from the stack, which keeps the reasoning visible.</p>
+	 *
 	 * @return a static method taking the instance, or {@code null} when nothing safe was found
 	 */
 	private static MethodNode initialiser(ClassNode runtime, String internalName, FieldNode field) {
@@ -474,6 +488,17 @@ public final class MemberRestorePlan {
 					continue;
 				}
 				if(!internalName.equals(store.owner) || !field.name.equals(store.name) || !field.desc.equals(store.desc)) {
+					continue;
+				}
+
+				AbstractInsnNode previous = skipPseudo(insn.getPrevious());
+				if(previous instanceof VarInsnNode load && isLoad(load.getOpcode()) && load.var > 0) {
+					// this.field = <constructor parameter>: nothing in this constructor can stand in
+					// for the caller's value, so borrow the one the class passes when delegating here.
+					List<AbstractInsnNode> delegated = delegatedArgument(runtime, internalName, constructor, load.var - 1);
+					if(delegated != null) {
+						return initialiserFrom(internalName, field, delegated);
+					}
 					continue;
 				}
 
@@ -491,24 +516,134 @@ public final class MemberRestorePlan {
 					}
 					slice.add(0, back);
 				}
-				if(!safe || slice.isEmpty()) {
-					continue;
+				if(safe && !slice.isEmpty()) {
+					return initialiserFrom(internalName, field, slice);
 				}
-
-				MethodNode initialiser = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-						INITIALISER_PREFIX + field.name, "(L" + internalName + ";)V", null, null);
-				for(AbstractInsnNode step : slice) {
-					initialiser.instructions.add(step);
-				}
-				initialiser.instructions.add(new FieldInsnNode(Opcodes.PUTFIELD, internalName, field.name, field.desc));
-				initialiser.instructions.add(new InsnNode(Opcodes.RETURN));
-				initialiser.maxStack = 8;
-				initialiser.maxLocals = 1;
-				return initialiser;
 			}
 		}
 		return null;
 	}
+
+	/** Wraps a value-producing run into the assignment helper the transformer calls. */
+	private static MethodNode initialiserFrom(String internalName, FieldNode field, List<AbstractInsnNode> value) {
+		MethodNode initialiser = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+				INITIALISER_PREFIX + field.name, "(L" + internalName + ";)V", null, null);
+		initialiser.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+		for(AbstractInsnNode step : value) {
+			initialiser.instructions.add(step);
+		}
+		initialiser.instructions.add(new FieldInsnNode(Opcodes.PUTFIELD, internalName, field.name, field.desc));
+		initialiser.instructions.add(new InsnNode(Opcodes.RETURN));
+		initialiser.maxStack = 8;
+		initialiser.maxLocals = 1;
+		return initialiser;
+	}
+
+	/**
+	 * The value another constructor of the same class passes for one argument of {@code assigning}.
+	 *
+	 * @param argumentIndex the argument, counted from zero, that the delegated constructor assigns
+	 * @return the single instruction producing it, or {@code null} when no such constructor exists
+	 */
+	private static List<AbstractInsnNode> delegatedArgument(ClassNode runtime, String internalName,
+			MethodNode assigning, int argumentIndex) {
+		Type[] arguments = Type.getArgumentTypes(assigning.desc);
+		if(argumentIndex < 0 || argumentIndex >= arguments.length) {
+			return null;
+		}
+		for(MethodNode delegator : runtime.methods) {
+			if(!"<init>".equals(delegator.name) || delegator == assigning || delegator.instructions == null) {
+				continue;
+			}
+			for(AbstractInsnNode insn = delegator.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+				if(!(insn instanceof MethodInsnNode call) || call.getOpcode() != Opcodes.INVOKESPECIAL
+						|| !internalName.equals(call.owner) || !"<init>".equals(call.name)
+						|| !assigning.desc.equals(call.desc)) {
+					continue;
+				}
+				List<AbstractInsnNode> producers = simpleArguments(call, arguments.length);
+				if(producers == null) {
+					continue;
+				}
+				AbstractInsnNode producer = producers.get(argumentIndex);
+				if(producer instanceof VarInsnNode) {
+					continue; // the delegating constructor only forwards another parameter
+				}
+				List<AbstractInsnNode> value = new ArrayList<>();
+				value.add(producer);
+				return value;
+			}
+		}
+		return null;
+	}
+
+	/** The instructions producing a call's arguments, in argument order, or null if not each simple. */
+	private static List<AbstractInsnNode> simpleArguments(AbstractInsnNode call, int count) {
+		List<AbstractInsnNode> backwards = new ArrayList<>();
+		for(AbstractInsnNode back = call.getPrevious(); back != null && backwards.size() < count; back = back.getPrevious()) {
+			back = skipPseudo(back);
+			if(back == null) {
+				break;
+			}
+			if(!pushesWithoutPopping(back)) {
+				return null;
+			}
+			backwards.add(back);
+		}
+		if(backwards.size() < count) {
+			return null;
+		}
+		List<AbstractInsnNode> producers = new ArrayList<>(count);
+		for(int argument = 0; argument < count; argument++) {
+			producers.add(backwards.get(count - 1 - argument));
+		}
+		return producers;
+	}
+
+	/** Whether one instruction puts a value on the stack while needing nothing from it. */
+	private static boolean pushesWithoutPopping(AbstractInsnNode insn) {
+		if(insn instanceof VarInsnNode load) {
+			return isLoad(load.getOpcode()); // a parameter or local, put there by whoever called in
+		}
+		if(insn instanceof InsnNode constant) {
+			int opcode = constant.getOpcode();
+			return opcode == Opcodes.ACONST_NULL || (opcode >= Opcodes.ICONST_M1 && opcode <= Opcodes.ICONST_5)
+					|| opcode == Opcodes.LCONST_0 || opcode == Opcodes.LCONST_1
+					|| (opcode >= Opcodes.FCONST_0 && opcode <= Opcodes.FCONST_2)
+					|| opcode == Opcodes.DCONST_0 || opcode == Opcodes.DCONST_1;
+		}
+		if(insn instanceof IntInsnNode immediate) {
+			return immediate.getOpcode() == Opcodes.BIPUSH || immediate.getOpcode() == Opcodes.SIPUSH;
+		}
+		if(insn instanceof LdcInsnNode) {
+			return true;
+		}
+		if(insn instanceof FieldInsnNode field) {
+			return field.getOpcode() == Opcodes.GETSTATIC;
+		}
+		if(insn instanceof TypeInsnNode type) {
+			return type.getOpcode() == Opcodes.NEW;
+		}
+		if(insn instanceof MethodInsnNode call) {
+			return call.getOpcode() == Opcodes.INVOKESTATIC
+					&& Type.getArgumentTypes(call.desc).length == 0
+					&& Type.getReturnType(call.desc).getSort() != Type.VOID;
+		}
+		return false;
+	}
+
+	private static boolean isLoad(int opcode) {
+		return opcode >= Opcodes.ILOAD && opcode <= Opcodes.ALOAD;
+	}
+
+	/** The next instruction that is real code rather than position information. */
+	private static AbstractInsnNode skipPseudo(AbstractInsnNode insn) {
+		while(insn instanceof LineNumberNode || insn instanceof FrameNode) {
+			insn = insn.getPrevious();
+		}
+		return insn;
+	}
+
 	private static boolean isPlannedMember(List<FieldNode> plannedFields, List<MethodNode> plannedMethods, String name, String desc) {
 		if(desc.startsWith("(")) {
 			for(MethodNode method : plannedMethods) {
