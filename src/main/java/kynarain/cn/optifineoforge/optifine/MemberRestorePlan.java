@@ -282,7 +282,14 @@ public final class MemberRestorePlan {
 		List<FieldNode> missing = new ArrayList<>();
 		for(FieldNode field : theirs.fields) {
 			// Enum constants and compiler-generated fields are not worth restoring.
-			if(!present.containsKey(field.name + " " + field.desc) && !field.name.startsWith("$") && !field.name.startsWith("this$")) {
+			// Capture fields of lambdas are compiler-generated and carry values only the lambda that
+			// owns them knows: restoring one as null hands that lambda a null it never expected. Gui
+			// and Util were full of these, and NeoForge's own mod failed to construct with
+			// "Cannot invoke TagKey.toString() because tag2 is null" - a captured tag, filled back in
+			// as null.
+			boolean synthetic = field.name.startsWith("$") || field.name.startsWith("this$")
+					|| field.name.startsWith("val$") || (field.access & Opcodes.ACC_SYNTHETIC) != 0;
+			if(!present.containsKey(field.name + " " + field.desc) && !synthetic) {
 				missing.add(field);
 			}
 		}

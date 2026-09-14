@@ -404,3 +404,57 @@ IllegalAccessError: Update to non-static final field ModelManager.modelBakery at
 补字段时去掉 `final` 即可(语义上仍是"构造期赋值一次")。
 
 修完这两处,启动回到**同一个模型链阻塞点**,但路面已经明显不同:真身比例大幅提高(`Gui` 17 个成员 + 1 个字段初始化、`ModelManager` 5 个成员 + 1 个字段初始化、`ClientLevel` 10 个成员……),而且**不再有 VerifyError / IllegalAccessError / 供体读取失败**这类结构性错误。
+
+### 两个真正的第一因:Forge 标签助手与 union 文件系统(2026-09-14 晚)
+
+模型链的 null 一直不是第一因,下面两条才是 —— 两条都**不是**"缺成员",所以成员补全这一步永远看不到它们。
+
+**① `ItemTags.create(String, String)`:Forge 的助手,NeoForge 没有。** 完整栈第一次读完才看清:
+
+```
+Failed to create mod instance. ModID: neoforge, class net.neoforged.neoforge.common.NeoForgeMod
+Caused by: NullPointerException: Cannot invoke "TagKey.toString()" because "tag2" is null
+  at TagConventionLogWarning.createForgeMapEntry(TagConventionLogWarning.java:557)
+  at TagConventionLogWarning.<clinit>(TagConventionLogWarning.java:200)
+```
+
+`<clinit>` 第 200 行是 `Tags.Items.DYES_BLACK`,而它是 `DyeColor.BLACK.getTag()`。OptiFine 的 DyeColor 构造器里写着:
+
+```
+Reflector.ForgeItemTags_create.call("forge", "dyes/" + name)  ->  this.dyesTag
+```
+
+`ForgeItemTags_create` 是 `net.minecraft.tags.ItemTags.create(String, String)`,Forge 给 `ItemTags` 补的助手。NeoForge 的 `ItemTags` 只有 `create(ResourceLocation)`,反射找不到方法就返回 null,于是两个标签字段都是 null。NeoForge 自己把这个值当作约定标签,静态初始化直接 NPE,`neoforge` 这个 mod 构造失败,接下来就是上百行
+
+```
+Cowardly refusing to send event net.neoforged.neoforge.client.event.* to a broken mod state
+```
+
+NeoForge 的客户端事件全部不再派发(模型烘焙相关的事件也在其中),所以"模型是 null"是这条链的末端症状。
+
+修法是**把方法补回去**,而不是改 OptiFine 的调用点(调用点可能不止一处,而反射只需要方法存在):新增 `TagHelperFix`,向 `net.minecraft.tags.ItemTags` 注入 `create(String, String)`,内部委托 NeoForge 已有的 `create(ResourceLocation)`;命名空间 `forge` 交给 `ConventionTags` 按版本映射(`1.21+` → `c`, `1.20.x` → `forge`),这样 OptiFine 拿到的标签与 NeoForge 自己的 `Tags` 完全一致。修复后 `Failed to create mod instance` 与 `Cowardly refusing` 全部消失,启动第一次越过 mod 构造。
+
+**② `Path.toFile()`:在 union 文件系统上会抛。** 下一个栈是:
+
+```
+java.lang.UnsupportedOperationException: Path not associated with default file system.
+  at java.nio.file.Path.toFile(Path.java:772)
+  at net.optifine.util.ResUtils.collectFiles(ResUtils.java:104)
+  at net.optifine.CustomItems.update(CustomItems.java:168)
+  at net.optifine.util.TextureUtils.resourcesPreReload(TextureUtils.java:315)
+```
+
+`ResUtils.collectFiles` 按包类型分流:目录包走 `File` 遍历,zip 包走解压,而 `PathPackResources` 只做 `root.toFile()`。Forge 时代 mod 资源就是磁盘目录,这一句成立;NeoForge 的 mod 资源在 jar 的 union 文件系统里,这一句直接抛异常,而且发生在**初始资源重载**里,游戏在构造 `Minecraft` 时就死了。
+
+修法:新增 `PackRootsFix`(只改调用点,保留 OptiFine 其余分流逻辑)与 `PackRoots.toFile`,依次尝试三条路 —— `path.toFile()`;从 union 字符串(`union:/.../mod.jar%23214!/assets`)还原出底层 jar 或目录并交给 OptiFine 的 zip 分支;都不行就把整棵子树复制到临时目录(退出时清理)。全失败返回 null,OptiFine 视为"这个包没有可用文件" —— 丢一个自定义物品目录远好过拒绝启动。全 jar 扫描确认 OptiFine 里只有两个类调用 `Path.toFile`:`ResUtils` 与 `OptiFineTransformationService`(后者的调用在重打包阶段已被 `OptifineJarFixer` 改写)。
+
+修完这两条,rig 判定标记第一次走到 **`Sound engine started`**,资源重载跑完,崩溃点推进到渲染加载界面。
+
+**新的第一因(未解决):`ClientLanguage.componentStorage` 补回来了但没有值。** 计划为 `net/minecraft/client/resources/language/ClientLanguage` 补了字段 `componentStorage` 和两个方法(`appendFrom`、`getComponent`,都来自 NeoForge 客户端 jar 的供体),但 `Initialised ... restored fields` 里没有这个类:供体的赋值在 3 参构造器里是 `this.componentStorage = <第 3 个参数>`,片段读了局部变量(参数),按现有"只允许 slot 0"的规则被拒,字段保持 null,供体版 `getComponent` 一读就 NPE:
+
+```
+NullPointerException: Cannot invoke "java.util.Map.get(Object)" because "this.componentStorage" is null
+  at ClientLanguage.getComponent(ClientLanguage.java:103)
+```
+
+值得记下的是 OptiFine 的 `ClientLanguage` 是 **1.21.1 形状**(只有 2 参构造器、`appendFrom(String, List, Map)`、`getLanguageData()`),既没有 `componentStorage` 也没有 `loadFromJson` —— 说明这两个是 NeoForge 补丁成员,数据源在 NeoForge 自己的装载路径里。因此补一个"空 map 默认值"只是把 NPE 换成"翻译查不到",真正要做的是二者之一:**把带构造器参数赋值的片段也搬进供体**(为每个字段生成带参数的方法,按描述符在对应构造器里调用),或者**整类还原 NeoForge 形状**。
