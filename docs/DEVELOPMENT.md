@@ -861,3 +861,24 @@ upload call is about to upload, which is the "Image is not allocated" failure.
 
 The fix to make next: restore a planned member by replacing an existing body of the
 same name and descriptor, not only adding it when absent.
+## 2026-09-15: two fixes, and the first clean resource reload
+
+Fix 1 - ReloadableResourceManagerFix wrote updateListenersFrom with addAll, which
+appended the sorted list to the listeners NeoForge had already registered (22 -> 48)
+instead of replacing them. Clearing first measures 22 before, 26 returned by the
+sort, 26 after, and the reload runs 28 listeners instead of 50. The reason the
+method could not simply assign the field is real and stays: OptiFine's copy declares
+it final, so the contents are replaced rather than the field assigned.
+
+Fix 2 - the Forge shell for net.minecraftforge.client.RenderTypeGroup exposed EMPTY
+as null, and OptiFine calls isEmpty() on it. ForgeApiShims now gives every static
+field whose type is its own class an instance in <clinit> (that is what such a
+constant is), and a shell that is asked isEmpty() records which constructor produced
+it: the no-argument one means it stands for the empty constant, any other means a
+group OptiFine built, so isEmpty() answers correctly instead of guessing.
+
+Measured on the 1.21.4 rig after both fixes: reload 1 runs 28 listeners, the
+1024x1024 block atlas is created, Sound engine started, and the log holds no
+"Caught error loading resourcepacks", no NullPointerException, no "Failed to wait"
+and no "Image is not allocated" - the atlas failure that started this whole line of
+investigation is gone.
