@@ -55,6 +55,24 @@ import org.objectweb.asm.tree.MethodNode;
 public final class MemberRestorePlan {
 	/** The patcher writes OptiFine's classes here. */
 	private static final String PATCHED_ROOT = "srg/";
+	/** Where the environment assertions live that a copied body has to be freed of. */
+	private static final String RENDER_SYSTEM = "com/mojang/blaze3d/systems/RenderSystem";
+
+	/**
+	 * Members whose donor body must not be used, only stubbed.
+	 *
+	 * <p>NeoForge's GL state backup is called before the render thread is registered, and a body
+	 * that does the real work walks into code that asserts otherwise - "Rendersystem called from
+	 * wrong thread" - while the do-nothing stub merely leaves the state alone. Measured: with the
+	 * real body the launch died at 10s, with the stub it reached 60s. Neither is right; restoring
+	 * the state machine properly is a separate piece of work, so these four keep the stub for now.
+	 * </p>
+	 */
+	private static final java.util.Set<String> STUB_ONLY = java.util.Set.of(
+			"com/mojang/blaze3d/systems/RenderSystem backupGlState (Lnet/neoforged/neoforge/client/GlStateBackup;)V",
+			"com/mojang/blaze3d/systems/RenderSystem restoreGlState (Lnet/neoforged/neoforge/client/GlStateBackup;)V",
+			"com/mojang/blaze3d/platform/GlStateManager _backupGlState (Lnet/neoforged/neoforge/client/GlStateBackup;)V",
+			"com/mojang/blaze3d/platform/GlStateManager _restoreGlState (Lnet/neoforged/neoforge/client/GlStateBackup;)V");
 
 	private MemberRestorePlan() {
 	}
@@ -142,11 +160,21 @@ public final class MemberRestorePlan {
 			// verify and takes the whole class down with it. Only bodies whose own-class references
 			// all exist in the replacement are copied; the rest fall back to a default-value stub,
 			// which is logged so the difference stays visible.
-			boolean fits = referencesOnlyExisting(method, internalName, replacement);
+			boolean fits = referencesOnlyExisting(method, internalName, replacement)
+					&& !STUB_ONLY.contains(internalName + " " + method.name + " " + method.desc);
 			MethodNode copy = new MethodNode(widened(method.access), method.name, method.desc, method.signature,
 					method.exceptions == null ? null : method.exceptions.toArray(new String[0]));
 			method.accept(copy);
-			if(!fits) {
+			if(fits) {
+				// A body that asserts which thread it runs on cannot be copied as it stands: the
+				// caller here is NeoForge's own code, which reaches some of these before the render
+				// thread is registered - the assertion then fires where the original class would
+				// simply have done the work. The assertion is dropped and the rest of the body kept.
+				int stripped = stripEnvironmentAsserts(copy);
+				if(stripped > 0) {
+					System.out.println("  assertions dropped (" + stripped + "): " + internalName + "." + method.name + method.desc);
+				}
+			} else {
 				copy.instructions = stubBody(method.desc);
 				copy.tryCatchBlocks.clear();
 				copy.localVariables = null;
@@ -220,6 +248,31 @@ public final class MemberRestorePlan {
 			default -> { body.add(new InsnNode(Opcodes.ACONST_NULL)); body.add(new InsnNode(Opcodes.ARETURN)); }
 		}
 		return body;
+	}
+
+	/**
+	 * Removes the no-argument environment assertions from a copied body.
+	 *
+	 * <p>They are static calls with no arguments, so dropping the instruction leaves the stack
+	 * balanced; only calls whose name starts with {@code assert} and which return void are touched.</p>
+	 *
+	 * @return how many were dropped
+	 */
+	private static int stripEnvironmentAsserts(MethodNode method) {
+		if(method.instructions == null) {
+			return 0;
+		}
+		int dropped = 0;
+		for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null;) {
+			AbstractInsnNode next = insn.getNext();
+			if(insn instanceof MethodInsnNode call && "()V".equals(call.desc) && call.name.startsWith("assert")
+					&& RENDER_SYSTEM.equals(call.owner)) {
+				method.instructions.remove(insn);
+				dropped++;
+			}
+			insn = next;
+		}
+		return dropped;
 	}
 
 	private static int widened(int access) {

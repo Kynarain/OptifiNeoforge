@@ -220,3 +220,22 @@ java.lang.IllegalStateException: Rendersystem called from wrong thread
 - 而带线程/环境断言的成员(如 `RenderSystem` 的两个状态方法)两边都不对:桩破坏状态机,真身断言失败。这类需要**按调用环境改写**(把断言去掉,或改成 `GlStateManager` 的直接调用)。
 
 下一步:给供体生成加一条**按成员分类**的规则 —— 方法体里出现 `assertOnRenderThread` 一类环境断言的,先剥掉这层断言再复制(而不是退回桩),并把这批方法在日志里单列。
+
+### 定位一次误判:"wrong thread" 其实是次生错误(2026-09-14)
+
+加了断言剥离(复制方法体前去掉 `RenderSystem.assert*` 这类无参环境断言)之后,启动仍是 10 秒退出,报的还是那句 `Rendersystem called from wrong thread`。**但这次把完整栈翻出来了,发现它不是根因**:
+
+```
+java.lang.IllegalStateException: Rendersystem called from wrong thread
+  at com.mojang.blaze3d.systems.RenderSystem.constructThreadException(RenderSystem.java:142)
+  at com.mojang.blaze3d.systems.RenderSystem.assertOnRenderThread(RenderSystem.java:136)
+  at com.mojang.blaze3d.systems.RenderSystem.getCapsString(RenderSystem.java:564)
+  at net.minecraft.SystemReport.setDetail(SystemReport.java:70)
+  at net.minecraft.client.Minecraft.fillSystemReport(Minecraft.java:2334)
+  at net.minecraft.client.Minecraft.fillReport(Minecraft.java:2307)
+  at net.minecraft.client.main.Main.main(Main.java:200)
+```
+
+`Main.main` 走进 `fillReport` 说明**在它之前就已经有一次异常**,而这次断言失败发生在**组装崩溃报告**的时候(主线程读 GL 能力字符串)。也就是说:真正要查的是它之前那个异常,而这个"wrong thread"只是它的影子。
+
+教训:失败的栈要**从头看**,不能只看最后一条消息 —— 上一步据此得出的"供体真身更差"的结论需要重新验证。下一步:在完整 stderr 里找 `Main.main` 之前的第一处异常(可能在 mod 加载或 `Minecraft.run` 的早期),再决定成员的补法。
