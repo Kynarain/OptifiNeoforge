@@ -656,3 +656,19 @@ reload 1: 50 listeners
 调用链也读清了:`ClientHooks.initClientHooks(Minecraft, ReloadableResourceManager)` 里 `new AddClientReloadListenersEvent(resourceManager)` → `ModLoader.postEvent(event)` → `resourceManager.updateListenersFrom(event)`,而这个事件的构造器就是把 `ReloadableResourceManager.getListeners()`(那 22 个)交给 `SortedReloadListenerEvent`。
 
 也就是:**当 `getListeners()` 里已经有原版监听器时,NeoForge 的这条排序路径会把它们再算一遍**。下一轮要读的是 `SortedReloadListenerEvent` 的图/注册表构建与 `ReloadListenerSort.sortListeners`,确认原版那一组是从哪里第二次进来的,再决定修在我们这边(例如事件构造前让 `getListeners()` 只给出模组新增的那些)还是在替换类上补一个等价物。
+
+### 排序内部:两个待验的机制(2026-09-15 凌晨)
+
+上面两条路都读过了,结论是**它们都不可能凭空产生重复**,于是把范围压到两种机制之一,下一轮用一个探针就能分开:
+
+- `SortedReloadListenerEvent` 的构造器(`neoforge-...-universal.jar`)对传进来的清单逐个调用
+  `addListener(nameLookup.apply(listener), listener)`,而 `addListener` 往 `LinkedHashMap registry` 里放 —— **同一个 key 只会覆盖,不会重复**;
+- `ReloadListenerSort.sortListeners` 最后是
+  `TopologicalSort.topologicalSort(graph, comparingInt(order))`,输入是 guava 的 `MutableGraph`,而 guava 图是**节点的集合,重复节点会被合并**。
+
+也就是说,要让排序结果里出现两遍原版监听器,只能是下面二者之一:
+
+1. **两遍的 key 不同**(例如 `getNameForClass` 前后返回不同的名字),于是 `registry` 与图中同时留下两组、每组 22 个;
+2. **NeoForge 内部还有一份原版监听器的来源**(例如 `VanillaClientListeners` 自己往图里注册了一遍),与游戏注册的那 22 个各自成组。
+
+区分办法很直接:在 `updateListenersFrom` 返回处把结果清单**按对象身份**(`System.identityHashCode`)打出来 —— 如果两组 22 个的 identity 相同,就是机制 1;如果 identity 不同,就是机制 2(两组是不同实例)。这比继续读字节码快得多。
