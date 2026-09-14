@@ -21,7 +21,14 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.FieldInsnNode;
+import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.MethodNode;
 
@@ -54,9 +61,31 @@ public final class MemberRestorePlan {
 
 	/** The lines of a plan: what the runtime class has and OptiFine's replacement does not. */
 	public static List<String> plan(Path patchedJar, Path runtimeJar) throws IOException {
+		return plan(patchedJar, runtimeJar, null);
+	}
+
+	/**
+	 * The same, and additionally a donor class per affected class when {@code donorDir} is given.
+	 *
+	 * <p>A donor holds exactly the members that OptiFine's replacement dropped, with their original
+	 * field declarations and, for methods, their original bodies. Stubbing them was the first
+	 * approach and it is not enough: several of the dropped members are part of NeoForge's render
+	 * state machine, where a method that does nothing is worse than a method that is missing (the
+	 * loading overlay ends up in an inconsistent state and the game dies with {@code Already
+	 * building}). Copying the original body in is the same repair without the guesswork.</p>
+	 *
+	 * <p>The donor's internal name is the name of the class being repaired, so the copied bodies
+	 * resolve their own fields and calls; it is stored under a path of its own and is never loaded
+	 * as that class.</p>
+	 */
+	public static List<String> plan(Path patchedJar, Path runtimeJar, Path donorDir) throws IOException {
 		List<String> lines = new ArrayList<>();
 		int classes = 0;
 		int skipped = 0;
+
+		if(donorDir != null) {
+			Files.createDirectories(donorDir);
+		}
 
 		try(ZipFile patched = new ZipFile(patchedJar.toFile()); ZipFile runtime = new ZipFile(runtimeJar.toFile())) {
 			for(Enumeration<? extends ZipEntry> it = patched.entries(); it.hasMoreElements();) {
@@ -76,41 +105,148 @@ public final class MemberRestorePlan {
 				ClassNode mine = read(patched.getInputStream(entry));
 				ClassNode theirs = read(runtime.getInputStream(counterpart));
 
-				for(String field : missingFields(mine, theirs)) {
-					lines.add("F " + internalName + " " + field);
+				List<FieldNode> fields = missingFields(mine, theirs);
+				List<MethodNode> methods = missingMethods(mine, theirs);
+				for(FieldNode field : fields) {
+					lines.add("F " + internalName + " " + field.name + " " + field.desc);
 				}
-				for(String method : missingMethods(mine, theirs)) {
-					lines.add("M " + internalName + " " + method);
+				for(MethodNode method : methods) {
+					lines.add("M " + internalName + " " + method.name + " " + method.desc);
+				}
+
+				if(donorDir != null && !(fields.isEmpty() && methods.isEmpty())) {
+					writeDonor(donorDir, internalName, mine, theirs, fields, methods);
 				}
 			}
 		}
 
 		System.out.println("compared " + classes + " replaced classes (" + skipped + " without a runtime counterpart), "
-				+ lines.size() + " members to restore");
+				+ lines.size() + " members to restore" + (donorDir == null ? "" : ", donors written to " + donorDir));
 		return lines;
 	}
 
-	private static List<String> missingFields(ClassNode mine, ClassNode theirs) {
+	/** A class file carrying only the dropped members, bodies included. */
+	private static void writeDonor(Path donorDir, String internalName, ClassNode replacement, ClassNode runtime, List<FieldNode> fields, List<MethodNode> methods)
+			throws IOException {
+		ClassNode donor = new ClassNode();
+		donor.version = runtime.version;
+		donor.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_SUPER;
+		donor.name = internalName;
+		donor.superName = runtime.superName;
+		donor.interfaces = new ArrayList<>(runtime.interfaces);
+		for(FieldNode field : fields) {
+			donor.fields.add(new FieldNode(widened(field.access), field.name, field.desc, field.signature, field.value));
+		}
+		for(MethodNode method : methods) {
+			// A copied body may name something OptiFine renamed, and then the copied method does not
+			// verify and takes the whole class down with it. Only bodies whose own-class references
+			// all exist in the replacement are copied; the rest fall back to a default-value stub,
+			// which is logged so the difference stays visible.
+			boolean fits = referencesOnlyExisting(method, internalName, replacement);
+			MethodNode copy = new MethodNode(widened(method.access), method.name, method.desc, method.signature,
+					method.exceptions == null ? null : method.exceptions.toArray(new String[0]));
+			method.accept(copy);
+			if(!fits) {
+				copy.instructions = stubBody(method.desc);
+				copy.tryCatchBlocks.clear();
+				copy.localVariables = null;
+				System.out.println("  stub (body would not verify): " + internalName + "." + method.name + method.desc);
+			}
+			donor.methods.add(copy);
+		}
+
+		Path target = donorDir.resolve(internalName + ".class");
+		Files.createDirectories(target.getParent());
+		ClassWriter writer = new ClassWriter(0);
+		donor.accept(writer);
+		Files.write(target, writer.toByteArray());
+	}
+
+	/**
+	 * The same member, but reachable: a dropped member was usually reachable from the code that
+	 * calls it, so a private or package-private copy would only move the failure to
+	 * IllegalAccessError.
+	 */
+	/** Whether every reference the body makes to its own class is present in the replacement. */
+	private static boolean referencesOnlyExisting(MethodNode method, String internalName, ClassNode replacement) {
+		if(method.instructions == null) {
+			return false;
+		}
+		for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			String owner = null;
+			String name = null;
+			String desc = null;
+			if(insn instanceof FieldInsnNode field) {
+				owner = field.owner; name = field.name; desc = field.desc;
+			} else if(insn instanceof MethodInsnNode call) {
+				owner = call.owner; name = call.name; desc = call.desc;
+			}
+			if(owner == null || !owner.equals(internalName)) {
+				continue;
+			}
+			boolean found = false;
+			if(desc.startsWith("(")) {
+				for(MethodNode candidate : replacement.methods) {
+					if(candidate.name.equals(name) && candidate.desc.equals(desc)) {
+						found = true;
+						break;
+					}
+				}
+			} else {
+				for(FieldNode candidate : replacement.fields) {
+					if(candidate.name.equals(name) && candidate.desc.equals(desc)) {
+						found = true;
+						break;
+					}
+				}
+			}
+			if(!found) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** The body a stub gets: return the default value for the return type. */
+	private static InsnList stubBody(String descriptor) {
+		InsnList body = new InsnList();
+		String returns = descriptor.substring(descriptor.lastIndexOf(')') + 1);
+		switch(returns) {
+			case "V" -> body.add(new InsnNode(Opcodes.RETURN));
+			case "J" -> { body.add(new InsnNode(Opcodes.LCONST_0)); body.add(new InsnNode(Opcodes.LRETURN)); }
+			case "D" -> { body.add(new InsnNode(Opcodes.DCONST_0)); body.add(new InsnNode(Opcodes.DRETURN)); }
+			case "F" -> { body.add(new InsnNode(Opcodes.FCONST_0)); body.add(new InsnNode(Opcodes.FRETURN)); }
+			case "Z", "B", "C", "S", "I" -> { body.add(new InsnNode(Opcodes.ICONST_0)); body.add(new InsnNode(Opcodes.IRETURN)); }
+			default -> { body.add(new InsnNode(Opcodes.ACONST_NULL)); body.add(new InsnNode(Opcodes.ARETURN)); }
+		}
+		return body;
+	}
+
+	private static int widened(int access) {
+		return (access & ~(Opcodes.ACC_PRIVATE | Opcodes.ACC_PROTECTED)) | Opcodes.ACC_PUBLIC;
+	}
+
+	private static List<FieldNode> missingFields(ClassNode mine, ClassNode theirs) {
 		Map<String, FieldNode> present = new TreeMap<>();
 		for(FieldNode field : mine.fields) {
 			present.put(field.name + " " + field.desc, field);
 		}
-		List<String> missing = new ArrayList<>();
+		List<FieldNode> missing = new ArrayList<>();
 		for(FieldNode field : theirs.fields) {
 			// Enum constants and compiler-generated fields are not worth restoring.
 			if(!present.containsKey(field.name + " " + field.desc) && !field.name.startsWith("$") && !field.name.startsWith("this$")) {
-				missing.add(field.name + " " + field.desc);
+				missing.add(field);
 			}
 		}
 		return missing;
 	}
 
-	private static List<String> missingMethods(ClassNode mine, ClassNode theirs) {
+	private static List<MethodNode> missingMethods(ClassNode mine, ClassNode theirs) {
 		Map<String, MethodNode> present = new TreeMap<>();
 		for(MethodNode method : mine.methods) {
 			present.put(method.name + " " + method.desc, method);
 		}
-		List<String> missing = new ArrayList<>();
+		List<MethodNode> missing = new ArrayList<>();
 		for(MethodNode method : theirs.methods) {
 			if("<clinit>".equals(method.name) || "<init>".equals(method.name)) {
 				continue; // constructors are handled by the targeted fixes
@@ -120,7 +256,7 @@ public final class MemberRestorePlan {
 			}
 			String key = method.name + " " + method.desc;
 			if(!present.containsKey(key)) {
-				missing.add(key);
+				missing.add(method);
 			}
 		}
 		return missing;
@@ -148,11 +284,11 @@ public final class MemberRestorePlan {
 
 	/** Development aid: {@code MemberRestorePlan <patched jar> <runtime jar> <out file>}. */
 	public static void main(String[] args) throws IOException {
-		if(args.length != 3) {
-			System.err.println("usage: MemberRestorePlan <patched jar> <runtime jar> <out file>");
+		if(args.length < 3) {
+			System.err.println("usage: MemberRestorePlan <patched jar> <runtime jar> <out file> [donor dir]");
 			System.exit(2);
 		}
-		List<String> lines = plan(Path.of(args[0]), Path.of(args[1]));
+		List<String> lines = plan(Path.of(args[0]), Path.of(args[1]), args.length > 3 ? Path.of(args[3]) : null);
 		Files.write(Path.of(args[2]), lines, StandardCharsets.UTF_8);
 		System.out.println("wrote " + args[2]);
 		Map<String, Integer> perClass = summarise(lines);

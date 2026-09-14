@@ -190,3 +190,13 @@ M net/minecraft/client/renderer/chunk/SectionCompiler compile (...)
 > 在离线阶段从运行时类里把缺失成员的**原始字节码**抽出来(字段 + 方法体),打成"供体(donor)类"随 jar 一起发;运行时转型器把这些成员连同方法体整体复制进 OptiFine 的替换版本。这样"补回去"就是真的补回去,而不是"让它不崩"。少数方法体的常量池会指向 OptiFine 改名过的成员而失效,这类会在日志里显形,再单独处理。
 
 这条是下一轮的第一件事。
+
+### 供体类:把"补桩"换成"补真身"(2026-09-14)
+
+`MemberRestorePlan` 现在不只输出清单,还**为每个受影响的类生成一个供体(donor)类**:里面只放 OptiFine 丢掉的那些成员 —— 字段带声明,方法带**原始字节码**。供体的内部名就是被修类的名字(所以复制过去的方法体里的 `this` 字段访问能对上),但存放在 `optifineoforge/donors/<类名>.class`,不会被当成那个类加载。1.21.4 上是 **57 个供体、106 KB**。
+
+`MemberRestoreTransformer` 改为从供体复制成员(字段 + 方法体),不再造默认值桩。
+
+**但直接复制会出问题**:复制过来的方法体可能引用 OptiFine 改名过的成员,这时整个类都过不了校验(`VerifyError: Error exists in the bytecode`)。所以生成供体时加了一道**静态校验**:遍历方法体里所有指向本类的字段/方法引用,只要有一个在替换版本里不存在,就**降级成默认值桩并打日志**。实测降级的有 `Gui.initModdedOverlays`、`Gui.renderHealthLevel`、`Camera.getRoll`、`ClientLevel.getModelData` 等(共十几处),其余照抄真身。
+
+**测试台还差一步**:供体作为资源要能被 `getResourceAsStream` 找到,而 union 文件系统需要**目录条目**(之前给服务类踩过同一个坑)。当前日志里成片的 `No donor class for ...` 就是这个原因 —— 打进 combined jar 时要为供体路径补目录条目。修好这一步才能看出供体复制的真实效果。

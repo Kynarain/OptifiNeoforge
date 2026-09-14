@@ -10,18 +10,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
-import java.util.Map;
 import java.util.Set;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldNode;
-import org.objectweb.asm.tree.InsnList;
-import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.MethodNode;
 
 import cpw.mods.modlauncher.api.ITransformer;
@@ -30,43 +26,35 @@ import cpw.mods.modlauncher.api.TargetType;
 import cpw.mods.modlauncher.api.TransformerVoteResult;
 
 /**
- * Puts back, in bulk, the members OptiFine's replacements drop.
+ * Puts back, in bulk and with their original bodies, the members OptiFine's replacements drop.
  *
- * <p>The list comes from {@code optifine.MemberRestorePlan}, which computed it offline by comparing
- * the classes OptiFine produces with the classes NeoForge actually has; it travels inside this jar
- * as {@code optifineoforge/member-restores.txt}. Meeting those members one crash at a time during
- * startup is what the first fixes in this package did - a constructor, then a field, then an
- * accessor - and the count was never known. It is 134 members across 40 classes on Minecraft 1.21.4,
- * and this transformer restores all of them in one pass.</p>
+ * <p>Every class OptiFine replaces is one it compiled itself, against Forge, and whatever NeoForge
+ * added to that class since is gone. {@code optifine.MemberRestorePlan} works out which members
+ * those are offline, by comparing the classes the patcher produces with the classes the game has,
+ * and writes a <em>donor</em> class per affected class: a class file carrying exactly those members,
+ * fields with their declarations and methods with their original instructions. They travel inside
+ * this jar under {@code optifineoforge/donors/} and are copied in here, as the class is transformed.</p>
  *
- * <p>Most restorations here are honest in shape only: a field gets its declared type, and a method
- * gets a body that returns the default value for its return type. That is enough to stop the game
- * dying on a missing member, and it is not the same as being correct - the methods that need real
- * behaviour are marked in {@link #EXACT} and restored by their own fixes instead, and every stub this
- * transformer adds is logged so the list stays visible.</p>
+ * <p>The first version of this transformer stubbed the methods instead - returning the default value
+ * for the return type - and that turned out to be the wrong repair for anything on the render path:
+ * NeoForge backs up and restores GL state around its loading overlay, and a {@code backupGlState}
+ * that does nothing leaves the game in a state where the overlay's own buffer builder is still
+ * "building" from the previous frame and the launch dies with {@code Already building}. Copying the
+ * original body is the same repair without the guesswork; where a copied body names something
+ * OptiFine renamed, that shows up as a single missing member and can be dealt with on its own.</p>
  */
 public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 	private static final Logger LOGGER = LogManager.getLogger("OptifiNeoforge");
-	/** The plan, as written by the offline generator. */
+	/** The list of classes to act on, as written by the offline generator. */
 	private static final String PLAN_RESOURCE = "/optifineoforge/member-restores.txt";
-	private static final String FIELD = "F";
-	private static final String METHOD = "M";
+	/** Where the donor classes live, one per class, named after it. */
+	private static final String DONOR_ROOT = "/optifineoforge/donors/";
 
-	/**
-	 * Members that must not be stubbed because their behaviour is what the caller is after; they are
-	 * restored by a fix of their own, and skipping them here keeps the result independent of the
-	 * order ModLauncher runs the transformers in.
-	 */
-	private static final Set<String> EXACT = Set.of(
-			ReloadableResourceManagerFix.RESOURCE_MANAGER + " getListeners ()Ljava/util/List;",
-			ReloadableResourceManagerFix.RESOURCE_MANAGER + " updateListenersFrom (Lnet/neoforged/neoforge/event/SortedReloadListenerEvent;)V");
-
-	/** Class to the fields and methods to restore, in plan order. */
-	private final Map<String, Set<String>> fields = new LinkedHashMap<>();
-	private final Map<String, Set<String>> methods = new LinkedHashMap<>();
+	/** The classes that have something to restore. */
+	private final Set<String> targets = new LinkedHashSet<>();
 
 	public MemberRestoreTransformer() {
-		int count = 0;
+		int members = 0;
 		try(InputStream stream = MemberRestoreTransformer.class.getResourceAsStream(PLAN_RESOURCE)) {
 			if(stream == null) {
 				LOGGER.warn("No member restore plan in this jar (" + PLAN_RESOURCE + "); nothing will be restored");
@@ -79,106 +67,72 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 					if(parts.length < 4) {
 						continue;
 					}
-					String member = parts[2] + " " + parts[3];
-					if(EXACT.contains(parts[1] + " " + member)) {
+					if(EXACT.contains(parts[1] + " " + parts[2] + " " + parts[3])) {
 						continue;
 					}
-					if(FIELD.equals(parts[0])) {
-						fields.computeIfAbsent(parts[1], key -> new LinkedHashSet<>()).add(member);
-					} else if(METHOD.equals(parts[0])) {
-						methods.computeIfAbsent(parts[1], key -> new LinkedHashSet<>()).add(member);
-					}
-					count++;
+					targets.add(parts[1]);
+					members++;
 				}
 			}
 		} catch(IOException e) {
 			LOGGER.error("Could not read the member restore plan", e);
 			return;
 		}
-		LOGGER.info("Member restore plan: " + count + " members across " + (fields.size() + methods.size()) + " classes");
+		LOGGER.info("Member restore plan: " + members + " members across " + targets.size() + " classes");
 	}
 
 	@Override
 	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
-		Set<String> missingFields = fields.get(input.name);
-		if(missingFields != null) {
-			for(String member : missingFields) {
-				String[] parts = member.split(" ");
-				if(!hasField(input, parts[0])) {
-					input.fields.add(new FieldNode(Opcodes.ACC_PUBLIC, parts[0], parts[1], null, null));
-					LOGGER.info("Restored field " + input.name + "." + parts[0] + " " + parts[1]);
-				}
-			}
+		if(!targets.contains(input.name)) {
+			return input;
+		}
+		ClassNode donor = donor(input.name);
+		if(donor == null) {
+			LOGGER.warn("No donor class for " + input.name + "; its dropped members stay missing");
+			return input;
 		}
 
-		Set<String> missingMethods = methods.get(input.name);
-		if(missingMethods != null) {
-			for(String member : missingMethods) {
-				String[] parts = member.split(" ");
-				if(!hasMethod(input, parts[0], parts[1])) {
-					input.methods.add(stub(parts[0], parts[1]));
-					LOGGER.info("Restored method " + input.name + "." + parts[0] + parts[1] + " as a default-value stub");
-				}
+		int restored = 0;
+		for(FieldNode field : donor.fields) {
+			if(!hasField(input, field.name, field.desc)) {
+				input.fields.add(new FieldNode(field.access, field.name, field.desc, field.signature, field.value));
+				restored++;
 			}
+		}
+		for(MethodNode method : donor.methods) {
+			if(!hasMethod(input, method.name, method.desc)) {
+				MethodNode copy = new MethodNode(method.access, method.name, method.desc, method.signature,
+						method.exceptions == null ? null : method.exceptions.toArray(new String[0]));
+				method.accept(copy);
+				input.methods.add(copy);
+				restored++;
+			}
+		}
+		if(restored > 0) {
+			LOGGER.info("Restored " + restored + " members in " + input.name + " from its donor");
 		}
 		return input;
 	}
 
-	/** A method of the right shape whose body returns the default value for its return type. */
-	private static MethodNode stub(String name, String descriptor) {
-		MethodNode method = new MethodNode(Opcodes.ACC_PUBLIC, name, descriptor, null, null);
-		InsnList body = method.instructions;
-		String returns = descriptor.substring(descriptor.lastIndexOf(')') + 1);
-		switch(returns) {
-			case "V" -> body.add(new InsnNode(Opcodes.RETURN));
-			case "J" -> {
-				body.add(new InsnNode(Opcodes.LCONST_0));
-				body.add(new InsnNode(Opcodes.LRETURN));
+	/** The donor class for a target, or {@code null} when the jar has none. */
+	private static ClassNode donor(String internalName) {
+		String resource = DONOR_ROOT + internalName + ".class";
+		try(InputStream stream = MemberRestoreTransformer.class.getResourceAsStream(resource)) {
+			if(stream == null) {
+				return null;
 			}
-			case "D" -> {
-				body.add(new InsnNode(Opcodes.DCONST_0));
-				body.add(new InsnNode(Opcodes.DRETURN));
-			}
-			case "F" -> {
-				body.add(new InsnNode(Opcodes.FCONST_0));
-				body.add(new InsnNode(Opcodes.FRETURN));
-			}
-			case "Z", "B", "C", "S", "I" -> {
-				body.add(new InsnNode(Opcodes.ICONST_0));
-				body.add(new InsnNode(Opcodes.IRETURN));
-			}
-			default -> {
-				body.add(new InsnNode(Opcodes.ACONST_NULL));
-				body.add(new InsnNode(Opcodes.ARETURN));
-			}
+			ClassNode donor = new ClassNode();
+			new ClassReader(stream.readAllBytes()).accept(donor, 0);
+			return donor;
+		} catch(IOException e) {
+			LOGGER.error("Could not read donor " + resource, e);
+			return null;
 		}
-		method.maxStack = 2;
-		method.maxLocals = countArguments(descriptor) + 1;
-		return method;
 	}
 
-	private static int countArguments(String descriptor) {
-		int count = 0;
-		for(int index = 1; index < descriptor.indexOf(')'); index++) {
-			char c = descriptor.charAt(index);
-			switch(c) {
-				case 'L' -> {
-					index = descriptor.indexOf(';', index);
-					count++;
-				}
-				case '[' -> {
-					// counted with the element type
-				}
-				case 'J', 'D' -> count += 2;
-				default -> count++;
-			}
-		}
-		return count;
-	}
-
-	private static boolean hasField(ClassNode node, String name) {
+	private static boolean hasField(ClassNode node, String name, String descriptor) {
 		for(FieldNode field : node.fields) {
-			if(name.equals(field.name)) {
+			if(name.equals(field.name) && descriptor.equals(field.desc)) {
 				return true;
 			}
 		}
@@ -194,6 +148,15 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 		return false;
 	}
 
+	/**
+	 * Members that must not be restored from a donor because their behaviour is what the caller is
+	 * after and the donor would not provide it: these are restored by a fix of their own, which also
+	 * keeps the result independent of the order ModLauncher runs the transformers in.
+	 */
+	private static final Set<String> EXACT = Set.of(
+			ReloadableResourceManagerFix.RESOURCE_MANAGER + " getListeners ()Ljava/util/List;",
+			ReloadableResourceManagerFix.RESOURCE_MANAGER + " updateListenersFrom (Lnet/neoforged/neoforge/event/SortedReloadListenerEvent;)V");
+
 	@Override
 	public TransformerVoteResult castVote(ITransformerVotingContext context) {
 		return TransformerVoteResult.YES;
@@ -201,13 +164,11 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 
 	@Override
 	public Set<Target<ClassNode>> targets() {
-		Set<String> names = new LinkedHashSet<>(fields.keySet());
-		names.addAll(methods.keySet());
-		Set<Target<ClassNode>> targets = new LinkedHashSet<>();
-		for(String name : names) {
-			targets.add(Target.targetClass(name));
+		Set<Target<ClassNode>> result = new LinkedHashSet<>();
+		for(String name : targets) {
+			result.add(Target.targetClass(name));
 		}
-		return targets;
+		return result;
 	}
 
 	@Override
