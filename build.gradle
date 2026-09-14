@@ -1,0 +1,98 @@
+plugins {
+    // NeoForge's own Gradle plugin (see settings.gradle for its repository). It resolves
+    // Minecraft and NeoForge, wires the development runs and builds the mod jar.
+    id 'net.neoforged.moddev'
+}
+
+// The 1.21.x line covers several Minecraft versions, so the target is switchable:
+//
+//   .\gradlew build                        -> the default target from gradle.properties
+//   .\gradlew build -Pmc=1.21.8 -Pneoforge=21.8.52
+//
+// NeoForge changes with the Minecraft version, and no table of those pairings is baked in here:
+// a version that has not been verified on this line would otherwise look supported. When -Pmc
+// names something other than the default, -Pneoforge is required, so the pairing is always
+// stated by whoever asks for it. docs/MATRIX.md is where verified pairings are recorded.
+def defaultMc = project.minecraft_version.toString()
+def defaultNeoForge = project.neoforge_version.toString()
+def targetMc = (project.findProperty('mc') ?: defaultMc).toString()
+def targetNeoForge = project.findProperty('neoforge')?.toString()
+if(targetNeoForge == null){
+    if(targetMc != defaultMc){
+        throw new GradleException(
+            "no NeoForge version recorded for Minecraft ${targetMc}: pass -Pneoforge=<version>, " +
+            "and record the pairing in docs/MATRIX.md once it is verified")
+    }
+    targetNeoForge = defaultNeoForge
+}
+
+version = "${project.mod_version_base}+mc${targetMc}"
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+// Every version on this line runs on Java 21; the value lives in gradle.properties so all three
+// lines state their own requirement in the same place.
+def targetJavaVersion = Integer.parseInt(project.target_java_version.toString())
+
+neoForge {
+    version = targetNeoForge
+
+    // This mod is client only, so only the client run is set up. `runClient` is for
+    // development; a released jar is a normal mod jar in build/libs.
+    runs {
+        client {
+            client()
+        }
+    }
+
+    mods {
+        optifineoforge {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+dependencies {
+    // ModDevGradle puts Minecraft and NeoForge on the compile classpath by itself, and the
+    // NeoForge distribution provides Loader, ModLauncher, ASM and Mixin at runtime. Nothing
+    // is bundled into the mod jar; these are compile-time only.
+    compileOnly "org.ow2.asm:asm:${project.asm_version}"
+    compileOnly "org.ow2.asm:asm-tree:${project.asm_version}"
+    compileOnly "org.ow2.asm:asm-commons:${project.asm_version}"
+    compileOnly "org.ow2.asm:asm-analysis:${project.asm_version}"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = targetJavaVersion
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(targetJavaVersion)
+    }
+    withSourcesJar()
+}
+
+tasks.named('processResources') {
+    inputs.property 'version', project.version
+    inputs.property 'minecraft_version', targetMc
+    inputs.property 'neoforge_version', targetNeoForge
+    filteringCharset = 'UTF-8'
+
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand 'version': project.version,
+                'minecraft_version': targetMc,
+                'neoforge_version': targetNeoForge
+    }
+}
+
+tasks.named('build') {
+    doFirst {
+        println "Building ${project.archives_base_name} ${project.version} (Minecraft ${targetMc}, " +
+                "NeoForge ${targetNeoForge}, Java ${targetJavaVersion})"
+    }
+}
