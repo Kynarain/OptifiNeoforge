@@ -770,3 +770,23 @@ So the next probe belongs on the graph rather than on the listeners: node count,
 edge count, and needsToBeLinkedToVanilla's answer per entry. Printing the anchor's
 class was one step short of printing its identity, which should be included too -
 the class matched, and only identity rules out a different instance of it.
+## 2026-09-15: 26 nodes cannot sort into 48 entries
+
+Both runs now have their sort inputs measured:
+
+    control:   before 22, registry 26, anchor PeriodicNotificationManager, graph nodes=26 edges=23, after 26
+    OptiFine:  before 22, registry 26, anchor PeriodicNotificationManager, (graph line missing), after 48
+
+The control's graph has 26 nodes - exactly the registry - and sorts into 26
+entries. With OptiFine the registry is the same 26 and the result is 48, so the
+extra 22 entries are not extra nodes: a topological sort over 26 nodes cannot
+return 48 of them unless the traversal appends a node more than once, which is
+what a recursive implementation does when the graph contains a cycle.
+
+So the next measurement is the shape that only OptiFine produces: whether
+sortListeners' linking step creates a cycle (it asks
+needsToBeLinkedToVanilla per registry entry and edges the entry to the anchor when
+the answer is yes), and whether FML's TopologicalSort reports or silently walks
+one. The graph line itself did not appear in the OptiFine run, so the probe needs
+one more look there too - it printed on the control, so the insertion is sound and
+something about that run skipped it.
