@@ -180,3 +180,31 @@ pass legacyClassPath.file) - and then the same pipeline that verified 1.21.4 can
 here. That is the first thing to do next, followed by this line's mod metadata:
 1.20.1 reads META-INF/mods.toml with Forge-style dependency entries, not the
 META-INF/neoforge.mods.toml the other lines ship.
+## 2026-09-15: the 1.20.x line's loader must target the older ModLauncher API
+
+The combined-jar pipeline runs on 1.20.1 up to the loader compile, and stops there
+with a concrete API difference rather than a mystery. Compiling the loader package
+against the ModLauncher this line actually uses (10.0.9, installed by the NeoForge
+1.20.1 installer) gives:
+
+    MemberRestoreTransformer.java:34: error: cannot find symbol
+    import cpw.mods.modlauncher.api.TargetType;
+    symbol: class TargetType
+    location: package cpw.mods.modlauncher.api
+    ...: error: type Target does not take parameters
+    ...: error: type TargetType does not take parameters
+
+So on 10.0.9 the transformer API is not generic the way 11.0.4's is: there is no
+TargetType class in that package, and Target is unparameterised. The loader was
+written against 11.0.4, which is what 1.21.4 ships - so "the 1.20.x line reuses the
+loader layer as it is" was true only for lines whose ModLauncher matches, and this
+one does not.
+
+The work this leaves is bounded and mechanical: adapt the eight transformers
+(MemberRestoreTransformer, TagHelperFix, PackRootsFix, ReloadProbeFix, ModelProbeFix,
+NativeImageProbeFix, SortProbeFix, RenderTargetFix, ReloadableResourceManagerFix) to
+the 10.0.9 signatures. Two ways to do it, to be decided by what 10.0.9 offers: either
+a per-line copy of the loader sources compiled against 10.0.9, or a small version
+shim in this repository that both APIs can compile against. The pipeline itself needs
+nothing else - steps 1 to 3 (repack, patch, member-restore plan) already ran for
+1.20.1, which is the larger half.
