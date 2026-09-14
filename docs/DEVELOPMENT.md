@@ -94,7 +94,37 @@ curl.exe -sSL -o preview_OptiFine_26.1.2_HD_U_K1_pre2.jar `
    ```
 
    即:服务被发现、jar 被打开、**474 个补丁目标注册成功**,ModLauncher 不再拒绝。这是整条路线的第一个真机证据。
-3. **下一个拦路的问题(尚未解决)**:FML 的早期窗口阶段 `DisplayWindow.updateModuleReads` 会去扫方法签名,而 OptiFine 的类引用了 **Forge 的 API 类型** `net.minecraftforge.client.extensions.IForgeVertexConsumer` —— NeoForge 上这个包不存在(`net.neoforged.neoforge.*`),于是 `ClassNotFoundException` 让启动中止。要往下走就得提供一层 API 兼容/桩类,或把这些引用改掉。
+3. **下一个拦路的问题(尚未解决)**:FML 的早期窗口阶段 `DisplayWindow.updateModuleReads` 会去扫方法签名,而 OptiFine 的类引用了 **Forge 的 API 类型** `net.minecraftforge.client.extensions.IForgeVertexConsumer` —— NeoForge 上这个包不存在(`net.neoforged.neoforge.*`),于是 `ClassNotFoundException` 让启动中止(见下一节)。
+
+## Forge API 与桩类(2026-09-14)
+
+**关键发现:引用不在类里,而在补丁负载里。** `IForgeVertexConsumer` 这个名字在整个 jar 的 `.class` 里一次都不出现,只出现在 `patch/srg/com/mojang/blaze3d/vertex/VertexConsumer.class.xdelta` —— 也就是 **OptiFine 的补丁让原版 `VertexConsumer` 去实现 Forge 的接口**。所以只扫类文件是不够的,必须连 `patch/**` 一起扫。
+
+处理办法(`ForgeApiShims` + `OptifineJar` 两处):
+
+- 扫 jar 里**所有**条目(跳过 `assets/`、`doc/` 与 `notch/`),收集全部 `net/minecraftforge/**` 名字 —— 1.21.4 J3 上是 **55 个**;
+- 为每个名字生成一个**空桩类**(接口还是类,按 OptiFine 自带的那份 `notch/<同名>` 的访问标志决定),打进交给 loader 的 jar;
+- 顺带**丢掉整个 `notch/` 树**(1.21.4 上是 768 个条目):那是混淆命名空间的变体,转型器从不读它,而它的签名指向混淆后的游戏类型(`gng`、`akv`),留着只会把同一个失败挪到下一个类型。
+
+**结果:启动越过了签名扫描阶段,OptiFine 真的跑起来了**:
+
+```
+[OptiFine] (Reflector) Class not present: net.minecraftforge.common.extensions.IForgeEntity
+[OptiFine] OptiFine_1.21.4_HD_U_J3
+[OptiFine] Build: 20250209-131348
+[OptiFine] OS: Windows 11 (amd64) version 10.0
+[OptiFine] Java: 21.0.12.1, Eclipse Adoptium
+[OptiFine] OpenGL: NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2, version 3.2.0 NVIDIA 591.86
+```
+
+**下一个失败(已定位,未解决)**:游戏在 `Minecraft.<init>` 崩:
+
+```
+java.lang.NoSuchMethodError: 'void com.mojang.blaze3d.pipeline.RenderTarget.<init>(boolean, boolean)'
+	at com.mojang.blaze3d.pipeline.MainTarget.<init>(MainTarget.java:22)
+```
+
+方向:OptiFine 的补丁改过 `RenderTarget` 的构造函数,而 `MainTarget` 这一侧仍是原版形状 —— 两者要**成对**应用。可能是补丁应用顺序(OptiFine 的转型器与 NeoForge 自己的转型器在同一批类上先后运行)、也可能某个 xdelta 没有成功应用。下一步就是把这个配对问题查清楚。
 
 ## 尚未确认
 

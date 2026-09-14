@@ -186,24 +186,34 @@ public final class OptifineJar {
 	 * to repeat on a cached copy.</p>
 	 */
 	public static void rewriteMetadata(Path in, Path out, String metadataName, String metadataText) throws IOException {
-		rewrite(in, out, metadataName, metadataText, false);
+		rewrite(in, out, metadataName, metadataText, false, false);
 	}
 
 	/**
 	 * The jar a NeoForge instance should be given, built from the OptiFine jar the user dropped in.
 	 *
-	 * <p>Two things stand between the two. Its metadata is Forge's, and NeoForge validates the
-	 * loader version it declares. And the installer entry points have to go: NeoForge refuses a
-	 * jar whose {@code optifine/Installer.class} it can see, so the copy handed to the loader is
-	 * stripped of them while the original stays untouched for the patcher to use.</p>
+	 * <p>Three things stand between the two. Its metadata is Forge's, and NeoForge validates the
+	 * loader version it declares. The installer entry points have to go: NeoForge refuses a jar
+	 * whose {@code optifine/Installer.class} it can see, so the copy handed to the loader is
+	 * stripped of them while the original stays untouched for the patcher to use. And its classes
+	 * name Forge API types that NeoForge does not have, so stubs for those are added - see
+	 * {@link ForgeApiShims} for why an unresolvable signature stops the launch outright.</p>
 	 *
 	 * @return the number of installer entries removed
 	 */
 	public static int prepareForLoader(Path in, Path out, String metadataName, String metadataText) throws IOException {
-		return rewrite(in, out, metadataName, metadataText, true);
+		return rewrite(in, out, metadataName, metadataText, true, true);
 	}
 
-	private static int rewrite(Path in, Path out, String metadataName, String metadataText, boolean stripInstaller) throws IOException {
+	/**
+	 * The same, without the Forge API stubs. The patched classes are handed to the loader directly
+	 * on that route, so the jar they come out of never needs to satisfy a signature scan.
+	 */
+	public static int prepareForLoader(Path in, Path out, String metadataName, String metadataText, boolean addForgeStubs) throws IOException {
+		return rewrite(in, out, metadataName, metadataText, true, addForgeStubs);
+	}
+
+	private static int rewrite(Path in, Path out, String metadataName, String metadataText, boolean stripInstaller, boolean addForgeStubs) throws IOException {
 		Path parent = out.toAbsolutePath().getParent();
 		if(parent != null) {
 			Files.createDirectories(parent);
@@ -220,6 +230,14 @@ public final class OptifineJar {
 						continue; // replaced below
 					}
 					if(stripInstaller && isInstallerEntry(name)) {
+						stripped++;
+						continue;
+					}
+					if(stripInstaller && name.startsWith("notch/")) {
+						// The variant OptiFine's transformer never reads. It is dropped rather than
+						// shipped because its classes are the obfuscated-namespace build: their
+						// signatures name obfuscated game types, and FML resolves every signature in
+						// the jar before the game starts.
 						stripped++;
 						continue;
 					}
@@ -244,6 +262,15 @@ public final class OptifineJar {
 				target.putNextEntry(metadata);
 				target.write(metadataText.getBytes(StandardCharsets.UTF_8));
 				target.closeEntry();
+
+				if(addForgeStubs) {
+					for(Map.Entry<String, byte[]> stub : ForgeApiShims.generate(in).entrySet()) {
+						ZipEntry shim = new ZipEntry(stub.getKey());
+						target.putNextEntry(shim);
+						target.write(stub.getValue());
+						target.closeEntry();
+					}
+				}
 			}
 			Files.move(temp, out, StandardCopyOption.REPLACE_EXISTING);
 		} finally {
