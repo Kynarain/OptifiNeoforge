@@ -1,0 +1,21 @@
+// 26.x line: Minecraft 26.1.2, NeoForge 26.1.2.109, Java 25.
+// One branch per release line - see docs/PLAN.md. This project is the whole mod for this line.
+pluginManagement {
+    repositories {
+        // ModDevGradle lives here as well as on the Gradle plugin portal.
+        maven {
+            name = 'NeoForged'
+            url = 'https://maven.neoforged.net/releases'
+        }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+plugins {
+    // ModDevGradle is NeoForge's own Gradle plugin: it resolves Minecraft and NeoForge,
+    // sets up the development runs and produces the mod jar.
+    id 'net.neoforged.moddev' version '2.0.147' apply false
+}
+
+rootProject.name = 'OptifiNeoforge-26.x'
