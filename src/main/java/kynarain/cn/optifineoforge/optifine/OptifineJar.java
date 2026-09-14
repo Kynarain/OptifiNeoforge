@@ -342,7 +342,9 @@ public final class OptifineJar {
 			String metadataName = args[2];
 			String template = Files.readString(Path.of(args[3]), StandardCharsets.UTF_8);
 			Layout layout = inspect(in);
-			rewriteMetadata(in, out, metadataName, template);
+			// The command line prepares a jar for the loader, so it does the whole job: metadata,
+			// installer entries and the obfuscated-namespace variant, plus the Forge API stubs.
+			prepareForLoader(in, out, metadataName, template);
 			System.out.println("wrote " + out + " (" + Files.size(out) + " bytes)");
 			System.out.println("was : " + (layout.metadataName() == null ? "(no metadata)" : layout.metadataName()));
 			System.out.println("now : " + inspect(out).metadataName());

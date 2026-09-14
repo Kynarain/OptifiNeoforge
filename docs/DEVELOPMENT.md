@@ -200,3 +200,23 @@ M net/minecraft/client/renderer/chunk/SectionCompiler compile (...)
 **但直接复制会出问题**:复制过来的方法体可能引用 OptiFine 改名过的成员,这时整个类都过不了校验(`VerifyError: Error exists in the bytecode`)。所以生成供体时加了一道**静态校验**:遍历方法体里所有指向本类的字段/方法引用,只要有一个在替换版本里不存在,就**降级成默认值桩并打日志**。实测降级的有 `Gui.initModdedOverlays`、`Gui.renderHealthLevel`、`Camera.getRoll`、`ClientLevel.getModelData` 等(共十几处),其余照抄真身。
 
 **测试台还差一步**:供体作为资源要能被 `getResourceAsStream` 找到,而 union 文件系统需要**目录条目**(之前给服务类踩过同一个坑)。当前日志里成片的 `No donor class for ...` 就是这个原因 —— 打进 combined jar 时要为供体路径补目录条目。修好这一步才能看出供体复制的真实效果。
+
+### 供体的第一次实测:补真身并不总是更好(2026-09-14)
+
+供体打包修好之后(目录条目 + 命令行默认走 `prepareForLoader` 的完整流程),供体真的被读到了(日志里不再有 `No donor class for ...`),`RenderSystem`、`Gui`(16 个)、`ClientLevel`(9 个)等类的成员都是**带原始方法体**补进去的。
+
+但出现**回退**:
+
+```
+java.lang.IllegalStateException: Rendersystem called from wrong thread
+```
+
+`RenderSystem.backupGlState` / `restoreGlState` 的原始方法体里有线程断言,而这里是在早期启动的主线程上被调用的 —— 于是"真身"比"什么都不做的桩"**更早**把启动打断(桩版本能跑到 60 秒,供体版本 10 秒就死)。
+
+**结论:补什么、怎么补,要按成员区分**,不能一刀切:
+
+- 兜底做法(默认值桩)在"只是被人读一下"的成员上是对的;
+- 供体真身在"有实际副作用、且调用环境一致"的成员上是对的;
+- 而带线程/环境断言的成员(如 `RenderSystem` 的两个状态方法)两边都不对:桩破坏状态机,真身断言失败。这类需要**按调用环境改写**(把断言去掉,或改成 `GlStateManager` 的直接调用)。
+
+下一步:给供体生成加一条**按成员分类**的规则 —— 方法体里出现 `assertOnRenderThread` 一类环境断言的,先剥掉这层断言再复制(而不是退回桩),并把这批方法在日志里单列。
