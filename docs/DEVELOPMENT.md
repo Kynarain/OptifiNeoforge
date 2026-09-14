@@ -44,8 +44,35 @@ curl.exe -sSL -o preview_OptiFine_26.1.2_HD_U_K1_pre2.jar `
 - **命名空间的选择有据可依**:jar 里同时带 `notch/` 与 `srg/` 变体,所以"用哪一份"取决于目标运行期命名空间(1.20.x/1.21.x 的 NeoForge 用 SRG 还是官方名,以及 26.1.2 的未混淆官方名)。这一点还没定论,见 `docs/VERSIONS.md` 的待确认项。
 - **补丁负载是 xdelta**,不是整类替换:OptiFabric 的做法(调用 `optifine.Patcher`)在我们的场景里仍然适用,前提是拿到它期望的那份原版 jar。
 
+## 离线跑通补丁器(2026-09-14)
+
+OptiFabric 在运行期做的第一步,可以完全离线复现 —— 用反射调 `optifine.Patcher`,不需要 Minecraft、也不需要任何 loader:
+
+```java
+try (URLClassLoader loader = new URLClassLoader(new URL[] {optifineJar.toURI().toURL()})) {
+	Class<?> patcher = loader.loadClass("optifine.Patcher");
+	Method process = patcher.getDeclaredMethod("process", File.class, File.class, File.class);
+	process.invoke(null, minecraftJar, optifineJar, outputJar); // 顺序:(原版 jar, OptiFine jar, 输出 jar)
+}
+```
+
+实测:1.20.1 `HD_U_I6` + 官方 1.20.1 client jar(23,028,853 字节)。
+
+| 项目 | 结果 |
+|---|---|
+| 耗时 | 1.4 秒 |
+| 输出 | 6,638,739 字节,4049 个条目 |
+| 输出的目录构成 | `assets/` 1787、`notch/` 1114、`srg/` 1047、`optifine/` 50、`doc/` 39、`META-INF/` 3 |
+| 原版 jar 的条目 | 不在输出里(20953 → 4049),输出只含 OptiFine 自己的类与**被补丁的游戏类** |
+| `net/minecraft/**` | 不存在 —— 补丁类分别挂在 `notch/` 与 `srg/` 前缀下,两个命名空间各一份 |
+
+也就是说 `Patcher.process` 产出的是"OptiFine 抽取 + 已打补丁"的中间产物,正是接下来要去做 folderfy、重建 lambda、重映射的输入。**这一步在本机离线跑通了**,它是整条管线里唯一不依赖 loader 的环节。
+
 ## 尚未确认
 
-- NeoForge 各版本的运行期命名空间(是否为 SRG),以及"第三方的 `ITransformationService` 还能不能从 `mods/` 里被发现"。
+- ~~NeoForge 各版本的运行期命名空间~~ —— 已由 `docs/RESEARCH-neoforge.md` 从 FML/NeoForge 的 jar 里确认:1.20.1 是 SRG,20.2 起是官方名,26.1.1/26.1 起未混淆。
+- ~~第三方的 `ITransformationService` 还能不能从 `mods/` 里被发现~~ —— 已确认:FML 10 之前(≤ 1.21.8)可以,21.9 起 ModLauncher 被移除,改用 `net.neoforged.neoforgespi.transformation.ClassProcessor`。
 - OptiFine 的 `patch/srg/` 前缀在 26.1.2 上究竟是"SRG 名"还是只是沿用的目录名(条目名看起来就是官方名)。
-- `optifine.Patcher` 在未混淆的游戏 jar 上的行为:是否需要先把它转成混淆名,还是可以直接打补丁。
+- `optifine.Patcher` 在**未混淆**游戏 jar(26.1.2)上的行为:1.20.1 已实测可行,26.1.2 尚未试。
+- 补丁类在 NeoForge 自己打过补丁的类上还能不能对齐(OptiFine 的 MD5 校验是否会因此拒绝)。
+
