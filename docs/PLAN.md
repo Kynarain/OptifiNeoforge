@@ -1,0 +1,51 @@
+# 设计与里程碑(26.x 线)
+
+## 目标
+
+让 OptiFine 在 **NeoForge** 上工作,做法与 OptiFabric 在 Fabric Loader 上一样:不去重新实现 OptiFine,而是
+
+1. 用 OptiFine 自带的补丁器把它自己的补丁打进原版客户端;
+2. 重建补丁类里被搬走的 lambda;
+3. 按目标版本的命名空间把结果对齐;
+4. 把打过补丁的 Minecraft 类交给 NeoForge 的类转换流程,让它们顶替原版类。
+
+OptiFabric 在 Fabric 侧走的是 `GameTransformer.patchedClasses`。NeoForge 侧对应的位置还没有最终确定,这是本线第一个要解决的问题(见下)。
+
+## 与 Fabric 线的关键差异
+
+| 方面 | OptiFabric(Fabric) | 本项目(NeoForge) |
+|---|---|---|
+| 补丁时机 | Fabric Loader 的 `GameTransformer`,在 Mixin 之前 | ModLauncher / NeoForge 的转换流程,顺序需要核实 |
+| OptiFine 自身 | 纯字节码补丁 + 自己的类,没有 loader 集成 | **自带 Forge 时代的 loader 集成**(`optifine.OptiFineTransformationService`) |
+| 元数据 | 不涉及 | OptiFine 的 jar 里是 `META-INF/mods.toml`,NeoForge 期望自己的那份 |
+| 命名空间 | official → intermediary | 26.x 线未混淆(官方名);1.20.x/1.21.x 线要按各自的 SRG/正式名处理 |
+| 第三方补丁 | 只有 Fabric API 的 mixin | NeoForge 自己也会改原版类,补丁需要合并 |
+
+## 两条可选路线
+
+**路线 A —— 让 OptiFine 自己的 ModLauncher 服务跑起来。**
+OptiFine 的 `optifine.OptiFineTransformationService` 只依赖 `cpw.mods.modlauncher.*`(`ITransformationService`、`ITransformer<ClassNode>`、`SecureJar`),不引用 `net.minecraftforge.*`。理论上只要让 NeoForge 发现并加载这个服务、并把它的元数据修好,补丁流程就能原样工作。代价是:顺序、投票(`castVote`)、与 NeoForge 自身补丁的合并都不在我们手里。
+
+**路线 B —— 自己跑补丁器,自己交出补丁类(像 OptiFabric)。**
+在 `preLaunch` 阶段调用 `optifine.Patcher` 打补丁、重建 lambda、对齐命名空间,然后把结果交给 NeoForge 的转换 API。可控性最高,代价是工作量大,而且要先弄清 NeoForge 允不允许整类顶替。
+
+骨架阶段两条都留着:**先用最小代价验证路线 A 能不能成立**(它是"能不能跑"的问题),同时按路线 B 的形态组织代码(补丁器调用、缓存、fixer 框架都放在 `core` 里,不依赖具体挂载点)。
+
+## 里程碑
+
+| # | 内容 | 完成判据 |
+|---|---|---|
+| M0 | 骨架:三条分支、版本矩阵、构建配置、文档 | 本提交 |
+| M1 | 路线 A 可行性:修好 OptiFine jar 的元数据,让 NeoForge 认它 | 游戏能启动到标题界面,日志里能看到 OptiFine 的转换服务被加载 |
+| M2 | 补丁管线:调用 `optifine.Patcher`,建立缓存(`<游戏目录>/.optifine/<OptiFine 版本>/`) | 首次启动完成补丁,二次启动走缓存 |
+| M3 | 补丁类注入 + fixer 框架:对齐命名空间、补回被搬走的方法、处理与 NeoForge 自身补丁的重叠 | 进世界不崩,方块/物品/区块渲染正常 |
+| M4 | 完整兼容:光影包、抗锯齿、连接纹理;第三方模组(尤其依赖 NeoForge 渲染钩子的) | 与 OptiFabric 在 Fabric 上的验收口径对齐 |
+| M5 | 发布:版本脚本、发布说明、CurseForge / Modrinth 元数据 | 能一条命令出包并发布 |
+
+每条线按同样的里程碑推进,但各自独立验收。
+
+## 提交纪律
+
+- 分支互相独立:`1.20.x`、`1.21.x`、`26.x` 各自有自己的 `README`、矩阵、构建配置和文档,不做跨分支的合并。
+- 文档与实测口径要一致:没在真实游戏里验证过的东西写成计划,不写成结论。
+- OptiFine 的 jar 不进仓库,也不随产物分发。
