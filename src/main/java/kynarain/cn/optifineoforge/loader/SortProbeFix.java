@@ -45,6 +45,10 @@ public final class SortProbeFix implements ITransformer<ClassNode> {
 		if(!SORT.equals(input.name.replace('/', '.'))) {
 			return input;
 		}
+		// Counted and reported: with OptiFine installed, two of the four insertions in this method
+		// never run while the other two do, and the first thing to know is whether this transformer
+		// even saw one copy of the class with all of them, or two copies with part of them.
+		int probed = 0;
 		for(MethodNode method : input.methods) {
 			if(!METHOD.equals(method.name)) {
 				continue;
@@ -82,8 +86,12 @@ public final class SortProbeFix implements ITransformer<ClassNode> {
 				result.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "list",
 						"(Ljava/lang/Object;Ljava/lang/String;)V", false));
 				method.instructions.insertBefore(insn, result);
+				probed++;
 			}
+			probed += 3; // the anchor, registry and graph report
 		}
+		org.apache.logging.log4j.LogManager.getLogger("OptifiNeoforge")
+				.info("sort probe: insertion pass on " + input.name + ", insertions=" + probed);
 		return input;
 	}
 

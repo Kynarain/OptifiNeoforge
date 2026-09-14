@@ -833,3 +833,31 @@ place, once later), leaving the running copy with only part of the insertions. T
 is testable cheaply by logging which insertions each transformed copy received
 (the transform method already logs the class it saw), instead of guessing from the
 absence of output.
+## 2026-09-15: 22 + 26 = 48 - the running updateListenersFrom appends
+
+The four probes inside ReloadListenerSort.sort all print once the combined jar is
+rebuilt (they had been missing because that jar predated them - worth remembering
+before reading silence as evidence):
+
+    with OptiFine:  graph before sorting: nodes=26, edges=23
+                    list sort result: 26 of UnmodifiableRandomAccessList
+                    size after updateListenersFrom: 48
+
+The graph is identical to the control's and the sort returns the same 26 entries.
+The difference appears inside updateListenersFrom itself: the list goes from 22 to
+48, which is 22 + 26 - the sorted result appended to the list that was already
+there, rather than replacing it. The donor body this project plans for that method
+is NeoForge's own, "this.listeners = sort(event)", which replaces.
+
+The likely reason the donor body is not the one running: MemberRestoreTransformer
+copies a donor member only when the class does not already have it, and OptiFine's
+replacement of ReloadableResourceManager appears to bring its own
+updateListenersFrom - so the copy is skipped and the appending variant survives.
+
+That closes the chain measured over the last rounds: an appended list holds every
+vanilla listener twice, the same sprites are then loaded and cleared in two
+interleaved passes, and TextureAtlas.clearTextureData closes the sprites the same
+upload call is about to upload, which is the "Image is not allocated" failure.
+
+The fix to make next: restore a planned member by replacing an existing body of the
+same name and descriptor, not only adding it when absent.
