@@ -45,7 +45,8 @@ public final class ReloadProbe {
 			Object listener = listeners.get(index);
 			String name = listener == null ? "null" : listener.getClass().getName();
 			report.append("\n    ").append(index).append("  ").append(name)
-					.append("  @").append(System.identityHashCode(listener));
+					.append("  @").append(System.identityHashCode(listener))
+					.append("  vanillaName=").append(vanillaName(listener));
 			if(MODEL_MANAGER.equals(name)) {
 				report.append("   <- bakes the models");
 			} else if(BLOCK_RENDER_DISPATCHER.equals(name)) {
@@ -101,8 +102,7 @@ public final class ReloadProbe {
 	}
 
 	/** How many listeners a list holds, for following the list through registration. */
-	public static void size(List<?> listeners, String label) {
-		if(!enabled()) {
+	public static void size(List<?> listeners, String label) {		if(!enabled()) {
 			return;
 		}
 		LOGGER.info("size " + label + ": " + (listeners == null ? "null" : Integer.toString(listeners.size())));
@@ -148,6 +148,34 @@ public final class ReloadProbe {
 
 	private static String size(Object value) {
 		return value instanceof java.util.Map<?, ?> map ? Integer.toString(map.size()) : "n/a";
+	}
+
+	/**
+	 * The vanilla name NeoForge's sort resolves for a listener, or "?" when it cannot ask.
+	 *
+	 * <p>{@code ReloadListenerSort.sortListeners} decides with {@code needsToBeLinkedToVanilla}
+	 * whether a listener has to be linked into the graph after the last vanilla one, and that
+	 * decision goes through this name lookup. A listener whose name resolves is left where it is; one
+	 * that does not is linked again, which is how the same object can end up in the reload twice.
+	 * Asked reflectively because the loader does not compile against NeoForge.</p>
+	 */
+	private static String vanillaName(Object listener) {
+		if(listener == null) {
+			return "n/a";
+		}
+		try {
+			Class<?> lookup = Class.forName("net.neoforged.neoforge.client.resources.VanillaClientListeners");
+			Object name = lookup.getMethod("getNameForClass", Class.class).invoke(null, listener.getClass());
+			return String.valueOf(name);
+		} catch(Throwable cannotAsk) {
+			// Say what went wrong rather than "?": a probe that hides its own failure is worse than
+			// no probe, and this lookup is reached reflectively so it can fail in several ways.
+			String reason = cannotAsk.getClass().getSimpleName();
+			if(cannotAsk.getMessage() != null) {
+				reason += "(" + cannotAsk.getMessage() + ")";
+			}
+			return "?" + reason;
+		}
 	}
 
 	static boolean enabled() {

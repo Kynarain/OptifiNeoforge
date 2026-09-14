@@ -689,3 +689,33 @@ reload 1: 50 listeners
 也就是说,问题可能不在"谁注册了两次",而在**事件构造的时刻**:这一个运行里 22 次注册发生在 `updateListenersFrom` 之前。下一轮要做一次**对照测量**:用同一套探针,在**只装 NeoForge、不打 OptiFine 补丁**的情况下跑一遍(需要一个只含 loader 与探针、不含 OptiFine 的 jar),看原版 NeoForge 在这个时刻 `getListeners()` 是不是空的、`updateListenersFrom` 前后各是多少 —— 这能直接判定"顺序被谁改了",而不必继续猜。
 
 **顺序这条线索也断了。** 读 NeoForge 自己的 `Minecraft` 字节码,22 次 `registerReloadListener` 的偏移是 971–1916,而 `ClientHooks.initClientHooks` 在 **2192** —— 也就是说**原版 NeoForge 也是先注册、后建事件**,和我们看到的完全一样。所以"顺序被改动"不成立,重复是在**原版就会发生的那条路径**里产生的,差别只可能在**输入的内容**上:`VanillaClientListeners` 认得那些原版监听器类时才会把它们排除在拓扑排序之外,只有在它认不出时才会被排第二遍。于是对照测量仍然值得做,但要看的是"识别"而不是"顺序"。
+
+## Control measurement 2026-09-15: the duplicate listener list is OptiFine's doing
+
+The same probes, the same code, on the same profile, with only the loader jar in
+mods/ and no OptiFine at all (built by build-loader-jar.ps1, launched with
+-ModsFrom; note that -NoMods drops the probe jar too, which made the first
+attempt a run with no instrumentation):
+
+    register x22 vanilla listeners
+    size before updateListenersFrom: 22
+    size after  updateListenersFrom: 26      <- 22 + 2 NeoForge lambdas + ObjLoader + AnimationLoader
+    reload 1: 26 listeners
+
+With OptiFine installed the same three lines read 22, 22 and 48, and the reload
+runs 50 listeners. Same input list, same code path, different result - so the
+duplication is caused by OptiFine being present, not by NeoForge's ordinary
+sorting, and the earlier question of who registers twice is answered: nobody
+does. What differs is how the sort treats the listeners, and ReloadListenerSort
+.sortListeners shows where that decision is made: for every entry in the registry
+it calls needsToBeLinkedToVanilla(nameLookup, graph, listener) and adds an edge
+when the answer is yes, then topologically sorts the graph. A listener whose name
+cannot be resolved is therefore linked into the graph a second time, which is how
+one object ends up in the reload twice.
+
+The next measurement is that name resolution: ReloadProbe now prints
+vanillaName=<resolved> per listener by calling VanillaClientListeners
+.getNameForClass reflectively, and reports the failure reason instead of a bare
+"?" - on the control run the call itself fails, so the first thing to fix is the
+probe's own reflective lookup (wrong method signature or visibility), and then
+compare the resolved names between the two runs.
