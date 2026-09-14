@@ -298,3 +298,18 @@ java.lang.NullPointerException: Cannot invoke "BakedModel.getParticleIcon()" bec
 也就是说:**游戏已经在跑主循环、在重载资源、在烘焙模型**了 —— 不再是启动早期的类加载/签名扫描问题,而是"某个模型查不到"。方向很明确:清单里就有 `ModelManager`(4 个成员)、`BlockRenderDispatcher`(4 个)、`LiquidBlockRenderer`(3 个)、`SimpleBakedModel`(5 个)这些与模型烘焙直接相关的类,它们的成员是**桩**(返回 null)还是真身,决定了这条链能不能通 —— 正是"按成员区分补法"要解决的那类。
 
 结论进 `docs/DEVELOPMENT.md`,并记下测试台要求:`config/fml.toml` 里 `earlyWindowControl = false` 是跑 1.21.4 的必要条件。
+
+### 模型链的现状:该补的成员大多降级成了桩(2026-09-14)
+
+关掉早期窗口之后暴露出来的那批 null 模型,和清单里"降级成桩"的成员高度重合。查了一遍,`ModelBlockRenderer` / `BlockRenderDispatcher` / `LiquidBlockRenderer` / 各 `blockentity` 渲染器上**十几个成员都没能复制真身**,原因是同一句:
+
+```
+stub (body would not verify): net/minecraft/client/renderer/block/ModelBlockRenderer.tesselateBlock(...)
+stub (body would not verify): net/minecraft/client/renderer/block/BlockRenderDispatcher.renderBatched(...)
+stub (body would not verify): net/minecraft/client/renderer/block/LiquidBlockRenderer.shouldRenderFace(...)
+...
+```
+
+也就是说:**这些方法体引用了别的、同样被 OptiFine 丢掉的成员**,所以校验不过,只能退化成"返回默认值"。逐个手补不可持续。
+
+**下一步的做法(传递闭包)**:如果方法体 X 引用了本类里缺失的成员 Y,而 Y 在运行时类里存在,那就**把 Y 也一起补进来**,再重新校验 —— 反复直到不再有新的引用或达到上限。这样"校验不过"就不再等于"退化成桩",而是"把这条依赖链补齐"。真正的边界条件是环引用与上限,两者都要显式处理并打日志。
