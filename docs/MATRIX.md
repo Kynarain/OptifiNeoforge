@@ -47,3 +47,27 @@ origin/26.x   : 39 files
    的假设在 1.20.6 前后是不同的,搬迁时必须逐行确认。
 - **不要用另一条线的启动结果代替验证**:每条线的 `gradle.properties`、OptiFine 版本与 NeoForge
    版本都不同,rig 里的 profile 与游戏目录也要各自建立。
+
+## Measured 2026-09-15: only one version-specific assumption in the code
+
+Scanning the implementation for version-specific assumptions before moving it
+(class-file version constants, ModLauncher dependencies, hard-coded versions)
+gave a smaller answer than expected:
+
+- Exactly one class-file version is written anywhere: `Opcodes.V17` in
+  `ForgeApiShims`. A Java 17 class file loads on the 21 and 25 runtimes just as
+  well, so no line needs it changed.
+- All nine loader transformers depend on ModLauncher
+  (`OptifiNeoforgeTransformationService`, `MemberRestoreTransformer`,
+  `TagHelperFix`, `PackRootsFix`, `ReloadProbeFix`, `ModelProbeFix`,
+  `NativeImageProbeFix`, `RenderTargetFix`, `ReloadableResourceManagerFix`).
+  That confirms from the code side that 26.x needs the loader layer rewritten
+  against `net.neoforged.neoforgespi.transformation.ClassProcessor`, while
+  1.20.x and 1.21.x reuse it as it is.
+- No code branches on the Minecraft version; versions appear only in comments and
+  command-line arguments, and OptifineConfig reads them from OptiFine's own
+  constant pool.
+
+So bringing 1.21.x up is copying the implementation plus writing that line's
+build configuration rather than porting it, and 26.x is the only line that needs
+genuinely new code.
