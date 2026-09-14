@@ -489,3 +489,32 @@ NullPointerException: BakedModel.getParticleIcon() ... BlockModelShaper.getBlock
 随后是 `Caught error loading resourcepacks, removing all selected resourcepacks`,游戏自己重试第二轮重载,第二轮贴图集正常建完 —— 也就是说**模型确实被烘焙过,只是第一轮里 `BlockRenderDispatcher` 的应用阶段跑在了 `ModelManager.apply` 之前**(两边的 `missingModel` 都只在 `apply(ReloadState, ProfilerFiller)` 里赋值,`javap` 已确认),`getModel` 于是拿 `missingModel` 这个 null 当兜底返回。第二轮能好,说明问题出在**第一轮的监听器集合/顺序**上,而不是模型数据本身。
 
 这条是下一轮的第一件事:把 `ReloadableResourceManager`(OptiFine 也替换了它,`ReloadableResourceManagerFix` 补的正是 NeoForge 的 `getListeners`/`updateListenersFrom`)在首轮重载时实际使用的监听器顺序打出来,与 `ModelManager`/`BlockRenderDispatcher` 的应有次序对照。
+
+### 空模型的真因:烘焙出来的缺失模型本身就是 null(2026-09-14 深夜)
+
+上一节那条猜测**被实测推翻**:顺序没问题,烘焙也确实跑了。为了看清这一点加了两个**默认关闭**的探针(打开方式:`-Doptifineoforge.debug.reload=true` 或环境变量 `OPTIFINEOF..._DEBUG_RELOAD=true`):
+
+- `ReloadProbeFix`:在 `ReloadableResourceManager.createReload` 读 `listeners` 的地方插一条 `DUP` + 调用,把这次重载**将要按序执行的监听器清单**打出来;
+- `ModelProbeFix`:在 `ModelManager.apply` 打 enter/leave(退出时反射读 `missingModel` 与 `blockStates`),在 `ModelBakery.bakeModels` 打进去时未烘焙模型、返回时烘焙结果,在 `BlockRenderDispatcher.onResourceManagerReload` 打 enter。
+
+实测(1.21.4,`logs/run-probe7-1214`):
+
+```
+reload 1: 50 listeners
+8   net.minecraft.client.resources.model.ModelManager          <- bakes the models
+11  net.minecraft.client.renderer.block.BlockRenderDispatcher  <- asks for baked models
+...
+result ModelBakery (unbaked): missingModel=BlockModel
+result ModelBakery.bakeModels: missingModel=null, blockStates=27870
+enter BlockRenderDispatcher.onResourceManagerReload
+```
+
+三条结论:
+
+1. **顺序正确**:`ModelManager` 在第 8 位、`BlockRenderDispatcher` 在第 11 位,`apply` 也真的执行了(而且把 27870 个方块状态装进了 `bakedBlockStateModels`)。所以"应用阶段跑在烘焙之前"不成立。
+2. **`missingModel` 在烘焙那一刻就已经是 null**:同一批 worker 线程里,`ModelBakery` 自己的未烘焙缺失模型是 `BlockModel`(正常),但 `bakeModels` 返回的 `BakingResult.missingModel` 是 null;`ModelManager.apply` 只是把这个 null 原样搬进字段。于是 `getModel` 对**不在那 27870 项里的状态**(例如流体)返回 null —— `LiquidBlockRenderer.setupSprites` 一取 `getParticleIcon()` 就 NPE。
+3. **监听器清单里每个原版监听器出现了两次**(0–21 与 24–45 是同一批,48/49 才是 OptiFine 的)。也就是 NeoForge 排序后的清单被**追加**到了原版清单后面,而不是替换。这本身就是要修的缺陷(每个原版监听器会跑两遍,烘焙也确实跑了两遍:两个 worker 各打了一次)。
+
+顺带记一个**诊断陷阱**,它浪费了两次运行:`ITransformer.transform` 拿到的 `ClassNode.name` 是**斜杠内部名**,而 ModLauncher 的 `Target.targetClass` 用的是**点号名**。把两者混用会让探针静默失效(日志里 `probed 0`),看起来就像"这个类根本没被转换"。判据是同一行日志里打印的类名 —— 带斜杠的就是内部名。
+
+下一步很明确:`bakeWithTopModelValues`(NeoForge 给 `UnbakedModel` 加的静态助手)会把调用转给 `IUnbakedModelExtension.bake(TextureSlots, ModelBaker, ModelState, boolean, boolean, ItemTransforms, ContextMap)`(七个参数、最后一个 `ContextMap`,由 `UnbakedModel` 继承的 NeoForge 扩展接口声明)。OptiFine **没有**替换 `BlockModel`(补丁清单里没有它的 xdelta),所以 null 是从 NeoForge 这条路上出来的 —— 要读的是 `IUnbakedModelExtension` 里那个默认实现的函数体(它不在 `neoforge-...-client.jar` 里,得去别的 NeoForge 产物里找),确认它在什么条件下返回 null。
