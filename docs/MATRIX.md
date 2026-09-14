@@ -243,3 +243,26 @@ That is nine files - MemberRestoreTransformer, TagHelperFix, PackRootsFix, Reloa
 ModelProbeFix, NativeImageProbeFix, SortProbeFix, RenderTargetFix,
 ReloadableResourceManagerFix - and the transformation service itself needs nothing: its
 List<? extends ITransformer<?>> signature is the same in both APIs.
+## 2026-09-15: the 1.20.1 line loads OptiFine; only this machine's assets are short
+
+After the Java 17 and Forge-shell rules from the previous round, the 1.20.1 run gets
+all the way through mod loading with the mod present:
+
+    OptiFineTransformationService: Targets: 412
+    OptifiNeoforge: Member restore plan: 550 members across 87 classes
+    NeoForge mod loading, version 47.1.106, for MC 1.20.1
+    NeoForge v47.1.106 Initialized
+
+Adding assets/indexes/5.json (from the vanilla profile's own assetIndex.url) removed
+the index error but not the next one, and the next one is data rather than code: this
+machine's assets/objects holds the 1.21.4 set and not all of 1.20.1's, so the vanilla
+pack fails to open, and the game stops with
+
+    java.lang.IllegalStateException: Default font failed to load
+
+That is worth separating clearly in the record: on this line the mod's own path is
+working - OptiFine's service, our plan of 550 members across 87 classes, and NeoForge's
+initialisation all complete - while the visual confirmation (textures, the rig's
+screenshot) waits on downloading that version's asset objects. The download of the
+missing objects is running as a background job; systems/... once it finishes, the run
+can be repeated and the reload checked the way 1.21.4's was.
