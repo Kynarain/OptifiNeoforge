@@ -338,11 +338,46 @@ Java 17、ModLauncher 10.0.9、`NeoForge mod loading, version 20.4.251, for MC 1
 - `neoform-1.20.4-20240627.114801-mappings-merged.txt` 的表头是 `tsrg2 left right`,内容是 obf → 官方名
   (`a com/mojang/math/Axis`)。
 
-所以"该版本的 SRG ↔ official 映射表"**不能从 NeoForm 拿**。候选来源只有两条:MCPConfig
-(`de.oceanlabs.mcp:mcp_config:1.20.4`,待确认是否发布过) 或拿 Forge 自己的 SRG 命名 client jar 与
-NeoForge 的官方命名 jar 做结构比对(两者同源、类名一致,按描述符在类内配对即可反推)。
+所以"该版本的 SRG ↔ official 映射表"**不在 NeoForm 里**。但它确实存在 —— 这一节最后查到了来源,
+见下面"映射表的来源"。
+
+**要重映射的只有成员名,不是类名。** 这一点必须先量清楚,因为它决定实现的大小。OptiFine 1.20.4 里
+`net/minecraft/client/Minecraft` 的引用长这样:
+
+    #220 = Methodref  // net/minecraft/client/Minecraft.m_91087_:()Lnet/minecraft/client/Minecraft;
+    #230 = Methodref  // net/minecraft/client/Minecraft.m_91268_:()Lcom/mojang/blaze3d/platform/Window;
+    #612 = Methodref  // net/minecraft/client/Options.m_232119_:()Lnet/minecraft/client/OptionInstance;
+
+**类名是官方名,成员名是 SRG 名**,而且常量池里 `net/minecraft/src/C_` 这种 SRG 类名出现 **0 次**
+(1.17 起类名就只有官方名了)。所以重映射表只需要按"宿主类 + 成员名"改成员名,描述符原样保留。
+
+**映射表的来源(已确认)**:MCPConfig 发布过 1.20.4 的映射。
+
+    https://maven.minecraftforge.net/de/oceanlabs/mcp/mcp_config/1.20.4/mcp_config-1.20.4.zip   HTTP 200, 1,872,980 B
+
+里面 `config/joined.tsrg`(6,011,226 B) 的表头也是 `tsrg2 obf srg id`,但**这一份的 srg 列是真的**:
+
+    a net/minecraft/src/C_252363_ 252363
+    	a f_252495_ 252495
+    	b f_252529_ 252529
+
+于是把两份同以 obf 为左列的映射串起来就能得到 SRG↔official:
+
+| 来源 | 左 | 右 |
+|---|---|---|
+| MCPConfig `config/joined.tsrg` | obf | SRG(`net/minecraft/src/C_*`、`m_*`/`f_*`) |
+| NeoForm `...-mappings-merged.txt` | obf | 官方名(`net/minecraft/world/item/Item`、`getId`) |
+
+即:同一个 obf 类 + 同一个 obf 成员,在左表里读 SRG 名、在右表里读官方名,配对即得
+`(官方宿主类, SRG 成员名) → 官方成员名`。两份文件都已取到本地
+(`test-downloads/mcp1204-joined.tsrg`、`libraries/net/neoforged/neoform/1.20.4-20240627.114801/...-mappings-merged.txt`)。
+注意两份的成员行都不带描述符,所以表要以"宿主类 + 成员名"为键,描述符保持不动。
 
 **一个被否证的捷径**:本来想用 `patch/srg/*.class.md5` 判定"OptiFine 是针对哪个 jar 打的补丁",
 结果 427 个 md5 对本地所有候选 jar 全部 0 命中 —— NeoForm 官方 jar、vanilla 混淆 jar、slim、extra、
 `neoforge-*-client.jar`、`neoforge-*-universal.jar` 逐个比对都是 0;`patch/notch` 对 vanilla 混淆 jar 也是
 0/426。结论是**这些 md5 不是输入校验和**(很可能校验的是 xdelta 之后的产物),这条路不能用来判定命名空间。
+
+**下一步**:写一个离线生成器把上面两张表合成 1.20.2 / 1.20.4 的 SRG→official 成员表,再在 loader 的
+transformer 里用 ASM `Remapper` 把 OptiFine 载荷的成员引用改写掉(类名不动)。1.20.2 需要同样查一次
+`mcp_config-1.20.2.zip` 是否存在。

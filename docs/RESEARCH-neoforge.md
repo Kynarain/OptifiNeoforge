@@ -226,8 +226,10 @@ return ClassProcessorSet.builder()
   `Methodref`/`Fieldref` 带 `m_`/`f_`，且不是字符串）。**先前这里写的“`patch/srg` 树仍匹配，因为类名一致”
   是错的**：类名确实一致（1.17 起都用官方类名），但成员名不一致,链接会在运行时失败。
   元数据那一侧仍然成立：`mods.toml` 被接受、`loaderVersion` 有 `javafml=42` 后门、无 OptiFine 拒收检查。
-  另一处缺口:NeoForm 1.20.4 自带映射里 srg 列与 obf 列相同、不含任何 `m_` 名,所以重映射表要另找来源
-  （MCPConfig,或与 Forge 的 SRG 命名 client jar 做结构比对）。
+  另一处已确认的来源:NeoForm 1.20.4 自带映射里 srg 列与 obf 列相同、不含任何 `m_` 名,但
+  **MCPConfig 发布过 1.20.4**(`de.oceanlabs.mcp:mcp_config:1.20.4`,`config/joined.tsrg` 里 srg 列是真的
+  `m_*`/`f_*`),把它与 NeoForm 的 `-mappings-merged.txt`(obf→官方名)串联即可得到 SRG→official 成员表。
+  实测还确认:OptiFine 引用的**类名是官方名**、只有成员名是 SRG,所以重映射只需要改成员名。
 - **1.20.6 / 1.21 / 1.21.1：A 只差一步**。元数据通过（后门仍在），ModLauncher 仍在 → 只要**把 `optifine/Installer*.class` 从 jar 里删掉**（重打包）即可让原服务被发现；否则 NeoForge 会以 `brokenfile.optifine` 跳过整个 jar。B 也可行但没必要。
 - **1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8：A 需要同时改元数据 + 重打包**（`loaderVersion` 必须从 `[14,)` 改成当前 FML 线可接受的区间，例如 `[3,)`/`[5,)`/`[9,)`，且 `mods.toml` 要改名为 `neoforge.mods.toml`）。改完 ModLauncher 路径仍成立。**若不想维护“改 jar”，就统一走 B。**
 - **1.21.9 / 1.21.10 / 1.21.11：只能 B**。ModLauncher 在 FML 10.x 已被彻底移除，`ITransformationService` 无宿主；而这三版的 OptiFine（`1.21.9 J7_pre2` / `1.21.10 J7_pre11` / `1.21.11 J9`）**没有** `ClassProcessor` 实现（只有旧的 `cpw.mods.modlauncher.api.ITransformationService` + `OptiFineTransformer`）。我们必须自己写 `ClassProcessor`，内部复用 `optifine.Patcher.applyPatch(...)` / OptiFine 的 xdelta 数据。
