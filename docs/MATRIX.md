@@ -784,3 +784,29 @@ java.lang.RuntimeException: java.lang.ClassFormatError:
 **下一步(1.20.1,按位重写这条规则)**:字段合并时把 `ACC_STATIC` 与 `ACC_FINAL` 都取**运行时那份**
 (载荷新增的字段没有运行时对应,则保留载荷自己的位);接口字段确保最终是 `public static final`。
 另外这两次实验都说明一件事:**动访问位的改动必须先跑 1.20.4 回归**,它是最容易把已验证的行弄坏的地方。
+
+**"按位取运行时"也试过了,同样是坏的,已回退(负结果 #2)**
+
+改动:字段的 `ACC_STATIC`/`ACC_FINAL` 取运行时那份(运行时没有这个字段时才保留载荷的位),
+接口字段强制 `public static final`。结果**两条线都退**,而且错得**一模一样**:
+
+```
+IllegalAccessError: Update to non-static final field
+  com.mojang.blaze3d.vertex.VertexFormat.elem…      (1.20.4,字段名 elem…)
+  com.mojang.blaze3d.vertex.VertexFormat.f_86…      (1.20.1,字段名 f_86…)
+```
+
+也就是说:合并后的字段被判成 **final**,而某个调用方在写它。回退后 1.20.4 立刻回到
+`VERDICT: TIMEOUT (181s)` + `76 members / 27 classes` + `448 targets`(那组已验证的数字)。
+
+**两次实验合起来给出的结论(比改动本身重要)**
+
+1. **`IllegalAccessError: Update to … final field` 在两条线上是同一个病**:运行时有代码写一个字段,
+   而合并后的类把它标成 final。区别只在字段名的命名空间(1.20.1 是 `f_86…`,1.20.4 是 `elem…`)——
+   这本身又说明**两条线的"运行时那份"并不总在同一命名空间里**,而这正是这条规则难写的原因。
+2. **合并的匹配键是 `名字 + 描述符`**,载荷与运行时只要**描述符**有一点不同,查找就落空,
+   于是"以运行时为准"的规则**根本不会生效**,字段会原封不动带着载荷的位 ✗ —— 这解释了为什么两次
+   访问位改动都是"要么无效、要么有害"。
+3. **下一步应该先解决匹配,再谈取舍**:先用调试输出把 `VertexFormat`(及 `ForgeRenderTypes$CustomizableTextureState`)
+   里那几个字段在载荷/运行时两侧的**名字、描述符、访问位**真实打印出来,看清"谁与谁对应、差在哪一位",
+   再决定规则;而不是继续凭推测改合并逻辑。改动前先跑 1.20.4 回归。
