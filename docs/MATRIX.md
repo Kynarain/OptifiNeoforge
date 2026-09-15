@@ -16,7 +16,8 @@
 | 1.21.x | 1.21.1 | 21.1.250 | **已验证**(2026-09-16) | `STARTED (40s)`、`Setting user` ✓、313 个类换装(目标 426)、223 行 `[OptiFine]`、`Pre-stitch` ×14、CTM ×3、着色器 ✓、`Caught error: 0`、**stderr 0 字节**;载荷父类被改写(`CapabilityProvider` → `AttachmentHolder`) |
 | 1.21.x | 1.21.3 | 21.3.97 | **已验证**(2026-09-16) | 一次性跑通:`STARTED (40s)`、`Setting user` ✓、268 个类换装(目标 445)、225 行 `[OptiFine]`、`Pre-stitch` ×14、CTM ×3、着色器 ✓、`Caught error: 0`、**stderr 0 字节**;载荷父类改写与 1.21.1 同形(`CapabilityProvider` → `AttachmentHolder`) |
 | 1.21.x | 1.21.4 | 21.4.149 | **已验证** | 启动成功、OptiFine 474 targets、模型烘焙(`missingModel=SimpleBakedModel`)、1024×1024 贴图集、232 行 `[OptiFine]`、`Pre-stitch` ×14、stderr 0 字节;这一线走 OptiFine 自己的运行期补丁,不换类 |
-| 1.21.x | 1.21 / 1.21.6 / 1.21.7 / 1.21.8 / 1.21.9 / 1.21.10 / 1.21.11 | 21.x | **未开始** | 1.21.2 与 1.21.5 没有 OptiFine 构建;**1.21.9 起 NeoForge 不再用 ModLauncher**(实测 21.11.45 的 profile:主类 `net.neoforged.fml.startup.Client`,库里没有 modlauncher/securejarhandler,只有 FML 10 + sponge-mixin),那几条线的挂载点要换成 `ClassProcessor`;1.21.6/1.21.7 的上游缺陷见 `OptifiNeoforge-121x/docs/PLAN.md` |
+| 1.21.x | 1.21.6 / 1.21.7 / 1.21.8 | 21.6.20-beta / 21.7.25-beta / 21.8.54 | **已验证**(2026-09-16) | 三条都 `STARTED (40s)`、`Setting user` ✓、**stderr 0 字节**、无本次运行的 crash report:1.21.6 340 行 `[OptiFine]`,1.21.7 340 行,1.21.8 337 行;三条都换装 ~500 个类并回填 ~350 个成员。三条的上游缺陷(OptiFine 预览版开启着色器会崩在 OptiFine 内部)使验收不含着色器,见 `OptifiNeoforge-121x/docs/PLAN.md` |
+| 1.21.x | 1.21 / 1.21.9 / 1.21.10 / 1.21.11 | 21.0.167 / 21.9.16-beta / 21.10.64 / 21.11.45 | **未开始** | 1.21.2 与 1.21.5 没有 OptiFine 构建;1.21 只是前置(NeoForge 21.0.167 未装);**1.21.9 起 NeoForge 不再用 ModLauncher**(实测 21.11.45 的 profile:主类 `net.neoforged.fml.startup.Client`,库里没有 modlauncher/securejarhandler,只有 FML 10 + sponge-mixin),挂载点要换成 `ClassProcessor`,而 OptiFine 1.21.11 J9 **不含** processor,要自己写 |
 | 26.x | 26.1.2 | 26.1.2.109 | **未开始** | FML 11 去掉 ModLauncher;OptiFine K1_pre2 自带 `OptiFineClassProcessor`,需先绕过 `IncompatibleModReason` 与 `loaderVersion` |
 
 **已知缺陷(与加载器无关,1.20.2 / 1.20.4 共有)**:OptiFine 的 `Reflector` 在 `GameRenderer.frameInit` 里
@@ -1862,6 +1863,165 @@ NeoForge 的贴图集装配与模型发现谁先谁后),即 OptiFine 等待的�
    `optifine/OptiFineClassProcessor`(实现 `ClassProcessor` + `IModFileCandidateLocator`,并注册了两个
    service 文件),所以这条线的正确做法是"让 NeoForge 接受 OptiFine 的 jar、让它自己的 processor 跑",
    要处理的正是 FML 的 `IncompatibleModReason.OPTIFINE` 拒绝与元数据门槛。
+
+## 1.21.6 / 1.21.7 / 1.21.8 一次收口:两个坑都在"回填"这条路上(2026-09-16 上午)
+
+上一轮结束时 1.21.6 悬在 `[OptiFine] Mipmap levels: 4`:日志 116 744 行、16.5 MB,而当时的统计写着
+`NPE=0`。**先把日志按"重复次数"排序**,结论立刻变了 —— 那份日志里 4 428 帧属于同一个 NPE 的堆栈:
+
+```
+java.lang.NullPointerException: Cannot invoke "MapCodec.decode(...)" because "this.val$fallbackCodec" is null
+	at neoforged/neoforge/common/util/NeoForgeExtraCodecs$1.decode(NeoForgeExtraCodecs.java:250)
+	...
+	at net/minecraft/client/resources/model/BlockStateModelLoader.lambda$loadBlockStates$1(BlockStateModelLoader.java:60)
+2214 × Failed to load blockstate definition <所有方块>
+```
+
+也就是说:方块状态**一个都没装载成功**,资源重载永远走不完,客户端停在加载画面 —— 不是"卡住",是"每一步都
+在报错"。同一形状在 1.21.8 的回归跑里也复现了(`reg1218`),说明它不是 1.21.6 独有。
+
+### 坑一:`invokedynamic` 不在取值游走的表里
+
+上一轮把"取静态字段初值"的游走从"退到上一个 label"改成了**数栈**的游走(为了修 1.21.6 的
+`PIPELINE_MODIFIERS`)。数栈游走的每一步都要能说出"这条指令净产出几个值",而 `invokedynamic` 当时
+不在表里 ⇒ 返回 `null` ⇒ 整段取值被判定为"说不清" ⇒ 静态字段**只回填了声明、没有回填值**。
+
+1.21.8 的载荷类 `SingleVariant$Unbaked` 正好是这种形状(载荷只有 `CODEC`,运行时多了 `MAP_CODEC`):
+
+```
+0: getstatic     Variant.MAP_CODEC
+3: invokedynamic #1  apply:()Ljava/util/function/Function;   // lambda
+8: invokedynamic #2  apply:()Ljava/util/function/Function;   // lambda
+13: invokevirtual MapCodec.xmap(Function,Function)MapCodec
+16: putstatic     SingleVariant$Unbaked.MAP_CODEC
+```
+
+而 NeoForge 的 `BlockStateModel$Unbaked.CODEC` 用 `dispatchMapOrElse(..., fallback)` 把
+`SingleVariant.Unbaked.MAP_CODEC` 当兜底,那个匿名类在**构造时**就把 null 捕获进了 `val$fallbackCodec`,
+于是此后每一次方块状态反序列化都 NPE。
+
+修法两条,缺一不可(第二条是第一次修完才发现的):
+
+| # | 位置 | 改动 | 不改会怎样 |
+|---|---|---|---|
+| 1 | `MemberRestorePlan.stackDelta` / `invoke` | 认识 `INVOKEDYNAMIC`(无接收者,净产出 = 返回非 void ? 1 : 0 − 参数个数) | 字段只有声明没有值 |
+| 2 | `MemberRestoreTransformer.copy` | 能复制 `InvokeDynamicInsnNode`(bootstrap 与参数共享,ASM 会写进本类自己的 bootstrap 表) | 值取到了却内联不进去,日志里只留一句 warn |
+
+安全性是查过字节码才下结论的:这两个 `invokedynamic` 的 bootstrap 指向 `SingleVariant$Unbaked.<init>` 与
+`SingleVariant$Unbaked.variant()`,OptiFine 那份类**两者都有**,所以把这段代码搬到载荷类里执行是合法的。
+
+**规则(新增)**:静态字段初值的取值游走必须认识 `invokedynamic` —— "值由 lambda 构造"是这一代 Minecraft
+的常态(记录类的 `xmap`/`dispatch` 全是这个形状),不是例外。
+
+### 坑二(工具层):构建脚本的过滤器把工具的告警吞掉了
+
+上一轮的构建日志里,工具其实**一直在报**:
+
+```
+      no safe static initialiser for field net/minecraft/client/renderer/block/model/BlockStateModel$Unbaked.WEIGHTED_MODEL_CODEC
+```
+
+而 rig 的这一步只放行 `^compared` 开头的汇总行,`no safe …` 这类"我放弃了"的告警全部被丢掉 ⇒
+"某个字段被回填成 null"这件事在**构建日志里完全不可见**,只能在启动崩溃之后从 16 MB 的 stdout 里反推。
+过滤器已改成 `^compared|no safe|constructor not restorable|could not re-read|stub \(body`。
+
+**规则(新增)**:任何"跳过 / 放弃 / 降级"的分支都要能在构建日志里看到。看不见的降级等于没有降级。
+
+### 坑三(1.21.6 独有):回填进来的构造器不知道载荷**自有**的字段
+
+坑一修完后 1.21.6 前进了一大截,然后换了一个位置崩:
+
+```
+NullPointerException: Cannot invoke "GpuTexture.getFormat()" because "textureIn" is null
+	at GlCommandEncoder.verifyColorTexture(264) ← clearColorAndDepthTextures(173)
+	at RenderTargetDescriptor.prepare(23) ← CrossFrameResourcePool.acquire ← FrameGraphBuilder.execute
+	at PostChain.process ← GameRenderer.processBlurEffect ← GuiRenderer.draw     // 第一帧的模糊后处理
+```
+
+**先做对照实验再动手**:同一条线用 `-NoMods` 空跑 NeoForge 21.6.20-beta ⇒ `STARTED`、无 crash。
+所以这是我们的载荷造成的,不是 beta 版的问题(1.21.7 同一天通过,也说明不是整代的问题)。
+
+逐条字节码看下来,因果链很短:
+
+| 类 | 方法 | 关键字节码 |
+|---|---|---|
+| 载荷 `RenderTarget` | `<init>(String,Z)` | `aload_0; iconst_1; putfield enabled` ← OptiFine 自己的字段 |
+| 载荷 `RenderTarget` | `resize(II)` | `getfield enabled; ifne 28` —— `enabled == false` 时**只写尺寸就 return**,不建缓冲 |
+| 运行时 `RenderTarget` | `<init>(String,ZZ)` | 回填进来的那份:设 `label`/`useDepth`/`useStencil`,**从不碰 `enabled`** |
+| 运行时 `TextureTarget` | `<init>(String,IIZZ)` | 调的就是三参构造 ⇒ 每个由帧图分配的 render target 都是 `enabled = false` |
+
+于是 `colorTexture` 恒为 null,`RenderTargetDescriptor.prepare` 把它交给
+`clearColorAndDepthTextures` 时炸在 `verifyColorTexture`。
+
+**规则(新增)**:回填一个**构造器**时,还要回填"载荷自有、运行时没有"的实例字段初值 —— 从**载荷自己**的
+构造器里取那段赋值。判据与实例字段回填一致:只在"该构造器自己不给这个字段赋值"时才调用,所以 OptiFine
+自己编译的构造器一个都不受影响(它们的 `assignedFields` 命中)。
+
+顺带修掉一个**潜伏**的错误:实例初值提取的回退游走会把 `putfield` 的**接收者** `aload_0` 一起吞进切片,
+而包装器自己还要再 push 一次接收者:
+
+```
+aload_0            <- 包装器自己 push 的
+aload_0; iconst_1  <- 被吞进来的切片(接收者 + 值)
+putfield enabled
+```
+
+这样 `return` 时栈上还剩一个引用,**不会通过校验**。现在先走数栈游走(它天然不含接收者),回退时才要求
+"切片首指令不是接收者 push"(覆盖 `this.x = this.y` 这种值本身以 `aload_0` 开头的形状)。
+这条是**发货前用 javap 看供体字节码**发现的 —— 离线工具产出的类值得逐个看过再启动。
+
+### 一个副作用:一批实例字段现在真的有值了
+
+新增的"载荷自有字段"这一趟不只修了 `RenderTarget`,同一批里其它"取不到初值"的实例字段也一并取到了:
+1.21.6 的 `Camera.roll`、`Gui.leftHeight/rightHeight`、`ClientLevel.dayTimeFraction/dayTimePerTick`、
+`ModelManager.bakedStandaloneModels`、`EntityRenderState.partialTick` 等从 `no safe initialiser` 名单上消失。
+剩下的只有 5 个**静态**字段(`VideoSettingsScreen` 的常量与 `FABULOUS`、两个 `$SwitchMap` 合成表、
+`BlockStateModel$Unbaked.WEIGHTED_MODEL_CODEC`)—— 前两类是常量与合成表(载荷自己会建),
+最后那个字段所在的接口按"运行时给接口加过成员就不换装"的规则**根本没换装**,所以不影响。
+
+### 本轮实测(2026-09-16 06:44–06:47,连续三条)
+
+| 线 | NeoForge | VERDICT | `Setting user` | `[OptiFine]` | 日志行数 | stderr | 本次运行的 crash |
+|---|---|---|---|---|---|---|---|
+| 1.21.6 | 21.6.20-beta | `STARTED (40s, Sound engine started)` | ✓ | 340 | 907 | **0 字节** | 无 |
+| 1.21.7 | 21.7.25-beta | `STARTED (40s, Sound engine started)` | ✓ | 340 | 929 | **0 字节** | 无 |
+| 1.21.8 | 21.8.54 | `STARTED (40s, Sound engine started)` | ✓ | 337 | 899 | **0 字节** | 无 |
+
+回归(同一轮改动之后重跑):1.21.8 337 行 / 899 行日志、1.21.1 223 行 / 2 321 行日志、stderr 均为 0 字节,
+与改动前**逐项一致**(1.21.6 的 116 744 行 → 907 行就是坑一的量级)。
+
+**rig 的另一处误导,顺手修掉**:`launch-neoforge.ps1` 收尾时打印的是"`crash-reports` 里最新的那份",
+而游戏目录是复用的 ⇒ 上一轮崩溃的报告会被当成这一轮的结论打印出来(我因此白追了一次四小时前的
+`PIPELINE_MODIFIERS`)。现在只认**本次启动之后**写入的报告,措辞也改成 `no crash report from this run`。
+
+### 当前修订(2026-09-16 上午)
+
+| 线 | 版本 | NeoForge | 状态 |
+|---|---|---|---|
+| 1.20.x | 1.20.1 / 1.20.2 / 1.20.4 / 1.20.6 | 47.1.106 / 20.2.88 / 20.4.251 / 20.6.141 | **已验证**(四条;1.20.2/1.20.4 带已知的 Reflector 缺陷;**未同步本轮 loader/工具改动**) |
+| 1.21.x | 1.21.1 / 1.21.3 / 1.21.4 / **1.21.6** / **1.21.7** / **1.21.8** | 21.1.250 / 21.3.97 / 21.4.149 / **21.6.20-beta** / **21.7.25-beta** / **21.8.54** | **已验证**(六条) |
+| 1.21.x | 1.21 | 21.0.167 | 前置未装(NeoForge 21.0.167 不在本机) |
+| 1.21.x | 1.21.9 / 1.21.10 / 1.21.11 | 21.9.16-beta / 21.10.64 / 21.11.45 | 需要 `ClassProcessor` 挂载点(OptiFine 侧没有) |
+| 26.x | 26.1.2 | 26.1.2.109 | 需要挂载点,但 OptiFine `K1_pre2` **自带** processor |
+
+### FML 10/11 挂载点:这一轮量到的三件事(下一轮起点)
+
+1. **service 文件名与类型**(OptiFine 26.1.2 `K1_pre2` 就是这么注册自己的):
+   * `META-INF/services/net.neoforged.neoforgespi.transformation.ClassProcessor` → `optifine/OptiFineClassProcessor`
+   * `META-INF/services/net.neoforged.neoforgespi.locating.IModFileCandidateLocator`
+   而 OptiFine **1.21.11 J9 里没有**这两个,只有老的
+   `META-INF/services/cpw.mods.modlauncher.api.ITransformationService` ⇒ 26.1.2 可以"让 OptiFine 自己换装、
+   我们只回填",**1.21.9/1.21.10/1.21.11 必须我们自己写 ClassProcessor**(把现有 `ITransformer` 的逻辑搬过去)。
+2. **两条线的 FML 代次**:1.21.11 → `fancymodloader:loader:10.0.36`(FML 10),26.1.2 →
+   `loader:11.0.15`(FML 11);两者 `mainClass` 都是 `net.neoforged.fml.startup.Client`,库里都没有
+   modlauncher/securejarhandler。
+3. **SPI 就在 loader jar 里**:`loader-10.0.36.jar` 含整套
+   `net/neoforged/neoforgespi/transformation/*`(`ClassProcessor`、`SimpleClassProcessor`、
+   `BaseSimpleProcessor`、`SimpleFieldProcessor`、`SimpleMethodProcessor`、`ProcessorName`、
+   `ClassProcessorProvider`),`SimpleClassProcessor` 的契约是
+   `void transform(ClassNode, SimpleTransformationContext)` + `Set<Target> targets()`,
+   别的 FML 部件用 `ServiceLoaderUtil.loadServices(context, ClassProcessorProvider.class)` 装载。
+   ⇒ 我们的 loader 编译 classpath 在 FML 10 线上要从 modlauncher 换成 `loader-10.0.36.jar`。
 
 
 
