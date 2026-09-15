@@ -64,6 +64,7 @@ public final class SrgRemap {
 		int methodNames;
 		int fieldNames;
 		int stringConstants;
+		int collisions;
 		final Map<String, Integer> misses = new TreeMap<>();
 		final Map<String, String> missSamples = new LinkedHashMap<>();
 
@@ -86,7 +87,8 @@ public final class SrgRemap {
 
 		public String describe() {
 			return "rewrote " + methodNames + " method and " + fieldNames + " field names, "
-					+ missed() + " could not be resolved; " + stringConstants
+					+ missed() + " could not be resolved, " + collisions
+					+ " renames refused because the class already has that name, " + stringConstants
 					+ " SRG-shaped string constants were left alone";
 		}
 	}
@@ -112,38 +114,7 @@ public final class SrgRemap {
 	public static Report rewrite(SrgMemberMap map, SrgMemberMap.RuntimeIndex runtime, Path in, Path out)
 			throws IOException {
 		Report report = new Report();
-		// The API-version constructor rather than the no-argument one: ASM 9.10 deprecated the latter,
-		// and a deprecation note on stderr is enough to abort the rig build, which treats stderr as
-		// fatal. ASM9 is what every line's runtime ships.
-		Remapper remapper = new Remapper(Opcodes.ASM9) {
-			@Override
-			public String mapMethodName(String owner, String name, String descriptor) {
-				if(!SRG_NAME.matcher(name).matches()) {
-					return name;
-				}
-				String official = resolve(map, runtime, owner, name, descriptor, true);
-				if(official != null) {
-					report.methodNames++;
-					return official;
-				}
-				miss(report, map, runtime, owner, name, descriptor, true);
-				return name;
-			}
-
-			@Override
-			public String mapFieldName(String owner, String name, String descriptor) {
-				if(!SRG_NAME.matcher(name).matches()) {
-					return name;
-				}
-				String official = resolve(map, runtime, owner, name, descriptor, false);
-				if(official != null) {
-					report.fieldNames++;
-					return official;
-				}
-				miss(report, map, runtime, owner, name, descriptor, false);
-				return name;
-			}
-		};
+		Renamer renamer = new Renamer(map, runtime, report);
 
 		try(ZipFile zip = new ZipFile(in.toFile());
 				ZipOutputStream sink = new ZipOutputStream(Files.newOutputStream(out))) {
@@ -154,7 +125,7 @@ public final class SrgRemap {
 					data = stream.readAllBytes();
 				}
 				if(entry.getName().endsWith(".class") && !isUnusedNamespace(entry.getName())) {
-					data = rewriteClass(data, remapper, report);
+					data = rewriteClass(data, renamer, report);
 				}
 				ZipEntry copy = new ZipEntry(entry.getName());
 				copy.setTime(entry.getTime());
@@ -167,13 +138,16 @@ public final class SrgRemap {
 	}
 
 	/** Rewrites one class body, and counts the SRG names that survive as string constants. */
-	private static byte[] rewriteClass(byte[] data, Remapper remapper, Report report) {
+	private static byte[] rewriteClass(byte[] data, Renamer renamer, Report report) {
 		ClassReader reader = new ClassReader(data);
 		ClassWriter writer = new ClassWriter(0);
-		reader.accept(new ClassRemapper(writer, remapper), 0);
 
 		ClassNode node = new ClassNode();
 		reader.accept(node, ClassReader.SKIP_DEBUG);
+		// Declarations are checked against this class's own members, so it has to be in hand first.
+		renamer.current = node;
+		reader.accept(new ClassRemapper(writer, renamer), 0);
+
 		for(MethodNode method : node.methods) {
 			for(AbstractInsnNode instruction = method.instructions.getFirst(); instruction != null; instruction = instruction.getNext()) {
 				if(instruction instanceof LdcInsnNode ldc && ldc.cst instanceof String text
@@ -183,6 +157,94 @@ public final class SrgRemap {
 			}
 		}
 		return writer.toByteArray();
+	}
+
+	/**
+	 * The rewriter, which refuses renames that would make the class unloadable.
+	 *
+	 * <p>Measured, not imagined: without this guard {@code ModelPart} came out with two methods named
+	 * {@code getChild(String)ModelPart} - javap shows one before the rewrite and two after - and the JVM
+	 * rejected the class with {@code ClassFormatError: Duplicate method name}. OptiFine's payload is a
+	 * mixture: some members are already named the way the runtime names them and others are still SRG,
+	 * so a rename can land on a name the class already declares. Refusing that rename keeps the class
+	 * loadable; the member keeps its SRG name and is reported.</p>
+	 */
+	private static final class Renamer extends Remapper {
+		private final SrgMemberMap map;
+		private final SrgMemberMap.RuntimeIndex runtime;
+		private final Report report;
+		ClassNode current;
+
+		Renamer(SrgMemberMap map, SrgMemberMap.RuntimeIndex runtime, Report report) {
+			// The API-version constructor rather than the no-argument one: ASM 9.10 deprecated the
+			// latter, and a deprecation note on stderr is enough to abort the rig build.
+			super(Opcodes.ASM9);
+			this.map = map;
+			this.runtime = runtime;
+			this.report = report;
+		}
+
+		@Override
+		public String mapMethodName(String owner, String name, String descriptor) {
+			if(!SRG_NAME.matcher(name).matches()) {
+				return name;
+			}
+			String official = resolve(map, runtime, owner, name, descriptor, true);
+			if(official == null) {
+				miss(report, map, runtime, owner, name, descriptor, true);
+				return name;
+			}
+			if(occupied(official, descriptor, true)) {
+				report.collisions++;
+				report.missSamples.putIfAbsent("would duplicate " + official,
+						owner + "." + name + " -> " + official + descriptor);
+				return name;
+			}
+			report.methodNames++;
+			return official;
+		}
+
+		@Override
+		public String mapFieldName(String owner, String name, String descriptor) {
+			if(!SRG_NAME.matcher(name).matches()) {
+				return name;
+			}
+			String official = resolve(map, runtime, owner, name, descriptor, false);
+			if(official == null) {
+				miss(report, map, runtime, owner, name, descriptor, false);
+				return name;
+			}
+			if(occupied(official, descriptor, false)) {
+				report.collisions++;
+				report.missSamples.putIfAbsent("would duplicate " + official,
+						owner + "." + name + " -> " + official + descriptor);
+				return name;
+			}
+			report.fieldNames++;
+			return official;
+		}
+
+		/** Whether the class being rewritten already declares this name and descriptor itself. */
+		private boolean occupied(String official, String descriptor, boolean method) {
+			ClassNode node = current;
+			if(node == null) {
+				return false;
+			}
+			if(method) {
+				for(MethodNode candidate : node.methods) {
+					if(candidate.name.equals(official) && candidate.desc.equals(descriptor)) {
+						return true;
+					}
+				}
+				return false;
+			}
+			for(FieldNode candidate : node.fields) {
+				if(candidate.name.equals(official) && candidate.desc.equals(descriptor)) {
+					return true;
+				}
+			}
+			return false;
+		}
 	}
 
 	/**

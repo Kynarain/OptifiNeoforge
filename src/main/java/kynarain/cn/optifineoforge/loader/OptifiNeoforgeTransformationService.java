@@ -63,7 +63,10 @@ public class OptifiNeoforgeTransformationService implements ITransformationServi
 	@Override
 	public List<ITransformer> transformers() {
 		LOGGER.info("OptifiNeoforgeTransformationService.transformers");
-		return List.of(new RenderTargetFix(), new ReloadableResourceManagerFix(), new TagHelperFix(),
+		// PatchedClassTransformer is first on purpose: it puts OptiFine's compilation of a game class in
+		// place, and MemberRestoreTransformer then adds back the members NeoForge's own version has.
+		return List.of(new PatchedClassTransformer(), new RenderTargetFix(), new ReloadableResourceManagerFix(),
+				new TagHelperFix(),
 				new PackRootsFix(), new ReloadProbeFix(), new ModelProbeFix(), new NativeImageProbeFix(),
 				new SortProbeFix(), new MemberRestoreTransformer());
 	}
