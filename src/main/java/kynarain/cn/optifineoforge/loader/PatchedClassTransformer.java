@@ -123,7 +123,26 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		// OptiFine's patch also drops final so that SliderPercentageOptionOF may extend it. OptiFine's
 		// compilation is the version of this class for this runtime, so its whole access word wins.
 		input.access = patched.access;
-		input.interfaces = patched.interfaces == null ? new ArrayList<>() : new ArrayList<>(patched.interfaces);
+		// Interfaces are additive, not a replacement. OptiFine's compilation of an interface extends the
+		// Forge extension interface while the runtime's extends NeoForge's own, and the two carry
+		// different inherited members - so replacing the list outright removed a route the runtime's own
+		// callers were compiled against:
+		//   runtime ModelBaker extends net.neoforged.neoforge.client.extensions.IModelBakerExtension
+		//   OptiFine ModelBaker extends net.minecraftforge.client.extensions.IForgeModelBaker
+		//   NoSuchMethodError: 'BakedModel ModelBaker.bake(ResourceLocation, ModelState, Function)'
+		// Keeping both lets either route resolve. Only for interfaces: adding a superinterface to a class
+		// obliges that class to implement its abstract methods, which its swapped body may not have.
+		if((patched.access & Opcodes.ACC_INTERFACE) != 0) {
+			List<String> merged = new ArrayList<>(patched.interfaces == null ? List.<String>of() : patched.interfaces);
+			for(String name : input.interfaces) {
+				if(!merged.contains(name)) {
+					merged.add(name);
+				}
+			}
+			input.interfaces = merged;
+		} else {
+			input.interfaces = patched.interfaces == null ? new ArrayList<>() : new ArrayList<>(patched.interfaces);
+		}
 		input.signature = patched.signature;
 		// Members are not the same story as the class. Taking OptiFine's word for the class flags is
 		// right - it changes them on purpose - but for a member the game's own copy may have been widened
