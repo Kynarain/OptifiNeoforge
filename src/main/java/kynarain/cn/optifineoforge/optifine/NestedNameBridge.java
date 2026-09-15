@@ -108,33 +108,65 @@ public final class NestedNameBridge {
 
 		Set<String> taken = new LinkedHashSet<>();
 		Map<String, String> pairs = new LinkedHashMap<>();
+		int unpaired = 0;
 		for(Map.Entry<String, ClassNode> entry : payloadNodes.entrySet()) {
 			String internal = entry.getKey();
 			if(runtimeNames.contains(internal)) {
 				continue; // same name on both sides: nothing to bridge
 			}
 			String prefix = internal.substring(0, internal.indexOf('$')) + "$";
+			List<String> candidates = new ArrayList<>();
 			List<String> matches = new ArrayList<>();
 			for(Map.Entry<String, ClassNode> candidate : runtimeNodes.entrySet()) {
-				if(!candidate.getKey().startsWith(prefix) || runtimeNames.contains(candidate.getKey())
-						&& payloadNodes.containsKey(candidate.getKey())) {
+				if(!candidate.getKey().startsWith(prefix) || taken.contains(candidate.getKey())) {
 					continue;
 				}
-				if(taken.contains(candidate.getKey())) {
-					continue;
-				}
-				if(sameShape(entry.getValue(), candidate.getValue())) {
+				candidates.add(candidate.getKey());
+				// Strict first: the same superclass and the same field and method descriptors. Then the
+				// relaxed rule for records, whose two copies differ by construction in member *names*
+				// while their component descriptors stay the same. This relaxation exists because the
+				// strict rule silently declined on 1.20.2 - NeoForge's copy of that record has extra
+				// members - and the launch then failed much later with an unrelated-looking
+				// NoSuchMethodError.
+				if(sameShape(entry.getValue(), candidate.getValue())
+						|| sameFields(entry.getValue(), candidate.getValue())) {
 					matches.add(candidate.getKey());
 				}
 			}
 			if(matches.size() == 1) {
 				pairs.put(internal, matches.get(0));
 				taken.add(matches.get(0));
-			} else if(matches.size() > 1) {
+				continue;
+			}
+			// Anything not paired out loud: a silent decline resurfaces as a failure somewhere else.
+			unpaired++;
+			if(matches.isEmpty()) {
+				System.err.println("unpaired nested name: " + internal + " (no runtime class of that name, "
+						+ candidates.size() + " candidate(s) under " + prefix + ")");
+				for(String candidate : candidates) {
+					System.err.println("    " + candidate + " : "
+							+ describe(entry.getValue(), runtimeNodes.get(candidate)));
+				}
+			} else {
 				System.err.println("ambiguous bridge for " + internal + ": " + matches);
 			}
 		}
+		if(unpaired > 0) {
+			System.err.println("nested names left unpaired: " + unpaired);
+		}
 		return pairs;
+	}
+
+	/** A one-line reason why two classes were not taken for each other, for the report above. */
+	private static String describe(ClassNode left, ClassNode right) {
+		if(!sameName(left.superName, right.superName)) {
+			return "superclass " + left.superName + " vs " + right.superName;
+		}
+		if(!fieldDescriptors(left).equals(fieldDescriptors(right))) {
+			return "field descriptors differ (" + fieldDescriptors(left).size() + " vs "
+					+ fieldDescriptors(right).size() + ")";
+		}
+		return "field descriptors match; method descriptors differ";
 	}
 
 	/**
@@ -146,11 +178,23 @@ public final class NestedNameBridge {
 				&& descriptorsOf(left).equals(descriptorsOf(right));
 	}
 
-	private static Set<String> descriptorsOf(ClassNode node) {
+	/** The relaxed rule: same superclass and the same component descriptors, member names aside. */
+	private static boolean sameFields(ClassNode left, ClassNode right) {
+		return sameName(left.superName, right.superName)
+				&& !fieldDescriptors(left).isEmpty()
+				&& fieldDescriptors(left).equals(fieldDescriptors(right));
+	}
+
+	private static Set<String> fieldDescriptors(ClassNode node) {
 		Set<String> all = new TreeSet<>();
 		for(FieldNode field : node.fields) {
-			all.add("F " + field.desc);
+			all.add(field.desc);
 		}
+		return all;
+	}
+
+	private static Set<String> descriptorsOf(ClassNode node) {
+		Set<String> all = new TreeSet<>(fieldDescriptors(node));
 		for(MethodNode method : node.methods) {
 			all.add("M " + method.desc);
 		}

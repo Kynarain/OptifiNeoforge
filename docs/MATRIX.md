@@ -1201,3 +1201,31 @@ java.lang.NoSuchMethodError:
    静默放弃以后还会以完全不相干的报错形式出现;
 2. **放宽判据但要仍然可判定**:记录类(record)的两份拷贝成员名可以不同、描述符应当相同,所以对 record
    允许用"父类相同 + **字段描述符集合**相同"来配对;真正无法判定时宁可报歧义,也不要猜。
+
+**放宽 + 出声都做了,于是看到了真正的两处问题(同一晚,上一段的推断被自己的测量推翻)**
+
+先纠正上一段的一个错判:产物里那个**条目名**仍是 `…/ParticleEngine$ParticleDefinition.class`,但 javap 打出来
+**类内部的自己的名字已经被改成运行时名字**:
+
+```
+payload: final class net.minecraft.client.particle.ParticleEngine$1ParticleDefinition extends java.lang.Record
+payload: public net.minecraft.resources.ResourceLocation f_244103_();
+payload: public java.util.Optional<…> f_243741_();
+client-1.20.2-…-srg.jar : net/minecraft/client/particle/ParticleEngine$1ParticleDefinition.class
+neoforge-20.2.88-client.jar: net/minecraft/client/particle/ParticleEngine$1ParticleDefinition.class
+```
+
+也就是说**桥其实配上了、名字也改了**,我却只看了条目名就下了"没配上"的结论 —— 这正是"要量到点上"的又一例。
+真正的问题是**两处**:
+
+1. **搬运只改了类、没改条目路径**:`--rewrite` 把类内部名字改成 `$1ParticleDefinition` 了,但搬运步骤仍按
+   **改写前的条目名**生成 `optifineoforge/patched/…$ParticleDefinition.class`,索引里也是旧名 ✗。
+   ML 是**按条目路径**找类的,它要的是 `…$1ParticleDefinition.class` → 找不到 → 于是**运行时自己那份**被装了进去 ✗。
+   (修法:搬运用改写后 jar 的**条目名**;索引同理 —— 这条要连着 `--rewrite` 的产物一起对。)
+2. **载荷里那个 record 的访问器还是 SRG 名**(`f_243741_()`、`f_244103_()` ✗),而运行时那份是官方名 ✗ ——
+   这正是 `SrgRemap` 在 1.20.2 上"80 条未解析"里的一部分:**record 的访问器与它的组件字段同名**,
+   而映射表里只有字段那条 ✗。修法:改名的表里,对"方法名与同类字段名相同"的情形**沿用该字段的映射**
+   (record 的结构保证这一点),这样访问器就会被改成官方名 ✓。
+
+**下一步(1.20.2)**:先改①(条目名与索引),因为它决定"到底装的是哪一份";再改②(record 访问器沿用字段映射),
+两者都做完再启动一次。注意①②互不替代:即使装对了那一份,访问器仍是 SRG 也会与运行时的官方名对不上。
