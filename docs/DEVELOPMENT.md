@@ -1401,3 +1401,37 @@ attachment 体系(`setData`/`removeData`)取代了 Forge 的 capability 体系,`
 
 **下一轮**:给 BlockEntity 那 8 个成员出**空实现**(走 `ForgeApiShims` 那条路,因为运行时没有 donor),
 顺手看 `NativeImage$WriteCallback` 那 5 条到底是什么,然后继续启动。
+
+### 空实现step + 成员可见性取宽者 —— 1.20.4 跑起来了
+
+`MissingTargets` 加了 `--stub` 模式:把**运行时和载荷都没有**的成员按返回类型补一个默认值实现
+(void→RETURN、对象→ACONST_NULL、数字→0)。**接口里补的是 default 方法而不是抽象方法** —— 给接口加抽象
+方法会把一次缺调用变成别处的 AbstractMethodError。rig 里成为 3b2 步:
+
+    scanned 1118 classes, 43162 references, 10 missing
+    stubbed 9 members on {NativeImage$WriteCallback=3, BlockEntity=6},
+            1 left alone because their owner is a runtime class rather than a payload class
+
+接着换装数从 184 涨到 224,而新错误正好是**上一轮那条教训的反面**:
+
+    IllegalAccessError: NeoForgeRenderTypes$Internal tried to access method 'RenderType.create(...)'
+
+上一轮学到"访问标志要跟着 OptiFine 走",但那只对**类**成立;对**成员**,游戏的版本可能被 access
+transformer 放宽过,NeoForge 自己的代码依赖那个放宽。整字照搬 OptiFine 的 `create()` 把它narrow回去,
+于是 NeoForge 调不动了。现在是:**类标志取 OptiFine 的,成员可见性取两者中更宽的那个**
+(`rank`:public 3 > protected 2 > package 1 > private 0)。
+
+改完之后这一轮的结果是**质变**:
+
+    swapped: 271 个类
+    reloads: 2                      ← 资源重载跑到第 2 次
+    stdout: 14874 行(其中 OpenGL 行 7067、Shaders 14、connected textures 6)
+    VERDICT: TIMEOUT (261s)         ← 不是崩溃,是浏览器窗口一直活着被计时器掐掉
+    crash-reports 目录里最新的一份仍是上一轮 08:22 的 —— **这一轮没有产生崩溃报告**
+
+stderr 只剩 4 条 `NoClassDefFoundError`(其中一条是 `net.minecraft.world.item.ItemStack`),加上 stdout 里
+1 条 `Caught error`;都不致命,游戏继续跑。这是 1.20.4 这条线第一次进入"能玩的状态",而不是"启动即崩"。
+
+**下一轮该做的**:把那 4 条 NoClassDefFoundError 的完整堆栈读出来(现在只看到尾部),确认它们是不是
+同一类问题(某个换装类的字段描述符在模块尚未就绪时被解析);然后按 1.21.4 那条线的验收清单核对
+(贴图集、模型烘焙、资源重载无错),把 1.20.4 从"能启动"推进到"行为与已验证线一致"。
