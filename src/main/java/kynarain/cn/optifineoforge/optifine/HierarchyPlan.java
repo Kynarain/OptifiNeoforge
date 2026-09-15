@@ -58,7 +58,15 @@ public final class HierarchyPlan {
 	}
 
 	/**
-	 * The plan: one {@code reparent &lt;class&gt; &lt;runtime superclass&gt;} line per class that may be moved.
+	 * The plan: one {@code reparent &lt;class&gt; &lt;runtime superclass&gt; &lt;constructor&gt;} line per movable class.
+	 *
+	 * <p>The constructor is the descriptor the rewritten chain has to call, decided here rather than
+	 * assumed because the runtime supertype may well want the argument the payload already passes.
+	 * Measured across the lines: 1.21.1's {@code AttachmentHolder} and 20.4's are constructed with no
+	 * arguments, so the payload's argument is dropped, while 1.20.2 has no {@code AttachmentHolder} at all
+	 * and its {@code net.neoforged.neoforge.common.capabilities.CapabilityProvider} is constructed with
+	 * the very class the payload passes - there the call keeps its argument and only the owner changes.
+	 * A no-argument constructor is the fallback, never the assumption.</p>
 	 *
 	 * <p>Classes whose superclass differs for another reason are reported but not planned. The loader
 	 * refuses those on its own terms - it keeps the runtime's class, which is always safe - and naming
@@ -99,30 +107,85 @@ public final class HierarchyPlan {
 						|| runtimeSuper.equals(forgeSuper)) {
 					continue;
 				}
-				String reason = refusal(runtime.get(runtimeSuper), payloadNode, forgeSuper);
+				List<String> chains = chainsTo(payloadNode, forgeSuper);
+				ClassNode superNode = runtime.get(runtimeSuper);
+				String reason = refusal(superNode, payloadNode, forgeSuper, chains);
 				if(reason != null) {
 					refusals++;
 					System.out.println("  no reparent for " + name + ": " + reason);
 					continue;
 				}
-				lines.add("reparent\t" + name + "\t" + runtimeSuper);
+				String constructor = constructor(superNode, chains);
+				lines.add("reparent\t" + name + "\t" + runtimeSuper + "\t" + constructor);
 				moved++;
 				System.out.println("  reparent " + name.replace('/', '.') + " onto " + runtimeSuper
-						+ " (the payload extends " + forgeSuper + ")");
+						+ " via " + constructor + " (the payload extends " + forgeSuper + ")");
 			}
 		}
 		System.out.println("reparent plan: " + moved + " class(es) movable, " + refusals + " refused");
 		return lines;
 	}
 
+	/** The descriptors of the payload's constructor calls into its Forge superclass, in order. */
+	private static List<String> chainsTo(ClassNode payload, String forgeSuper) {
+		List<String> descs = new ArrayList<>();
+		for(MethodNode method : payload.methods) {
+			if(!"<init>".equals(method.name)) {
+				continue;
+			}
+			for(AbstractInsnNode instruction : method.instructions) {
+				if(instruction instanceof MethodInsnNode call && call.getOpcode() == Opcodes.INVOKESPECIAL
+						&& forgeSuper.equals(call.owner) && "<init>".equals(call.name)
+						&& !descs.contains(call.desc)) {
+					descs.add(call.desc);
+				}
+			}
+		}
+		return descs;
+	}
+
+	/** Which constructor the rewritten chain calls: the payload's own when the runtime has it, else (). */
+	private static String constructor(ClassNode runtimeSuper, List<String> chains) {
+		for(String desc : chains) {
+			if(hasConstructor(runtimeSuper, desc)) {
+				return desc;
+			}
+		}
+		return "()V";
+	}
+
+	/** Whether a class declares this constructor with a visibility a subclass may use. */
+	private static boolean hasConstructor(ClassNode node, String desc) {
+		if(node == null) {
+			return false;
+		}
+		for(MethodNode method : node.methods) {
+			if("<init>".equals(method.name) && desc.equals(method.desc)
+					&& (method.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) != 0) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/** Why this class may not be moved, or null when it may. */
-	private static String refusal(ClassNode runtimeSuper, ClassNode payload, String forgeSuper) {
+	private static String refusal(ClassNode runtimeSuper, ClassNode payload, String forgeSuper,
+			List<String> chains) {
+		if(chains.isEmpty()) {
+			return "no constructor of it chains to " + forgeSuper;
+		}
 		if(runtimeSuper == null) {
 			return "the runtime superclass is not in the jars handed over";
 		}
-		if(!chainable(runtimeSuper)) {
-			return "the runtime superclass " + runtimeSuper.name + " declares no no-argument constructor "
-					+ "that a subclass may call";
+		String constructor = constructor(runtimeSuper, chains);
+		if(!hasConstructor(runtimeSuper, constructor)) {
+			return "the runtime superclass " + runtimeSuper.name + " declares no constructor a subclass "
+					+ "may call that matches " + chains + ", nor a no-argument one";
+		}
+		String overridden = finalOverride(payload, runtimeSuper);
+		if(overridden != null) {
+			return "it declares " + overridden + ", which the runtime superclass " + runtimeSuper.name
+					+ " declares final, so the move would fail with IncompatibleClassChangeError";
 		}
 		for(MethodNode method : payload.methods) {
 			if(!"<init>".equals(method.name)) {
@@ -149,11 +212,41 @@ public final class HierarchyPlan {
 		return null;
 	}
 
-	/** Whether a class declares a no-argument constructor a subclass in another package may call. */
-	private static boolean chainable(ClassNode node) {
-		for(MethodNode method : node.methods) {
-			if("<init>".equals(method.name) && "()V".equals(method.desc)
-					&& (method.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) != 0) {
+	/**
+	 * A member the payload declares and the runtime superclass declares {@code final}, or null.
+	 *
+	 * <p>This is the check 1.20.2 needs and 1.21.1 does not. Both lines' payloads extend Forge's
+	 * {@code CapabilityProvider} and both runtimes extend a NeoForge replacement for it, but 20.2's
+	 * {@code net.neoforged.neoforge.common.capabilities.CapabilityProvider} declares
+	 * {@code serializeCaps()} final while OptiFine's {@code BlockEntity} overrides it, so joining them
+	 * fails at the first instantiation:</p>
+	 *
+	 * <pre>IncompatibleClassChangeError: class net.minecraft.world.level.block.entity.BlockEntity
+	 *   overrides final method net.neoforged.neoforge.common.capabilities.CapabilityProvider.serializeCaps()</pre>
+	 *
+	 * <p>An overriding member is what to look for, not a name collision: {@code final} on a method the
+	 * payload only calls is harmless, and a method the payload declares is exactly what the JVM rejects.
+	 * Private and static members are skipped, since neither can be overridden.</p>
+	 */
+	private static String finalOverride(ClassNode payload, ClassNode runtimeSuper) {
+		// The immediate superclass only, and deliberately: a final method is declared where it is
+		// inherited from, and for these replacements that is the class itself. A deeper one is reported
+		// by the JVM at load, which is still better than an unexplained crash in the middle of startup.
+		for(MethodNode method : payload.methods) {
+			if((method.access & (Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC)) != 0) {
+				continue;
+			}
+			if(declaresFinal(runtimeSuper, method)) {
+				return method.name + method.desc;
+			}
+		}
+		return null;
+	}
+
+	private static boolean declaresFinal(ClassNode node, MethodNode method) {
+		for(MethodNode candidate : node.methods) {
+			if(candidate.name.equals(method.name) && candidate.desc.equals(method.desc)
+					&& (candidate.access & Opcodes.ACC_FINAL) != 0) {
 				return true;
 			}
 		}

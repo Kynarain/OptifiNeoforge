@@ -143,18 +143,20 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	 * version has no reason to have.</p>
 	 */
 	private static String reparent(ClassNode patched, ClassNode runtime) {
-		String planned = REPARENTS_BY_CLASS.get(patched.name);
+		String[] planned = REPARENTS_BY_CLASS.get(patched.name);
 		if(planned == null) {
 			return null;
 		}
+		String plannedSuper = planned[0];
+		String plannedCtor = planned[1];
 		String forgeSuper = patched.superName;
 		if(forgeSuper == null || !forgeSuper.startsWith("net/minecraftforge/")) {
 			return "the plan says to re-parent it but its copy extends " + forgeSuper + ", not a Forge type";
 		}
 		// The plan was made from the same jars, so a disagreement means the plan and the runtime are not
 		// from the same build: the runtime's class has to be the one the plan was measured against.
-		if(!planned.equals(runtime.superName)) {
-			return "the plan re-parents it onto " + planned + " while the runtime's copy extends "
+		if(!plannedSuper.equals(runtime.superName)) {
+			return "the plan re-parents it onto " + plannedSuper + " while the runtime's copy extends "
 					+ runtime.superName + ", so the plan and the runtime do not match";
 		}
 		// The shim has to be a root, or it is not one of ours to discard.
@@ -170,8 +172,11 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 				continue;
 			}
 			for(AbstractInsnNode instruction : method.instructions) {
-				if(instruction instanceof MethodInsnNode call && call.getOpcode() == Opcodes.INVOKESPECIAL
-						&& forgeSuper.equals(call.owner) && "<init>".equals(call.name)) {
+				if(!(instruction instanceof MethodInsnNode call) || call.getOpcode() != Opcodes.INVOKESPECIAL
+						|| !forgeSuper.equals(call.owner) || !"<init>".equals(call.name)) {
+					continue;
+				}
+				if("()V".equals(plannedCtor)) {
 					// The arguments are already on the stack, and the runtime's superclass takes none:
 					// they are discarded rather than the pushes being deleted, which keeps whatever the
 					// class evaluates for them evaluated exactly as OptiFine wrote it.
@@ -180,11 +185,15 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 						method.instructions.insertBefore(call,
 								new InsnNode(arguments[index].getSize() == 2 ? Opcodes.POP2 : Opcodes.POP));
 					}
-					call.owner = planned;
-					call.desc = "()V";
-					call.itf = false;
-					rewritten++;
+				} else if(!plannedCtor.equals(call.desc)) {
+					return "the plan calls " + plannedCtor + " on the runtime's superclass while the payload's "
+							+ "constructor calls " + call.desc + " on the Forge one, so the arguments do not "
+							+ "line up";
 				}
+				call.owner = plannedSuper;
+				call.desc = plannedCtor;
+				call.itf = false;
+				rewritten++;
 			}
 		}
 		if(rewritten == 0) {
@@ -196,29 +205,30 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 			return "the payload's copy of it extends " + forgeSuper + " and its body still names that type ("
 					+ survivor + "), which would not resolve afterwards";
 		}
-		patched.superName = planned;
+		patched.superName = plannedSuper;
 		if(patched.signature != null && patched.signature.contains(forgeSuper)) {
 			// The generic signature names the superclass it was compiled against; a stale one is not a
 			// verification problem, only a lie to anything that reads it, so it goes.
 			patched.signature = null;
 		}
 		LOGGER.info("Re-parented " + patched.name.replace('/', '.') + " from the Forge type " + forgeSuper
-				+ " onto the runtime's " + planned + " (" + rewritten + " constructor call(s) rewritten)");
+				+ " onto the runtime's " + plannedSuper + " (super(" + plannedCtor + "), " + rewritten
+				+ " constructor call(s) rewritten)");
 		return null;
 	}
 
 	/**
-	 * The re-parent plan, {@code class name to the runtime superclass}, produced by the build's
-	 * {@code HierarchyPlan} step. Written there and not decided here because the decision needs the
-	 * runtime superclass, which a transformer cannot look at: it holds two copies of one class, never
-	 * the class above them.
+	 * The re-parent plan, {@code class name to the runtime superclass and the constructor to call},
+	 * produced by the build's {@code HierarchyPlan} step. Written there and not decided here because the
+	 * decision needs the runtime superclass, which a transformer cannot look at: it holds two copies of
+	 * one class, never the class above them.
 	 */
 	private static final String REPARENTS = "/optifineoforge/reparent.txt";
 
-	private static final Map<String, String> REPARENTS_BY_CLASS = loadReparents();
+	private static final Map<String, String[]> REPARENTS_BY_CLASS = loadReparents();
 
-	private static Map<String, String> loadReparents() {
-		Map<String, String> result = new LinkedHashMap<>();
+	private static Map<String, String[]> loadReparents() {
+		Map<String, String[]> result = new LinkedHashMap<>();
 		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(REPARENTS)) {
 			if(stream == null) {
 				// Lines whose payload already speaks NeoForge's hierarchy - 1.20.1, where the Forge
@@ -228,8 +238,10 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 			}
 			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
 				String[] parts = line.split("\t");
-				if(parts.length == 3 && "reparent".equals(parts[0])) {
-					result.put(parts[1], parts[2]);
+				// Four fields, because the constructor is part of the decision: a runtime superclass may
+				// want the argument the payload passes rather than none at all.
+				if(parts.length == 4 && "reparent".equals(parts[0])) {
+					result.put(parts[1], new String[] {parts[2], parts[3]});
 				}
 			}
 		} catch(IOException e) {
