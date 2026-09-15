@@ -1123,3 +1123,44 @@ Forge API,所以 `-ForgeStubs $false`;20.4 的运行时里 `net/minecraftforge` 
 中止构建;现在 rig 用 `Continue` + 显式检查 `$LASTEXITCODE`,并且 `SrgRemap` 改用 `Remapper(Opcodes.ASM9)`
 构造器(无参构造在 ASM 9.10 里已弃用)。`-Out` 的父目录现在也会自动创建 —— 缺目录以前表现为 zip 写入器
 深处的 NullReferenceException,而不是"目录不存在"。
+
+## 2026-09-15:把成品类装进 jar —— 异常风暴消失,但撞上模块包冲突
+
+按上一节的结论做:构建出"成品载荷" = 打完补丁并改好名的类(`srg/` 1070 个,含 427 个游戏类),去掉
+`notch/**`,作为组合 jar 的底。这一步**确实解决了运行时打补丁的问题**:
+
+    改名前(第 68 轮那种装法): stderr 12575 行,Base resource not found 逐类刷屏
+    成品载荷装法:              stderr 8 行,  Base resource not found = 0
+
+也就是说:OptiFine 的运行时 transformer 不再去打那些打不上的补丁,游戏里用的就是我方改好名的类。
+
+但启动换成了另一个失败,而且分两步才看清:
+
+1. `NoSuchFileException: ...optifiNeoforge-combined.jar#177` → `Invalid Services found OptiFine`。
+   读出 `OptiFineTransformationService.onLoad` 的字节码,第 103–110 行是:
+   `ofZipFileUrl = codeSource.getLocation()` → 日志打印 URL → `ofZipFileUrl.getPath()` → 去掉 `file:` →
+   `toFile(URI)` → `new File(...)` → **第 109 行 `new ZipFile(path)`**。URL 是
+   `union:/.../jar%23177!/`,URI 解码后变成 `...jar#177`,ZipFile 自然打不开。
+   这正是 `OptifineJarFixer` 存在的原因(它把 `toFile` 改成先剪掉 `%23N` 和后缀 `!/`);第 68 轮的底是
+   **重打包过的** jar,`OptifineJar` 已经把那个类修好了,而我这次的底来自**打过补丁的** jar,里面那份
+   `optifine/OptiFineTransformationService.class` 是**原版**的。把修好的那份从重打包 jar 里覆盖回去之后:
+
+       OptiFine ZIP file: C:\...\optifiNeoforge-combined.jar     ← onLoad 过了
+
+2. 紧接着,类加载层起不来:
+
+       java.lang.module.ResolutionException: Modules srg and minecraft export package
+       net.minecraft.client.renderer.block to module mixinsynthetic
+
+   把**游戏类**放进 mod jar,我方模块就宣称导出 `net.minecraft.*` 这些包,而 `minecraft` 模块已经导出了
+   它们,模块解析器直接拒绝。这和 1.20.1 那次 `Module optifine contains package
+   net.minecraftforge.eventbus.api` 是同一类问题:jar 的模块不能重复导出游戏包。
+
+**所以"把成品类平铺进 jar"这条路走不通**,但第 1 条已经证明另一件事:只要类能被加载,**补丁不再需要
+OptiFine 的运行时 transformer**。下一步据此调整:成品类改放在**不会与游戏包冲突的路径**下(例如
+`optifineoforge/patched/net/minecraft/...`),由**我方 loader 的 transformer** 在游戏类加载时把内容换成
+成品(OptiFine 替换类的那套机制本来就在这个项目里),这样既避开模块冲突,又不再依赖它自己的 patch 路径。
+
+顺带一个否定结果:试过 `-KeepPatchData` 想让"保留 patch 数据"和"不保留"做对比,结果两次产出**字节数完全
+相同** —— 因为 `Patcher.process` 的输出 jar 里**根本没有 `patch/` 目录**(它的 roots 只有
+`assets, doc, notch, optifine, srg`)。这个开关量不到任何东西,已在 rig 注释里写明。
