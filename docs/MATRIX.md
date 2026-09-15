@@ -14,8 +14,9 @@
 | 1.20.x | 1.20.4 | 20.4.251 | **已验证** | `STARTED (40s)`、`Setting user` ✓、241 行 `[OptiFine]`、`Pre-stitch` ×13、CTM ✓、`Caught error: 0`;已知缺陷同上(stderr 14,481 字节)。**运行要求**:`config/fml.toml` 设 `earlyWindowProvider = "none"` —— FML 的 early window 与 OptiFine 换装的渲染类会在同一帧里重入(`SimpleBufferBuilder: Already building`) |
 | 1.20.x | 1.20.6 | 20.6.141 | **已验证** | 启动成功、OptiFine 着色器与连接材质在跑、贴图集建成;这一版起 FML 拒绝原版 OptiFine jar,所以要靠本项目的重打包与元数据修复 |
 | 1.21.x | 1.21.1 | 21.1.250 | **已验证**(2026-09-16) | `STARTED (40s)`、`Setting user` ✓、313 个类换装(目标 426)、223 行 `[OptiFine]`、`Pre-stitch` ×14、CTM ×3、着色器 ✓、`Caught error: 0`、**stderr 0 字节**;载荷父类被改写(`CapabilityProvider` → `AttachmentHolder`) |
+| 1.21.x | 1.21.3 | 21.3.97 | **已验证**(2026-09-16) | 一次性跑通:`STARTED (40s)`、`Setting user` ✓、268 个类换装(目标 445)、225 行 `[OptiFine]`、`Pre-stitch` ×14、CTM ×3、着色器 ✓、`Caught error: 0`、**stderr 0 字节**;载荷父类改写与 1.21.1 同形(`CapabilityProvider` → `AttachmentHolder`) |
 | 1.21.x | 1.21.4 | 21.4.149 | **已验证** | 启动成功、OptiFine 474 targets、模型烘焙(`missingModel=SimpleBakedModel`)、1024×1024 贴图集、232 行 `[OptiFine]`、`Pre-stitch` ×14、stderr 0 字节;这一线走 OptiFine 自己的运行期补丁,不换类 |
-| 1.21.x | 1.21 / 1.21.3 / 1.21.6 / 1.21.7 / 1.21.8 / 1.21.9 / 1.21.10 / 1.21.11 | 21.x | **未开始** | 1.21.2 与 1.21.5 没有 OptiFine 构建;1.21.9+ 已无 ModLauncher,只能走自定义 `ClassProcessor`;1.21.6/1.21.7 的上游缺陷见 `OptifiNeoforge-121x/docs/PLAN.md` |
+| 1.21.x | 1.21 / 1.21.6 / 1.21.7 / 1.21.8 / 1.21.9 / 1.21.10 / 1.21.11 | 21.x | **未开始** | 1.21.2 与 1.21.5 没有 OptiFine 构建;**1.21.9 起 NeoForge 不再用 ModLauncher**(实测 21.11.45 的 profile:主类 `net.neoforged.fml.startup.Client`,库里没有 modlauncher/securejarhandler,只有 FML 10 + sponge-mixin),那几条线的挂载点要换成 `ClassProcessor`;1.21.6/1.21.7 的上游缺陷见 `OptifiNeoforge-121x/docs/PLAN.md` |
 | 26.x | 26.1.2 | 26.1.2.109 | **未开始** | FML 11 去掉 ModLauncher;OptiFine K1_pre2 自带 `OptiFineClassProcessor`,需先绕过 `IncompatibleModReason` 与 `loaderVersion` |
 
 **已知缺陷(与加载器无关,1.20.2 / 1.20.4 共有)**:OptiFine 的 `Reflector` 在 `GameRenderer.frameInit` 里
@@ -1614,5 +1615,167 @@ Caused by: ClassNotFoundException: net.minecraft.world.level.block.state.BlockSt
 1.21.4 那一行的 232 行 `[OptiFine]` 与 14 次 `Pre-stitch` 与它移植前的基线**完全一致**,说明这一轮改动没有
 碰到它的路径 ✓。1.20.2 是这一轮唯一"先坏后修"的线:改父类那一版 `EXITED (10s)`,加上 final 判据之后回到
 `STARTED` ✓。
+
+---
+
+## 1.21.3 一次跑通,以及 1.21.9 之后真正的路障(2026-09-16 凌晨)
+
+### 1.21.3(neoforge-21.3.97 + OptiFine J2)
+
+准备这一步这轮被脚本化了,因为它对剩下的每一条线都要做一次,而手工做每次都漏东西:
+
+- `prepare-line.ps1`:给一个 MC 版本和 NeoForge 线前缀,取原版 client jar(镜像 → Mojang)、取该线最新的
+  NeoForge installer、装到 `libraries/`,**并解析 installer 自己报出来的"下载失败的库"再手工补齐**。
+- `ensure-vanilla-libs.ps1`:按版本 json 逐个核对 `libraries/` 里是否真有那个库,缺的按 json 里的 URL 取。
+
+这两件事都是被同一类失败逼出来的:`NoClassDefFoundError` / `ClassNotFoundException` 指向一个**原版库**
+而不是我们的东西。1.21.3 的第一次启动就死在
+
+```
+Caused by: java.lang.ClassNotFoundException: com.mojang.authlib.properties.Property
+  at net.minecraft.SharedConstants.<clinit>(SharedConstants.java:177)
+```
+
+`authlib` 没在本地(profile 里列着,launcher 就少解析一个 jar),补上之后第二次启动即通过。另外 installer
+也会自己失败:`SocketTimeoutException: Connect timed out`,而**同一条 URL 我们手工取是通的** —— 所以
+"installer 报缺库 → 手工取 → 再跑 installer"是一条固定的修复路径,不是偶发。
+
+1.21.3 的判据:
+
+| 指标 | 1.21.3(neoforge-21.3.97) |
+|---|---|
+| `VERDICT` | **`STARTED (40s, marker: Sound engine started)`** ✓ |
+| `Setting user` | ✓ |
+| 换类 | **268 个类装上** / 目标 445 ✓ |
+| `[OptiFine]` 日志 | **225 行** ✓ |
+| `Pre-stitch` / `Connected textures` / 着色器 | **14 / 3 / ✓** |
+| `Caught error` | **0** ✓ |
+| stderr | **0 字节** ✓ |
+| 父类改写 | `BlockEntity` → `AttachmentHolder` ✓(与 1.21.1 同形) |
+
+构建侧的实测:载荷的 SRG 改名是空转(`rewrote 0 method and 0 field names`)——和 1.21.1 一样,这一线的
+载荷本来就是官方名;`compared 240 replaced classes … 110 members to restore`;计划表 1 条(父类改写)。
+
+### 1.21.9 起没有 ModLauncher —— 这是 1.21.9/1.21.10/1.21.11/26.1.2 的真正路障
+
+实测 21.11.45 装出来的 profile(`versions/neoforge-21.11.45/neoforge-21.11.45.json`):
+
+```
+mainClass: net.neoforged.fml.startup.Client
+libraries: 26 个 —— fancymodloader(earlydisplay/loader 10.0.36)、sponge-mixin 0.16.5、ASM 9.8、
+           JarJarSelector/Metadata、bus、accesstransformers … 
+           **没有 modlauncher,没有 securejarhandler,没有 bootstraplauncher**
+```
+
+也就是说这一代 FML **不再有 ModLauncher**,我们现在的挂载点(实现
+`cpw.mods.modlauncher.api.ITransformationService` / `ITransformer<ClassNode>`、把成品类塞进 GAME 层模块)
+在上面根本不存在;OptiFine 自己那份 `META-INF/services/cpw.mods.modlauncher.api.ITransformationService`
+也同样无处可挂 —— 实测 **1.21.11 J9 的 jar 里只有这一个 service 文件**,没有任何新 loader 的入口。
+
+新 loader 的挂载点是 `net.neoforged.neoforgespi.transformation.ClassProcessor`(ServiceLoader 注册),
+API 形状和我们现有 transformer 几乎一致:
+
+```
+public interface ClassProcessor {
+  ProcessorName name();
+  boolean handlesClass(SelectionContext);
+  ComputeFlags processClass(TransformationContext);
+  default void afterProcessing(AfterProcessingContext);
+  default void link(LinkContext);
+}
+public abstract class SimpleClassProcessor extends BaseSimpleProcessor {
+  public abstract void transform(org.objectweb.asm.tree.ClassNode, SimpleTransformationContext);
+  public abstract Set<SimpleClassProcessor.Target> targets();     // ← 与现有 targets() 同形
+}
+```
+
+`SimpleClassProcessor` 收的正是 ASM 的 `ClassNode`,所以 `PatchedClassTransformer`(换类 + 父类改写 + 接口
+并集 + 打桩)与成员回填那套逻辑可以整体搬过去,变的只是外层接口与注册方式。
+
+**而 26.1.2 是另一条路**:实测 OptiFine `K1_pre2` 的 jar 里已经有
+
+```
+META-INF/services/net.neoforged.neoforgespi.transformation.ClassProcessor
+META-INF/services/net.neoforged.neoforgespi.locating.IModFileCandidateLocator
+optifine/OptiFineClassProcessor.class
+  extends optifine.OptiFineBaseTransformerService
+  implements ClassProcessor, IModFileCandidateLocator
+```
+
+——**新版 OptiFine 自己就支持新 loader**。所以 26.1.2 那一条的正确做法不是我们移植补丁器,而是让
+NeoForge 接受 OptiFine 的 jar 并让它自己的 processor 跑起来(要处理的正是 FML 的
+`IncompatibleModReason.OPTIFINE` 拒绝与 `loaderVersion` 一类的元数据门槛)。这比 1.21.11 那条线轻得多,
+优先级也应该更高。
+
+**剩下的工作因此分成两类**,不能再按"照 1.21.1 抄一遍"来做:
+
+1. **ModLauncher 世代**(1.21 / 1.21.6 / 1.21.7 / 1.21.8):现有 loader 与 rig 直接可用,把这四条按
+   1.21.3 的路子铺完即可。
+2. **FML 10 世代**(1.21.9 / 1.21.10 / 1.21.11 / 26.1.2):需要 `ClassProcessor` 形态的挂载点。26.1.2 先做
+   (OptiFine 自带 processor),1.21.9–1.21.11 则要把本项目的离线载荷换装逻辑搬到一个 `SimpleClassProcessor`
+   上 —— 载荷、计划表、父类改写、成员回填都已经是离线产物,搬的是挂载点而不是算法。
+
+---
+
+## 1.21.8:换装的四个新坑,一次一个(2026-09-16 凌晨)
+
+1.21.8(neoforge-21.8.54 + OptiFine `J6_pre16` 预览)是这一轮里"每修一个坑就前进一段"最典型的一条。
+四次启动,四次都在前一次完全不同的地方停住,而每一次的根因都能写成一条通用规则:
+
+| # | 现象 | 根因 | 规则 |
+|---|---|---|---|
+| 1 | `IllegalArgumentException: Only one quick play option can be specified`(Argument parsing) | 启动脚本把 profile 里四个 `${quickPlay*}` 占位符原样传给了游戏,1.21.3 之前容忍、1.21.8 不容忍 | 值仍是 `${...}` 占位符的参数**整条丢弃**(launcher 侧) |
+| 2 | `ClassFormatError: Illegal field modifiers in class BlockStateModel$Unbaked: 0x9` | 供体类是按"普通类"写出的,接口字段于是变成 `public static`(0x9,无 final) | **运行时给接口加过成员的接口不换装**:接口的静态字段只能在它自己的 `<clinit>` 里赋值,换了类就等于换掉了那段赋值 |
+| 3 | `NoSuchMethodError: RenderPipelines.lambda$registerCustomPipelines$0` | 载荷是按**原版**编译的,原版没有 `registerCustomPipelines`;这个方法从运行时回填了,但它调用的 lambda 被"合成成员一律不回填"的老规则挡掉了 | **lambda/access 合成方法:只要载荷里连这个名字都没有,就回填**(有同名才跳过,因为两边编号独立) |
+| 4 | `NullPointerException: RenderSystem.PIPELINE_MODIFIERS is null`(第一帧渲染时) | 回填的**静态**字段只有声明没有值 —— 值在运行时的 `<clinit>` 里,而换装把 `<clinit>` 换成了载荷的那份 | **静态字段也要回填初始值**:从运行时 `<clinit>` 里取出该字段赋值前的那段直线代码,包成 `optifineoforge$init$<字段>()V`,在目标类 `<clinit>` 末尾调用 |
+
+第 4 条修完后的实测(1.21.8):
+
+```
+Setting user ✓   Reloading ResourceManager: vanilla, mod_resources, mod/neoforge ✓
+[OptiFine] 267 行   Pre-stitch ×13   CTM ×3   着色器 13 行   Caught error: 0
+stderr 0 字节
+Initialised 1 restored static fields in com/mojang/blaze3d/systems/RenderSystem ✓
+Left BlockStateModel$Unbaked alone: the runtime adds members to that interface ✓
+```
+
+**但这条线还没算通过**:进程活到 240 秒被 harness 停掉,而它最后几分钟一直在刷
+
+```
+[OptiFine] Waiting for model sprites
+```
+
+也就是**卡在模型贴图集装配上**(`Sound engine started` 没出现)。所以 1.21.8 现在的状态是
+"能进资源重载、能建贴图集前缀、然后挂住",比 1.21.3 差一步,归到**未通过**里,下轮从
+`Waiting for model sprites` 往下查。
+
+**关于这些改动的影响面**:第 2/3/4 条都动的是 1.21.x 的 loader 与离线工具,所以 1.21.1 / 1.21.3 / 1.21.4
+在这一轮末尾各重跑了一次回归;1.20.x 分支**没有**同步这三条(它自己的
+`MemberRestorePlan` / `MemberRestoreTransformer` 是独立副本),等 1.21.x 侧稳定后再带着回归一起过去。
+
+### 三条已验证线的回归(三处改动之后)
+
+| 线 | VERDICT | `Setting user` | `[OptiFine]` | `Pre-stitch` | CTM | stderr | 回填成员 |
+|---|---|---|---|---|---|---|---|
+| 1.21.1 | `STARTED (40s)` | ✓ | 223(= 基线) | 14 | 3 | **0 字节** | 229 / 59 类(改动前 102 / 38) |
+| 1.21.3 | `STARTED (40s)` | ✓ | 225(= 基线) | 14 | 3 | **0 字节** | 233 / 60 类 |
+| 1.21.4 | `STARTED (40s)` | ✓ | 232(= 基线) | 14 | 3 | **0 字节** | 263 / 68 类 |
+
+三行的判据与改动前**逐项一致**,而回填的成员数明显变多(lambda 与静态初值那两条规则的作用),说明这两条
+规则补的是"本来就没填上的东西",没有动到已验证的行为 ✓。
+
+### 当前修订(2026-09-16 01:45)
+
+| 线 | 版本 | NeoForge | 状态 |
+|---|---|---|---|
+| 1.20.x | 1.20.1 / 1.20.2 / 1.20.4 / 1.20.6 | 47.1.106 / 20.2.88 / 20.4.251 / 20.6.141 | **已验证**(四条;1.20.2/1.20.4 带已知的 Reflector 缺陷) |
+| 1.21.x | 1.21.1 / 1.21.3 / 1.21.4 | 21.1.250 / 21.3.97 / 21.4.149 | **已验证**(三条,判据与基线一致) |
+| 1.21.x | 1.21.8 | 21.8.54 | **部分**:进到标题画面与资源重载,卡在 `[OptiFine] Waiting for model sprites`(见上) |
+| 1.21.x | 1.21 / 1.21.6 / 1.21.7 | 21.0.167 / 21.6.20-beta / 21.7.25-beta | 前置已装好(1.21.6 / 1.21.7 的 OptiFine 预览与 NeoForge 均已就位),未起跑 |
+| 1.21.x | 1.21.9 / 1.21.10 / 1.21.11 | 21.9.16-beta / 21.10.64 / 21.11.45 | 需要 `ClassProcessor` 挂载点(1.21.11 的 OptiFine J9 只有 ModLauncher service) |
+| 26.x | 26.1.2 | 26.1.2.109 | 需要 `ClassProcessor` 挂载点,但 OptiFine `K1_pre2` **自带** processor,优先级最高 |
+
+
+
 
 
