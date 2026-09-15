@@ -1141,3 +1141,33 @@ java.lang.NoClassDefFoundError: com/mojang/authlib/minecraft/TelemetryPropertyCo
 20.2.88 profile 里那份 authlib 没有的类。候选做法:①在启动脚本构造的 classpath 里把**更新版 authlib**
 放在前面(启动脚本本来就在拼 classpath ✓,这是最干净的一条);②像 Forge API 那样为 `com.mojang.authlib.*`
 做壳 —— 但要小心与真实 authlib 模块的包冲突,**不推荐先做这条**。
+
+**authlib 补齐,1.20.2 已经进标题界面并带着 OptiFine 跑起来(同一晚)**
+
+量出来的事实是:原版 1.20.2 profile 要 **authlib 5.0.47**,而这份**根本没装**(本地只有 1.5.25 / 3.18.38 /
+4.0.43 / 6.x / 7.0.61)✗ —— 启动脚本拼 classpath 时对缺失的库是跳过的,于是 OptiFine 一用到 authlib 的类就
+`NoClassDefFoundError`。从 `libraries.minecraft.net` 取回 5.0.47(111,087 字节)之后:
+
+| 指标 | 1.20.2(本次) |
+|---|---|
+| `Setting user`(进标题界面) | ✓ |
+| `Sound engine started` | ✓ |
+| `[Shaders] OpenGL` | ✓ |
+| `[OptiFine]` 日志 | **229 行** |
+| 替换类 | 238 个 |
+| 运行时长 | 从 5 秒变成 **20 秒** |
+
+也就是**这一行已经带着 OptiFine 跑到标题界面**,随后在一次**反射**里失败(新 crash report,
+`00:08:18`):
+
+```
+java.lang.NoClassDefFoundError: net/minecraft/world/level/block/state/BlockState
+	at java.base/java.lang.Class.getDeclaredMethods0(Native Method)
+	at net.optifine.reflect.ReflectorMethod.getMethod(ReflectorMethod.java:238)
+	at net.optifine.reflect.ReflectorResolver.resolve(ReflectorResolver.java:45)
+```
+
+**下一步(1.20.2)**:这条 `NoClassDefFoundError` 出现在 OptiFine 的 `Reflector` 解析阶段,而 `BlockState`
+是**游戏类**(不是库)—— 先量清楚它到底为什么加载不了(是模块读取问题,还是我们换进去的某个类把
+`BlockState` 的加载路径弄坏了);这与 1.20.4 早先那次反射路径里的 `ClassNotFoundException: ItemStack` 是同一类现象,
+可以对照那次的处理方式。
