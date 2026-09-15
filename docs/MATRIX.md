@@ -1388,3 +1388,33 @@ loader/SetSupplier           SecureJarHandler 修复里要传的那个对象
 **1.21.1 续做清单**:①取 `mcp_config-1.21.1.zip` 并解出 `joined.tsrg`(1.20.x 侧已有 `fetch-mcp.ps1` ✓);
 ②`1211` 条目改成离线路线(`ShipPayload = $true`、`SrgRemap = $true` + 两个映射文件、`StubMissing = $true`、
 `NoFamilyGuard`/`NoNameBridge` 关掉);③build+launch,按 1.20.2 的验收口径取证。
+
+**① ② 做完后的实测:补丁器不叫了,但"没人换类"(同一晚)**
+
+- **1.21.4 移植回归 ✓**:重跑一次仍是 `STARTED (40s)`、`Setting user` ✓、**232 行 `[OptiFine]`** ✓、
+  `Pre-stitch` ×14 ✓、**stderr 0 字节** ✓ —— 与移植前的基线完全一致,说明覆盖那两个类没有副作用 ✓。
+- `mcp1211-joined.tsrg` 已解出(6,485,971 字节)✓,`1211` 条目已切到离线路线 ✓。构建结果:
+
+```
+rewrote 0 method and 0 field names          ← 这一行的载荷本来就是官方名,改名是空转(正常)
+scanned 1128 classes, 114 missing           ← 打桩跑通
+payload: 1128 classes, 420 moved to optifineoforge/patched
+compared 230 replaced classes, 102 members to restore
+VERDICT: STARTED (40s, marker: Sound engine started)
+stderr: 0 字节                              ← 1,388,996 → 0,补丁器那 12717 条彻底消失 ✓
+```
+
+但同一份日志里:
+
+| 指标 | 1.21.1(离线路线) |
+|---|---|
+| `Replaced net` | **0** ✗ |
+| `[OptiFine]` / `Shaders` / `CTM` / `Pre-stitch` | **0 / 0 / 0 / 0** ✗ |
+
+也就是说**载荷 ship 进去了,却没有任何东西把它装上去** —— 原因很直接:**1.21.x 分支没有"换类"的 transformer**
+(`PatchedClassTransformer` 是 1.20.x 分支上的东西;1.21.x 那一支当初靠 OptiFine **自己**的 transformer 换类,
+所以只有"修 bug 的 transformer",没有"换类的 transformer")✗。
+
+**下一步(1.21.1)**:把 `PatchedClassTransformer` 也移植过去(它要读 `patched-index.txt` / `stubs.txt` /
+`keep-runtime.txt` ✓ 这三个文件搬运步骤已经产出 ✓),并在该分支的 service 里注册(顺序仍是"换类在前、
+成员回填在后" ✓)。这一支的 transformer 本来就是按 ModLauncher 11 写的,所以不需要 1.20.x 那套 ml10/ml11 适配层。
