@@ -1294,3 +1294,44 @@ OptiFine 的类实现了游戏里的接口,而两者分属**不同模块**:我�
 
 这个实验能一次说清"导出是不是按 mod 模块给的":如果错误消失,结论成立且问题一起解决;如果错误变成别
 的样子,那也能立刻排除这条线。
+
+### 决定性的一轮:探针否掉了模块理论,真正的病因是**访问标志没被复制**
+
+先照计划加了模块图探针(`PatchedClassTransformer.logModulesOnce`,只读模块元数据、不加载任何游戏类),
+第一次启动就把结论打出来了:
+
+    module graph: our module is optifine, layer manager captured
+    module graph: GAME layer holds minecraft srg mixinsynthetic neoforge mixinextras.neoforge
+    module graph: optifine -> minecraft: reads it = false, net.minecraft.client is exported to it = true
+    module graph: srg      -> minecraft: reads it = true,  net.minecraft.client is exported to it = true
+    module graph: neoforge -> minecraft: reads it = true,  net.minecraft.client is exported to it = true
+
+**承载那个类的模块 `srg` 既能读 `minecraft`,也拿到了 `net.minecraft.client` 的导出** —— 两条边都齐,
+JVM 却仍然报 `IllegalAccessError`。模块理论因此被自己的测量否掉(前两轮那些"谁给 export"的推断全部作废,
+幸好没有照着它们改代码)。
+
+真正的病因是 `PatchedClassTransformer` **只换了 superName / interfaces / signature / fields / methods,
+没有换 `access`**:OptiFine 的补丁把 `OptionInstance$SliderableValueSet` 从包私有改成 `public`,正是为了让
+它自己 `net.optifine.config` 里的类能实现它;不复制访问标志,换装后的接口仍是包私有,于是"实现一个包私有
+接口"非法 —— 而 JVM 的报错在两侧模块不同名时**一定会带上模块信息**,把我引向了错误的方向。
+
+改法分两步,而第二步恰好由第一步的报错自己指出来:
+
+1. 先只复制可见性三位 → `IllegalAccessError` 消失(换装数 112 → 119),紧接着是镜像问题:
+   `IncompatibleClassChangeError: class net.optifine.config.SliderPercentageOptionOF cannot inherit from
+   final class net.minecraft.client.OptionInstance` —— OptiFine 的补丁还把 `final` 去掉了。
+2. 于是整字复制 `input.access = patched.access`(OptiFine 的那份编译就是该运行时下这个类的版本)。
+
+结果:
+
+    swapped: 182 个类(61 → 112 → 119 → 182),stderr 0 行
+
+**下一个错误浮出水面,而它指向的是我方的遗留**:一个**没被改名的 SRG 名**活了下来:
+
+    java.lang.NoSuchMethodError: 'net.minecraft.client.renderer.texture.TextureManager
+      net.minecraft.client.Minecraft.m_91097_()'
+        at TRANSFORMER/srg/net.optifine.Config.getTextureManager(Config.java:1187)
+
+`m_91097_` 本该被 `SrgRemap` 改成 `getTextureManager`。它属于那 107 个未解析里的一类,下一轮直接从
+"为什么 `Minecraft.m_91097_` 没被改写"查起(表里有它吗?是被碰撞保护拒了,还是类别名不一致那一族),
+这比继续追新错误更值。
