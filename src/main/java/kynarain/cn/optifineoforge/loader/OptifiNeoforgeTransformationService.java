@@ -52,7 +52,15 @@ public class OptifiNeoforgeTransformationService implements ITransformationServi
 
 	@Override
 	public List<Resource> completeScan(IModuleLayerManager layerManager) {
+		layers = layerManager;
 		return List.of();
+	}
+
+	/** The layer manager, kept so a transformer can inspect the module graph once classes are loading. */
+	private static volatile IModuleLayerManager layers;
+
+	static IModuleLayerManager layers() {
+		return layers;
 	}
 
 	@Override
@@ -63,7 +71,12 @@ public class OptifiNeoforgeTransformationService implements ITransformationServi
 	@Override
 	public List<? extends ITransformer<?>> transformers() {
 		LOGGER.info("OptifiNeoforgeTransformationService.transformers");
-		return List.of(new RenderTargetFix(), new ReloadableResourceManagerFix(), new TagHelperFix(),
+		// PatchedClassTransformer is first on purpose: on lines whose payload is applied offline it puts
+		// OptiFine's compilation of a game class in place, and MemberRestoreTransformer then adds back the
+		// members NeoForge's own version has. On 1.21.4 the payload is applied by OptiFine's own
+		// transformer instead, and this one registers no targets at all because the index is absent.
+		return List.of(new PatchedClassTransformer(), new RenderTargetFix(), new ReloadableResourceManagerFix(),
+				new TagHelperFix(),
 				new PackRootsFix(), new ReloadProbeFix(), new ModelProbeFix(), new NativeImageProbeFix(),
 				new SortProbeFix(), new MemberRestoreTransformer());
 	}
