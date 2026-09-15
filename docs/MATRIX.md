@@ -1764,16 +1764,58 @@ Left BlockStateModel$Unbaked alone: the runtime adds members to that interface �
 三行的判据与改动前**逐项一致**,而回填的成员数明显变多(lambda 与静态初值那两条规则的作用),说明这两条
 规则补的是"本来就没填上的东西",没有动到已验证的行为 ✓。
 
-### 当前修订(2026-09-16 02:05)
+### 当前修订(2026-09-16 05:40)
 
 | 线 | 版本 | NeoForge | 状态 |
 |---|---|---|---|
 | 1.20.x | 1.20.1 / 1.20.2 / 1.20.4 / 1.20.6 | 47.1.106 / 20.2.88 / 20.4.251 / 20.6.141 | **已验证**(四条;1.20.2/1.20.4 带已知的 Reflector 缺陷) |
-| 1.21.x | 1.21.1 / 1.21.3 / 1.21.4 | 21.1.250 / 21.3.97 / 21.4.149 | **已验证**(三条,判据与基线一致) |
-| 1.21.x | 1.21.8 | 21.8.54 | **部分**:进到标题画面与资源重载,卡在 `[OptiFine] Waiting for model sprites`(见下) |
+| 1.21.x | 1.21.1 / 1.21.3 / **1.21.8** / 1.21.4 | 21.1.250 / 21.3.97 / **21.8.54** / 21.4.149 | **已验证**(四条) |
 | 1.21.x | 1.21 / 1.21.6 / 1.21.7 | 21.0.167 / 21.6.20-beta / 21.7.25-beta | 前置已装好,未起跑 |
-| 1.21.x | 1.21.9 / 1.21.10 / 1.21.11 | 21.9.16-beta / 21.10.64 / 21.11.45 | 需要 `ClassProcessor` 挂载点(1.21.11 的 OptiFine J9 只有 ModLauncher service) |
-| 26.x | 26.1.2 | 26.1.2.109 | 需要 `ClassProcessor` 挂载点,但 OptiFine `K1_pre2` **自带** processor,优先级最高 |
+| 1.21.x | 1.21.9 / 1.21.10 / 1.21.11 | 21.9.16-beta / 21.10.64 / 21.11.45 | 需要 `ClassProcessor` 挂载点 |
+| 26.x | 26.1.2 | 26.1.2.109 | 需要 `ClassProcessor` 挂载点,但 OptiFine `K1_pre2` **自带** processor |
+
+### 1.21.8 通过:第五个坑是调用路径,找到它花了三次纠正
+
+`Waiting for model sprites` 的根因不是缺调用,而是**那个调用走不到**。三次纠正依次是:
+
+1. 先把修复放进**参数最多**的那个 `discoverModelDependencies`(理由是"NeoForge 的调用方用长签名")——
+   探针显示实际被调用的是**参数少的那个**,也就是 OptiFine 自己那份。
+2. 于是认为"载荷那份既然含有这个调用就没问题"——**读字节码发现调用在一个分支后面**:
+   `109: ifeq 121 / 114: resolveCustomModels / 118: invokestatic collectModelSprites`,这个条件在本运行时不成立,
+   于是采集永不发生、标志永远为 false、贴图集装配永远等下去。
+3. 修法改成**在每个重载开头无条件调用**之后,等待消失:日志出现 `CustomItems: Registering sprites`,重载走完,
+   客户端进到标题画面。
+
+同一行还逼出两条规则,而且两条都先写错过一次:
+
+- **回填的静态字段要有值**:值在运行时的 `<clinit>` 里,而换装换掉的正是 `<clinit>`。做法是把该字段赋值前的
+  直线代码抽成初始化方法,在目标类 `<clinit>` 末尾调用。它修的实测失败是
+  `RenderSystem.PIPELINE_MODIFIERS is null`(第一帧渲染时)。
+- **该初始化方法不能对"类本来就有的字段"调用**:从别的方法写 `static final` 是非法,
+  实测 `IllegalAccessError: Update to static final field ModelDiscovery$ModelWrapper.KEY_ADDITIONAL_PROPERTIES`。
+  而且判断必须问"**回填之前**这个类有没有这个字段"——问成"之后"就把所有初始化都跳过了(包括
+  `PIPELINE_MODIFIERS`),于是又回到同一个 null 崩溃。这两次都是自伤,记在代码注释里。
+
+另外这条线需要把**模型发现那一族留给运行时**:NeoForge 的 `ModelWrapper` 有八个 slot 和一个 `slot(int)`
+工厂,OptiFine 那份是按七个编译的、初始化时把 7 交给工厂,于是
+`IndexOutOfBoundsException: Index 7 out of bounds for length 7`。这是 rig 里的一条线设置,证据写在旁边。
+
+1.21.8 的最终判据:
+
+| 指标 | 1.21.8(neoforge-21.8.54 + OptiFine `J6_pre16`) |
+|---|---|
+| `VERDICT` | **`STARTED (40s, marker: Sound engine started)`** ✓ |
+| `Setting user` | ✓ |
+| `[OptiFine]` / `Pre-stitch` / CTM / 着色器 | **337 / 13 / 3 / ✓** |
+| `Caught error` / `Waiting for model sprites` / `PIPELINE_MODIFIERS` NPE | **0 / 0 / 0** ✓ |
+| 静态字段初始化 | **5 处** ✓ |
+| stderr | **0 字节** ✓ |
+| 截图 | 已保存 ✓ |
+
+**探针本身也踩过两次坑**,一并记下:一是探针默认**关着**(`-Doptifineoforge.debug.reload`),
+"没有 enter 行"被读成"方法没被调用",而其实只是开关没开;二是把它打开后 NativeImage 一类探针**每张贴图刷一行**,
+一次运行三万多行、看起来像卡住。现在开关默认关闭,launcher 里写明何时该开。
+
 
 ### 1.21.8 的第五个坑:"签名被加长"把 OptiFine 的钩子挤出了调用路径
 四处修复之后 1.21.8 的卡点仍在 `Waiting for model sprites`,这次根因是**调用路径**而不是成员:
