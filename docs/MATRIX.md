@@ -928,3 +928,35 @@ rig 在 plan/stub/ship **之前**把 `$patched` 换成这份对齐后的 jar,所
 现在的状态是**部分成立**:1.20.x 三行跑通,但整个矩阵(1.20.2、1.21.x、26.x)远未完成 —— 所以
 **不设 1.0.0**,用 `0.2.0` 表示"已开始跑通、但矩阵未完成"。等目标里那条"1.20.1 到 26.1.2 全覆盖"真正验收过了,
 再用 `release/version.ps1 patch -Base 1.0.0` 一次性把它设为 1.0.0。
+
+**目标范围的权威清单(2026-09-15 当晚,取自镜像的 OptiFine 版本表)**
+
+目标写的是"1.20.1 到 26.1.2 之间**所有有 OptiFine 构建**的版本",而"哪些版本有"这件事不该靠记忆。
+查询 `https://bmclapi2.bangbang93.com/optifine/versionList`(497 条,含 mcversion/type/patch/filename)
+得到的 1.20.1 及以后清单是:
+
+| 版本 | 构建数 | 最新构建 | 备注 |
+|---|---|---|---|
+| 1.20.1 | 14 | `OptiFine_1.20.1_HD_U_I6.jar` | 正式版 ✓ 本分支已跑通 |
+| **1.20.2** | **1** | `preview_OptiFine_1.20.2_HD_U_I7_pre1.jar` | **只有 preview**(先前按正式版名去下,404 就是这个原因) |
+| 1.20.4 | 11 | 最新是 `pre4` preview | 正式版 I7 已有,本分支已跑通 |
+| 1.20.6 | 3 | `preview_OptiFine_1.20.6_HD_U_J1_pre18.jar` | 只有 preview,已跑通 |
+| 1.21 | 8 | `preview_OptiFine_1.21_HD_U_J1_pre8.jar` | 只有 preview |
+| 1.21.1 | 8 | `OptiFine_1.21.1_HD_U_J1.jar` | 正式版,jar 已在本地 |
+| 1.21.3 | 13 | `OptiFine_1.21.3_HD_U_J2.jar` | 正式版 |
+| 1.21.4 | 18 | 最新是 `pre2` preview | 正式版 J3 已在本地,先前已跑通 |
+| 1.21.6 | 3 | `preview_…_J6_pre3.jar` | 只有 preview |
+| 1.21.7 | 4 | `preview_…_J6_pre7.jar` | 只有 preview |
+| 1.21.8 | 10 | `preview_…_J6_pre16.jar` | 只有 preview |
+| 1.21.9 | 2 | `preview_…_J7_pre1.jar` | 只有 preview |
+| 1.21.10 | 10 | `preview_…_J7_pre11.jar` | 只有 preview |
+| 1.21.11 | 18 | `OptiFine_1.21.11_HD_U_J9.jar` | 正式版(本地有) |
+| 26.1.2 | 2 | `preview_OptiFine_26.1.2_HD_U_K1_pre2.jar` | 只有 preview(本地有) |
+
+顺带记一条经验:**不要按"正式版文件名"去猜下载名** —— 1.20.2 那一行就是这样白跑了一圈。
+下载脚本 `fetch-optifine.ps1` 现在从元数据端点取 `type`/`patch` 再拼 URL
+(`/optifine/{mcversion}/{type}/{patch}`),已实测拿到 `preview_OptiFine_1.20.2_HD_U_I7_pre1.jar`(7,192,269 字节)。
+
+**1.20.2 这一行现在的准备度**:OptiFine jar ✓、NeoForge 20.2.88 ✓(已装,`neoforge-20.2.88-client.jar`);
+还缺 **1.20.2 的原版客户端 jar**(管道打补丁要用混淆 jar)与 **`mcp_config-1.20.2.zip`**(这一行是 SRG 载荷 +
+官方名运行时的组合,与 1.20.4 同类,需要那份映射表来建 SRG↔official 表)。
