@@ -20,6 +20,7 @@ import org.apache.logging.log4j.Logger;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.MethodNode;
 
@@ -64,6 +65,94 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	static final String PREFIX = "/optifineoforge/patched/";
 	private static final String INDEX = "/optifineoforge/patched-index.txt";
 
+	/**
+	 * The members a runtime class has to be given while it loads, produced by the offline stub pass.
+	 *
+	 * <p>These are the references nothing can satisfy: not the runtime, not the payload. When the owner is
+	 * a payload class the add can happen offline, and the file is then empty for it; when the owner is a
+	 * runtime class - OptiFine's call into a method only its own copy of the class declares - it has to
+	 * happen here, on the class as it is defined.</p>
+	 */
+	private static final String STUBS = "/optifineoforge/stubs.txt";
+
+	/** Owner internal name to the members it needs, in order. */
+	private static final Map<String, List<String[]>> STUBS_BY_OWNER = loadStubs();
+
+	private static Map<String, List<String[]>> loadStubs() {
+		Map<String, List<String[]>> result = new LinkedHashMap<>();
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(STUBS)) {
+			if(stream == null) {
+				return Map.of();
+			}
+			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+				String[] parts = line.split("\t");
+				if(parts.length == 3) {
+					result.computeIfAbsent(parts[0], key -> new ArrayList<>()).add(new String[] {parts[1], parts[2]});
+				}
+			}
+		} catch(IOException e) {
+			LOGGER.warn("could not read " + STUBS + ": " + e);
+		}
+		LOGGER.info("Runtime stubs to add: " + result.values().stream().mapToInt(List::size).sum()
+				+ " members across " + result.size() + " classes");
+		return result;
+	}
+
+	/** Adds the stubs listed for this class, if it is one of them and lacks them. */
+	private static void stubMissing(ClassNode input) {
+		List<String[]> wanted = STUBS_BY_OWNER.get(input.name);
+		if(wanted == null) {
+			return;
+		}
+		for(String[] member : wanted) {
+			if(hasMethod(input, member[0], member[1])) {
+				continue;
+			}
+			input.methods.add(defaultBody(member[0], member[1], (input.access & Opcodes.ACC_INTERFACE) != 0));
+			LOGGER.info("Stubbed " + input.name.replace('/', '.') + "." + member[0] + member[1]);
+		}
+	}
+
+	private static boolean hasMethod(ClassNode node, String name, String desc) {
+		for(MethodNode method : node.methods) {
+			if(method.name.equals(name) && method.desc.equals(desc)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** A method that returns the default value for its return type; a default method in an interface. */
+	private static MethodNode defaultBody(String name, String desc, boolean isInterface) {
+		MethodNode method = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_SYNTHETIC, name, desc, null, null);
+		org.objectweb.asm.Type returnType = org.objectweb.asm.Type.getReturnType(desc);
+		switch(returnType.getSort()) {
+			case org.objectweb.asm.Type.VOID -> method.instructions.add(new InsnNode(Opcodes.RETURN));
+			case org.objectweb.asm.Type.BOOLEAN, org.objectweb.asm.Type.BYTE, org.objectweb.asm.Type.CHAR,
+					org.objectweb.asm.Type.SHORT, org.objectweb.asm.Type.INT -> {
+				method.instructions.add(new InsnNode(Opcodes.ICONST_0));
+				method.instructions.add(new InsnNode(Opcodes.IRETURN));
+			}
+			case org.objectweb.asm.Type.LONG -> {
+				method.instructions.add(new InsnNode(Opcodes.LCONST_0));
+				method.instructions.add(new InsnNode(Opcodes.LRETURN));
+			}
+			case org.objectweb.asm.Type.FLOAT -> {
+				method.instructions.add(new InsnNode(Opcodes.FCONST_0));
+				method.instructions.add(new InsnNode(Opcodes.FRETURN));
+			}
+			case org.objectweb.asm.Type.DOUBLE -> {
+				method.instructions.add(new InsnNode(Opcodes.DCONST_0));
+				method.instructions.add(new InsnNode(Opcodes.DRETURN));
+			}
+			default -> {
+				method.instructions.add(new InsnNode(Opcodes.ACONST_NULL));
+				method.instructions.add(new InsnNode(Opcodes.ARETURN));
+			}
+		}
+		return method;
+	}
+
 	/** The three access bits that say who may use a class; everything else in the word is not visibility. */
 	private static final int VISIBILITY = Opcodes.ACC_PUBLIC | Opcodes.ACC_PRIVATE | Opcodes.ACC_PROTECTED;
 
@@ -101,6 +190,13 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	@Override
 	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
 		logModulesOnce();
+		// Stubs first and unconditionally, because some belong to runtime classes that are never swapped -
+		// the case that used to fall through the gap. OptiFine's GameRenderer calls
+		// LoadingOverlay.update(), a method only OptiFine's own LoadingOverlay declares, so leaving the
+		// overlay unswapped to avoid its clash with NeoForge's loading screen broke the pair:
+		//   NoSuchMethodError: 'void net.minecraft.client.gui.screens.LoadingOverlay.update()'
+		// Giving the runtime's overlay that one method keeps both halves working.
+		stubMissing(input);
 		ClassNode patched;
 		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(PREFIX + input.name + ".class")) {
 			if(stream == null) {

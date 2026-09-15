@@ -268,7 +268,69 @@ public final class SrgMemberMap {
 
 		/** Adds a game jar: its members are the ones a rewritten reference has to hit, and its hierarchy. */
 		void add(Path jar) throws IOException {
+			add(jar, name -> false);
+		}
+
+		/**
+		 * Indexes the JDK's own classes, so an inherited member can be answered instead of guessed.
+		 *
+		 * <p>References such as {@code ListTag.add(Object)} (inherited from {@code AbstractList}) or
+		 * {@code ResourceLocationException.getMessage()} (from {@code Throwable}) cannot be resolved from any
+		 * jar, and the guess that replaced this - "a java/** ancestor means present" - made every class look
+		 * satisfied, because every class has {@code java/lang/Object} above it. Reading java.base through the
+		 * jrt filesystem costs a walk and removes the guesswork.</p>
+		 */
+		void addJdk() throws IOException {
+			java.nio.file.FileSystem jrt;
+			try {
+				jrt = java.nio.file.FileSystems.getFileSystem(java.net.URI.create("jrt:/"));
+			} catch(Throwable e) {
+				System.err.println("jdk index unavailable: " + e);
+				return; // no jrt image: the caller falls back to whatever it has indexed
+			}
+			int indexed = 0;
+			for(String module : new String[] {"java.base", "java.desktop", "java.logging"}) {
+				Path root = jrt.getPath("/modules/" + module);
+				if(!Files.exists(root)) {
+					System.err.println("jdk module not in the image: " + module);
+					continue;
+				}
+				try(java.util.stream.Stream<Path> files = Files.walk(root)) {
+					for(Path file : files.toList()) {
+						if(!file.toString().endsWith(".class")) {
+							continue;
+						}
+						ClassNode node = new ClassNode();
+						try(InputStream stream = Files.newInputStream(file)) {
+							new ClassReader(stream.readAllBytes()).accept(node, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG);
+						}
+						recordHierarchy(node);
+						for(FieldNode field : node.fields) {
+							fields.add(node.name + "." + field.name + field.desc);
+						}
+						for(MethodNode method : node.methods) {
+							methods.add(node.name + "." + method.name + method.desc);
+						}
+						indexed++;
+					}
+				}
+			}
+			System.err.println("jdk index: " + indexed + " classes");
+		}
+
+		/**
+		 * The same, leaving out classes the build will not ship.
+		 *
+		 * <p>A class the payload leaves out is not a source of members: counting it makes a reference look
+		 * satisfiable when nothing will provide it. OptiFine's {@code LoadingOverlay.update()}, called by its
+		 * own {@code GameRenderer}, stayed invisible for exactly that reason - the class was still in the jar
+		 * the analysis read, and gone from the jar that shipped.</p>
+		 */
+		void add(Path jar, java.util.function.Predicate<String> skip) throws IOException {
 			forEachClass(jar, node -> {
+				if(skip.test(node.name)) {
+					return;
+				}
 				recordHierarchy(node);
 				for(FieldNode field : node.fields) {
 					fields.add(node.name + "." + field.name + field.desc);
