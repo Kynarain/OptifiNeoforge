@@ -1367,3 +1367,24 @@ java.io.IOException: Base resource not found: akr.class
 所以路线 2 不再是"可选":**要把成熟工具集移植到 1.21.x 分支**(`SrgRemap`、`MissingTargets`、
 `NestedFamilyGuard`、`NestedNameBridge`,以及与该分支命名空间相应的映射文件),同时保留"该行用自己工具集"
 的开关,因为 1.21.4 只需要其中的一部分。
+
+**移植已完成(同一晚,提交在 1.21.x 分支上)**
+
+把这一支缺的八个文件带过去了(提交 `e8b6de6`,该分支 21db5b2 → e8b6de6):
+
+```
+SrgMemberMap  SrgRemap       SRG→官方名成员表与改写器
+MissingTargets               打桩
+NestedFamilyGuard            编号家族(不是同一个类就不换)
+NestedNameBridge             两个产物拼写不同的嵌套名
+OptifineJarFixer/OptifineJar union 路径与 SecureJarHandler 两处修复 + 按名分派
+loader/SetSupplier           SecureJarHandler 修复里要传的那个对象
+```
+
+在那条分支上用 ASM 编译通过(只有一条 deprecation 提示)✓。**注意 `OptifineJar` 与 `OptifineJarFixer`
+是被"覆盖"而不是"新增"的** —— 也就是说 **1.21.4 那条已验证的线必须重跑一次回归**(它当初是用该分支自己那版
+这两个类跑通的),确认移植没有改变它的行为;这是下一轮的第一件事。
+
+**1.21.1 续做清单**:①取 `mcp_config-1.21.1.zip` 并解出 `joined.tsrg`(1.20.x 侧已有 `fetch-mcp.ps1` ✓);
+②`1211` 条目改成离线路线(`ShipPayload = $true`、`SrgRemap = $true` + 两个映射文件、`StubMissing = $true`、
+`NoFamilyGuard`/`NoNameBridge` 关掉);③build+launch,按 1.20.2 的验收口径取证。
