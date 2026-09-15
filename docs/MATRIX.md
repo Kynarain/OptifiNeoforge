@@ -593,3 +593,23 @@ SRG 名(所以 412 个目标全部 `Base resource not found`)。结论是这一�
 **下一步(1.20.1)**:先查 SecureJar 那一步——它要打开的到底是哪个 jar(值得加一个探针把 `Jar` 的路径打出来),
 以及把 `net/minecraft/util/Mth` 放进 `-SkipSwapped` 后错误是否换到别的类(能换就说明是我们的替换顺序/时机,
 不换就说明是那一代 securejarhandler 的 union 处理)。定向实验比重跑猜测便宜:一次 build+launch 约 1.5 分钟。
+
+**已经做完的两个定向实验(2026-09-15 当晚,结论比猜测明确)**
+
+1. **同一份 jar,去掉 `patched-index.txt` 后能正常启动**:把离线载荷产物复制到探针目录并删掉
+   `optifineoforge/patched-index.txt`,再启动 —— `VERDICT: STARTED (40s)`、截图已存、stderr 只有
+   `Failed to load forge logo`,而且日志明确写着
+   `No /optifineoforge/patched-index.txt in this jar; no classes will be swapped in`。
+   所以**出错的是"本 mod 的 transformer 真的开始换类"这件事**,不是 jar 的内容(载荷布局、donor、plan 都无辜)。
+2. **把索引限制成只有 `net/minecraft/*`(354 条)后仍然以同一条栈失败** —— 触发点在 `net/minecraft/**` 里,
+   不在 `com/mojang/**`(blaze3d 那些类这次根本没注册)。
+
+失败形态固定:`ModuleClassLoader.getClassBytes` → `JarModuleReader.open` →
+`Jar$JarModuleDataProvider.open(Jar.java:291)` → `Paths.get` →
+`FileSystemNotFoundException`,最先在 `net.minecraft.util.Mth.<clinit>` 上暴露;ML 版本是 10.0.9,
+与 1.20.4 相同,但那一代的 securejarhandler 不同 —— 这解释了"同样是 ML 10、1.20.4 行却没事"。
+
+**下一步(1.20.1,已缩小到一条)**:把索引继续二分到单条 —— 先用只含 `net/minecraft/util/Mth` 的索引启动:
+失败就说明是这一个类,不失败就说明是"只要换类就炸"(那问题在 transformer 的注册时机/securejarhandler 的
+union 读取,而不在某个类)。两个脚本已经就位:`make-probe-jar.ps1`(删条目)、
+`make-index-probe.ps1 -Keep "<通配符>"`(裁索引),一次 build+launch 约 1.5 分钟。
