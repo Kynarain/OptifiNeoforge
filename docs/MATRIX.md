@@ -810,3 +810,32 @@ IllegalAccessError: Update to non-static final field
 3. **下一步应该先解决匹配,再谈取舍**:先用调试输出把 `VertexFormat`(及 `ForgeRenderTypes$CustomizableTextureState`)
    里那几个字段在载荷/运行时两侧的**名字、描述符、访问位**真实打印出来,看清"谁与谁对应、差在哪一位",
    再决定规则;而不是继续凭推测改合并逻辑。改动前先跑 1.20.4 回归。
+
+**测出来之后,规则第三次改对了(同一晚,这次两条线都验证过)**
+
+先做测量:`ForgeRenderTypes$CustomizableTextureState` 的 javap 显示它是
+**`extends net.minecraft.client.renderer.RenderStateShard$TextureStateShard`** —— 也就是说
+`f_110131_` 不是它自己声明的,而是**从 OptiFine 会替换的那个 Minecraft 类继承来的**;而写它的是
+NeoForge 自己的构造器。原因就清楚了:**NeoForge 的 access transformer 把 `final` 去掉了**,
+好让自家子类能赋值;而 OptiFine 的编译里这个字段仍是 `final` → 赋值被 JVM 拒绝。
+
+正确的规则因此是"第一次的规则 + 接口例外",而不是"按位取运行时":
+
+- **接口**的字段一律 `public static final`(否则 `ClassFormatError: Illegal field modifiers … 0x9`);
+- **普通类**的字段**不从载荷继承 `final`**(运行时那份是 final 就保留,否则清掉;载荷新增的字段也清掉);
+- **`static` 位不动** —— 之前把它也取运行时,正是 `VertexFormat.elem…` 那次失败的原因。
+
+结果:**1.20.4 `VERDICT: TIMEOUT (181s)` 无回归** ✓;**1.20.1 的 `IllegalAccessError` 消失**,
+失败点从"类加载期"推进到**资源重载期**(已经进到加载界面之后):
+
+```
+Description: Rendering overlay
+java.lang.NoSuchMethodError:
+  'void net.minecraft.client.particle.ParticleEngine$ParticleDefinition.<init>(net.minecraft.resources.ResourceLocation, java.ut…'
+	at net.minecraft.client.particle.ParticleEngine.lambda$reload$5(ParticleEngine.java:269)
+```
+
+**下一步(1.20.1,新的前沿)**:`ParticleEngine$ParticleDefinition` 的构造器签名在两侧不一致 ——
+载荷里被换进去的 `ParticleEngine` 调的是它编译时那个签名,而运行时的同名嵌套类没有这个构造器。
+这正是"成员回填(plan/donor)"要处理的一类问题,只是方向相反(这次是**载荷在调用**、运行时缺),
+先量清楚两侧该类的构造器列表,再决定是把它也纳入回填,还是把该嵌套类整族按家族规则处理。

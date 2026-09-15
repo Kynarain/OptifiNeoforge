@@ -279,7 +279,32 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		List<FieldNode> fields = new ArrayList<>(patched.fields);
 		List<MethodNode> methods = new ArrayList<>(patched.methods);
 		for(FieldNode field : fields) {
-			field.access = wider(field.access, wasFields.get(field.name + field.desc));
+			Integer wasField = wasFields.get(field.name + field.desc);
+			int mergedField = wider(field.access, wasField);
+			if((input.access & Opcodes.ACC_INTERFACE) != 0) {
+				// An interface's fields have to be public static final whatever either copy says, and the
+				// JVM rejects the class outright otherwise. Measured, back when final was cleared for
+				// every field: "ClassFormatError: Illegal field modifiers in class
+				// com/mojang/blaze3d/vertex/VertexConsumer: 0x9", where 0x9 is public final.
+				mergedField = (mergedField & ~(Opcodes.ACC_PRIVATE | Opcodes.ACC_PROTECTED))
+						| Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL;
+			} else if(wasField == null || (wasField & Opcodes.ACC_FINAL) == 0) {
+				// final is not inherited from the payload, and this is the narrow form of a rule that was
+				// wrong twice before it was right. NeoForge's access transformers strip final from fields
+				// its own subclasses assign, and then a swapped class carrying the payload's final bit
+				// rejects that assignment:
+				//
+				//   IllegalAccessError: Update to non-static final field
+				//     net.minecraftforge.client.ForgeRenderTypes$CustomizableTextureState.f_110131_
+				//     attempted from a different class
+				//
+				// That class extends RenderStateShard$TextureStateShard - measured with javap - so the
+				// field is inherited from a class OptiFine does patch, and the write is NeoForge's own
+				// constructor. static is deliberately left as the payload has it: taking it from the
+				// runtime as well produced the VertexFormat failure above.
+				mergedField &= ~Opcodes.ACC_FINAL;
+			}
+			field.access = mergedField;
 		}
 		for(MethodNode method : methods) {
 			method.access = wider(method.access, wasMethods.get(method.name + method.desc));
