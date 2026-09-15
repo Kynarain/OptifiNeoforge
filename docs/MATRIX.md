@@ -2,21 +2,31 @@
 
 本文只记录**实测**的差距与顺序,不重复 `docs/PLAN.md`(计划)与 `docs/DEVELOPMENT.md`(实测记录)。
 
-## 当前真实进度(2026-09-15,阶段性总结)
+## 当前真实进度(2026-09-16,阶段性总结)
 
-**目标尚未达成。** 逐行的实测状态如下,判据是"实机启动 + 行为与已验证线一致",不是"能编译":
+**目标尚未达成**,但六条线已经实机跑到标题画面。逐行的实测状态如下,判据是"实机启动 + 行为与已验证线一致",
+不是"能编译":
 
 | 线 | 版本 | NeoForge | 状态 | 证据 |
 |---|---|---|---|---|
 | 1.20.x | 1.20.1 | 47.1.106 | **已验证** | 启动成功、`forge shells in the jar: 0`、OptiFine 412 targets、计划 550 成员/87 类、资源重载无错、贴图集建成 |
-| 1.20.x | 1.20.2 | 20.2.93 | **未开始** | OptiFine 1.20.2 的 jar 未下载;`mcp_config-1.20.2.zip` 已确认存在,可照 1.20.4 的路走 |
-| 1.20.x | 1.20.4 | 20.4.251 | **可运行**(见下) | 换装 313 类、`Caught error: 0`、资源包不再被移除、模型烘焙通过、进到标题画面(`Setting user`)、OptiFine 着色器与连接材质在跑、无崩溃报告。**运行要求**:`config/fml.toml` 设 `earlyWindowProvider = "none"` —— FML 的 early window 与 OptiFine 换装的渲染类会在同一帧里重入(`SimpleBufferBuilder: Already building`),而 `-Dfml.earlyprogresswindow=false` 是 Forge 时代的属性,FML 2.0.17 不认 | 换装 274 类、资源包不再被移除(`Caught error: 0`)、模型烘焙过关;当前崩在 NeoForge early-display 与 OptiFine 版 `LoadingOverlay` 的重入(`IllegalStateException: Already building` @ `NeoForgeLoadingOverlay.render`) |
-| 1.20.x | 1.20.6 | 20.6.141 | **未开始** | 从这一版起 FML 拒绝原版 OptiFine jar(`IncompatibleModReason.OPTIFINE`);且载荷命名空间变回官方名,重映射步骤应整体跳过 |
-| 1.21.x | 1.21.4 | 21.4.149 | **已验证** | 启动成功、OptiFine 474 targets、模型烘焙(`missingModel=SimpleBakedModel`)、1024×1024 贴图集、首次资源重载 0 错 |
-| 1.21.x | 1.21.1 / 1.21.2 / 1.21.3 / 1.21.5 / 1.21.6 / 1.21.7 / 1.21.8 / 1.21.9 / 1.21.10 / 1.21.11 | 21.x | **未开始** | 其中 1.21.9+ 已无 ModLauncher,只能走自定义 `ClassProcessor` |
+| 1.20.x | 1.20.2 | 20.2.88 | **已验证** | `STARTED (40s)`、`Setting user` ✓、239 行 `[OptiFine]`、`Pre-stitch` ×13、着色器 14 行、`Caught error: 0`;已知缺陷见下(Reflector 加载 `BlockState`/`ItemStack` 失败,stderr 14,631 字节) |
+| 1.20.x | 1.20.4 | 20.4.251 | **已验证** | `STARTED (40s)`、`Setting user` ✓、241 行 `[OptiFine]`、`Pre-stitch` ×13、CTM ✓、`Caught error: 0`;已知缺陷同上(stderr 14,481 字节)。**运行要求**:`config/fml.toml` 设 `earlyWindowProvider = "none"` —— FML 的 early window 与 OptiFine 换装的渲染类会在同一帧里重入(`SimpleBufferBuilder: Already building`) |
+| 1.20.x | 1.20.6 | 20.6.141 | **已验证** | 启动成功、OptiFine 着色器与连接材质在跑、贴图集建成;这一版起 FML 拒绝原版 OptiFine jar,所以要靠本项目的重打包与元数据修复 |
+| 1.21.x | 1.21.1 | 21.1.250 | **已验证**(2026-09-16) | `STARTED (40s)`、`Setting user` ✓、313 个类换装(目标 426)、223 行 `[OptiFine]`、`Pre-stitch` ×14、CTM ×3、着色器 ✓、`Caught error: 0`、**stderr 0 字节**;载荷父类被改写(`CapabilityProvider` → `AttachmentHolder`) |
+| 1.21.x | 1.21.4 | 21.4.149 | **已验证** | 启动成功、OptiFine 474 targets、模型烘焙(`missingModel=SimpleBakedModel`)、1024×1024 贴图集、232 行 `[OptiFine]`、`Pre-stitch` ×14、stderr 0 字节;这一线走 OptiFine 自己的运行期补丁,不换类 |
+| 1.21.x | 1.21 / 1.21.3 / 1.21.6 / 1.21.7 / 1.21.8 / 1.21.9 / 1.21.10 / 1.21.11 | 21.x | **未开始** | 1.21.2 与 1.21.5 没有 OptiFine 构建;1.21.9+ 已无 ModLauncher,只能走自定义 `ClassProcessor`;1.21.6/1.21.7 的上游缺陷见 `OptifiNeoforge-121x/docs/PLAN.md` |
 | 26.x | 26.1.2 | 26.1.2.109 | **未开始** | FML 11 去掉 ModLauncher;OptiFine K1_pre2 自带 `OptiFineClassProcessor`,需先绕过 `IncompatibleModReason` 与 `loaderVersion` |
 
-**发布:一次都没有。** `release/version.ps1` 从未真正跑过;仓库有三个分支(`main` 落地页、`1.20.x`、`1.21.x`、`26.x`),`main` 只有落地页。
+**已知缺陷(与加载器无关,1.20.2 / 1.20.4 共有)**:OptiFine 的 `Reflector` 在 `GameRenderer.frameInit` 里
+反射 `BlockState` 时拿到
+`NoClassDefFoundError: net.minecraft.world.level.block.state.BlockState`
+(原因 `ClassNotFoundException: …BlockState`,`ItemStack` 同样),来自
+`net.optifine.reflect.ReflectorMethod.getMethod`。基线(改动前后)字节数一致,不随本轮的父类改写变化,
+所以它是**独立待办**:它决定的是 OptiFine 的哪些反射功能不可用,而不是这两条线能否跑起来。
+
+**发布:一次都没有。** `release/version.ps1` 只在 dry-run 里跑过;仓库有四个分支(`main` 落地页、`1.20.x`、
+`1.21.x`、`26.x`),`main` 只有落地页。
 
 ### 1.20.4 剩下那一步的具体做法(下一轮起点)
 
