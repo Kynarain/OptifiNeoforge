@@ -194,7 +194,7 @@ public final class SrgRemap {
 				miss(report, map, runtime, owner, name, descriptor, true);
 				return name;
 			}
-			if(occupied(official, descriptor, true)) {
+			if(occupied(owner, official, descriptor, true)) {
 				report.collisions++;
 				report.missSamples.putIfAbsent("would duplicate " + official,
 						owner + "." + name + " -> " + official + descriptor);
@@ -214,7 +214,7 @@ public final class SrgRemap {
 				miss(report, map, runtime, owner, name, descriptor, false);
 				return name;
 			}
-			if(occupied(official, descriptor, false)) {
+			if(occupied(owner, official, descriptor, false)) {
 				report.collisions++;
 				report.missSamples.putIfAbsent("would duplicate " + official,
 						owner + "." + name + " -> " + official + descriptor);
@@ -224,10 +224,22 @@ public final class SrgRemap {
 			return official;
 		}
 
-		/** Whether the class being rewritten already declares this name and descriptor itself. */
-		private boolean occupied(String official, String descriptor, boolean method) {
+		/**
+		 * Whether renaming would collide with a member this class already declares.
+		 *
+		 * <p>Only declarations can collide, and <b>this check used to run for references too</b>, because
+		 * {@code mapMethodName} is called for both and the two are told apart by the owner: for a
+		 * declaration the owner is the class being rewritten, for a reference it is the class being
+		 * called. Getting that wrong left {@code Minecraft.m_91097_()} unrenamed inside
+		 * {@code net.optifine.Config}, whose own method is also called {@code getTextureManager}, so the
+		 * rewritten class called an SRG name that no longer exists:</p>
+		 *
+		 * <pre>NoSuchMethodError: 'TextureManager net.minecraft.client.Minecraft.m_91097_()'
+		 *   at net.optifine.Config.getTextureManager(Config.java:1187)</pre>
+		 */
+		private boolean occupied(String owner, String official, String descriptor, boolean method) {
 			ClassNode node = current;
-			if(node == null) {
+			if(node == null || !node.name.equals(owner)) {
 				return false;
 			}
 			if(method) {

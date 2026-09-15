@@ -1335,3 +1335,35 @@ JVM 却仍然报 `IllegalAccessError`。模块理论因此被自己的测量否�
 `m_91097_` 本该被 `SrgRemap` 改成 `getTextureManager`。它属于那 107 个未解析里的一类,下一轮直接从
 "为什么 `Minecraft.m_91097_` 没被改写"查起(表里有它吗?是被碰撞保护拒了,还是类别名不一致那一族),
 这比继续追新错误更值。
+
+### 结果就是碰撞保护写错了范围(已修),而且 OptiFine 真的跑起来了
+
+`m_91097_` 的答案在上一轮那段堆栈里就写着:`net.optifine.Config.getTextureManager` —— **OptiFine 自己也
+有个叫 `getTextureManager` 的方法**。碰撞保护本意是"不要把一个成员改名成这个类已经有的名字",但它被
+`mapMethodName` 在**引用**上也会调用,而引用与声明只能靠 owner 区分:声明时 owner 是正在改写的类,引用时
+owner 是被调用的类。当时的实现只看"当前类有没有这个名字",于是把 `Config` 里对
+`Minecraft.m_91097_()` 的**调用**也拒了,留下了一个运行时并不存在的 SRG 名。修法是一行条件:
+`occupied()` 只在 `node.name.equals(owner)` 时才判碰撞。
+
+    refused: 42 → 10(其中 32 条是本来不该拒的引用),rewrote 21461 方法名
+
+启动结果:**swapped 184(stderr 0 行)**,而且 OptiFine 已经真的在跑了 —— 它出现在自己的崩溃报告里:
+
+    OptiFine Version: OptiFine_1.20.4_HD_U_I7
+    OptiFine Build: 20240317-172634
+    Shaders: null
+
+下一个错误换了一类,而且这次**不是"计划漏了",而是"运行时根本没有"**:
+
+    java.lang.NoSuchMethodError: 'void net.minecraft.world.level.block.entity.BlockEntity.gatherCapabilities()'
+      at net.minecraft.world.level.block.entity.BlockEntity.<init>(BlockEntity.java:47)
+
+量了两边:OptiFine 那份 `BlockEntity` 里 `gatherCapabilities`/`setData`/`removeData` **一个都没有**,而
+NeoForge 运行时里**只有 `setData`/`removeData`,没有 `gatherCapabilities`**。原因是 NeoForge 20.4 用
+attachment 体系(`setData`/`removeData`)取代了 Forge 的 capability 体系,`gatherCapabilities` 被删掉了,
+而 OptiFine 那份是照 **Forge** 编译的,`<init>` 里还在叫它。计划没恢复它是**对的** —— 运行时没有的东西
+无法作为 donor。这是 `ForgeApiShims` 那一类问题(Forge API 在 NeoForge 上不存在),不是成员恢复问题。
+
+**下一轮的起点(具体到可执行)**:对**改名后**的载荷做一遍引用扫描,列出"owner 是游戏类、而该成员在
+运行时不存在"的全部引用 —— 那份清单就是这一类待处理项的完整集合(`gatherCapabilities` 只是其中第一条),
+再决定是加空实现还是把调用点去掉。
