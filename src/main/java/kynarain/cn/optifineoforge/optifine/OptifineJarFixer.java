@@ -47,14 +47,76 @@ public final class OptifineJarFixer {
 	private static final String SERVICE = "optifine/OptiFineTransformationService";
 	private static final String TO_FILE = "toFile";
 	private static final String TO_FILE_DESC = "(Ljava/net/URI;)Ljava/io/File;";
+	/** The class that builds a SecureJarHandler metadata object with the older generation's signature. */
+	private static final String JAR_CLASS = "optifine/OptiFineJar";
+	private static final String METADATA_OWNER = "cpw/mods/jarhandling/impl/SimpleJarMetadata";
+	/** Third parameter: the set itself under 2.1.10, a supplier of it under 2.1.24. */
+	private static final String METADATA_OLD_CTOR =
+			"(Ljava/lang/String;Ljava/lang/String;Ljava/util/Set;Ljava/util/List;)V";
+	private static final String METADATA_NEW_CTOR =
+			"(Ljava/lang/String;Ljava/lang/String;Ljava/util/function/Supplier;Ljava/util/List;)V";
+	private static final String SET_SUPPLIER = "kynarain/cn/optifineoforge/loader/SetSupplier";
 
 	private OptifineJarFixer() {
 	}
 
-	/** Whether the jar entry name is the class this fixer rewrites. */
+	/** Whether the jar entry name is a class this fixer rewrites. */
 	public static boolean handles(String entryName) {
 		String name = entryName.endsWith(".class") ? entryName.substring(0, entryName.length() - ".class".length()) : entryName;
-		return SERVICE.equals(name);
+		return SERVICE.equals(name) || JAR_CLASS.equals(name);
+	}
+
+	/** The repair this entry needs, which is none for anything else in the jar. */
+	public static byte[] fix(String entryName, byte[] classBytes) {
+		String name = entryName.endsWith(".class") ? entryName.substring(0, entryName.length() - ".class".length()) : entryName;
+		if(SERVICE.equals(name)) {
+			return fixServicePath(classBytes);
+		}
+		if(JAR_CLASS.equals(name)) {
+			return fixJarMetadataCall(classBytes);
+		}
+		return classBytes;
+	}
+
+	/**
+	 * Points the {@code SimpleJarMetadata} construction at the newer signature, by wrapping the set in
+	 * the supplier that signature wants.
+	 *
+	 * <p>Inserted rather than rewritten, which is the lesson from this class's other repair: replacing a
+	 * body deletes side effects, and the launch then fails somewhere unrelated and much later. Here the
+	 * only change is in front of the call - {@code NEW SetSupplier; DUP_X1; INVOKESPECIAL (Set)V} - which
+	 * turns {@code [this, name, version, set]} into {@code [this, name, version, supplier]} - plus the
+	 * call's own descriptor. Frames are recomputed because a stored frame at the call site may name the
+	 * set type, which is no longer what is on the stack.</p>
+	 */
+	private static byte[] fixJarMetadataCall(byte[] classBytes) {
+		ClassNode node = new ClassNode();
+		ClassReader reader = new ClassReader(classBytes);
+		reader.accept(node, 0);
+
+		boolean patched = false;
+		for(MethodNode method : node.methods) {
+			for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+				if(!(insn instanceof MethodInsnNode call) || !METADATA_OWNER.equals(call.owner)
+						|| !"<init>".equals(call.name) || !METADATA_OLD_CTOR.equals(call.desc)) {
+					continue;
+				}
+				InsnList wrapper = new InsnList();
+				wrapper.add(new TypeInsnNode(Opcodes.NEW, SET_SUPPLIER));
+				wrapper.add(new InsnNode(Opcodes.DUP_X1));
+				wrapper.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, SET_SUPPLIER, "<init>",
+						"(Ljava/util/Set;)V", false));
+				method.instructions.insertBefore(call, wrapper);
+				call.desc = METADATA_NEW_CTOR;
+				patched = true;
+			}
+		}
+		if(!patched) {
+			return classBytes;
+		}
+		ClassWriter writer = new SafeClassWriter(reader, ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+		node.accept(writer);
+		return writer.toByteArray();
 	}
 
 	/**

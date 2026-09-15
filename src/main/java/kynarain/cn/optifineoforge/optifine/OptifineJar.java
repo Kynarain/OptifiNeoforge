@@ -248,8 +248,9 @@ public final class OptifineJar {
 						try(InputStream stream = zip.getInputStream(entry)) {
 							if(OptifineJarFixer.handles(name)) {
 								// Its own path handling assumes a plain jar on disk; under a union
-								// filesystem it has to be repaired or the whole launch aborts.
-								target.write(OptifineJarFixer.fixServicePath(stream.readAllBytes()));
+								// filesystem it has to be repaired or the whole launch aborts. Which
+								// repair depends on the class, so the name goes with the bytes.
+								target.write(OptifineJarFixer.fix(name, stream.readAllBytes()));
 							} else {
 								stream.transferTo(target);
 							}

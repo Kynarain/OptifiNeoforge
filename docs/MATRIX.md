@@ -1017,3 +1017,31 @@ profile 里的 securejarhandler:**全是 2.1.24**(20.2.86 / 20.2.88 / 20.2.93 �
    `[this,name,version,set]` 变成 `[this,name,version,supplier]`,原调用照旧执行 ✓。
 
 这与修 `toFile` 是同一类"定点插入"而非"整段替换",也是本轮学到的教训(整段替换删副作用那次)。
+
+**修法已实现,而且暴露了一个 rig 结构问题(同一晚)**
+
+按上面的做法做完(`SetSupplier` 放进 loader 包 ✓、`OptifineJarFixer` 增认 `optifine/OptiFineJar` 并插
+`NEW/DUP_X1/INVOKESPECIAL` + 改调用描述符 ✓、`OptifineJar` 改成按名分派 `fix(name, bytes)` ✓)之后,
+**第一次启动毫无变化** ✗。原因不是补丁写错,而是**产物里那份类被覆盖了**:
+
+- 走 `-ShipPayload` 的行,OptiFine 的条目是从**管道输出**里取的,而管道输出读的是**原始 OptiFine jar**
+  (未修)✗;
+- 搬运步骤只把**一个**修好的类从 repack 后的 jar 里取回来 —— 就是 service 那个类(硬编码一个条目)✗,
+  所以 `OptiFineJar` 的修复被原始副本盖掉了。
+
+已把这一步改成**列出所有被修的类**(service + `OptiFineJar`)并逐个从 repack 后的 jar 取回 ✓。
+第二次启动:产物里的 `optifine/OptiFineJar.class` 变成 4302 字节、含 1 处 `SetSupplier` 引用 ✓
+—— 补丁确实进去了,**错误也随之换了种类**:
+
+```
+java.lang.VerifyError: Bad type on operand stack
+  Location: optifine/OptiFineJar.lambda$1(...) @24: invokespecial
+```
+
+**下一步(1.20.2)**:错误从 `NoSuchMethodError` 变成同一个调用点上的 `VerifyError`,说明插入的栈操作
+与那里真实的操作数形状不一致(我在推理里假设的是 `[this,name,version,set]`)。**先量再改**:把原始
+`OptiFineJar.lambda$1` 从入口到那次调用之间的字节码与栈图打出来,看清第三个操作数到底是什么
+(`Set`?集合构造器?数组?),再决定包一层还是换一种桥接方式。
+
+另外:**rig 那处"取回被修类"的改动影响所有 `-ShipPayload` 行**,所以下一轮必须先跑 1.20.4、1.20.6 回归,
+确认它们没有因为这次改动而变化(它们此前都是 `VERDICT: STARTED`)。
