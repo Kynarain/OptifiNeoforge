@@ -110,6 +110,11 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		}
 	}
 
+	/** Null-safe class-name comparison: a class with no superclass equals only another such class. */
+	private static boolean sameName(String left, String right) {
+		return left == null ? right == null : left.equals(right);
+	}
+
 	private static boolean hasMethod(ClassNode node, String name, String desc) {
 		for(MethodNode method : node.methods) {
 			if(method.name.equals(name) && method.desc.equals(desc)) {
@@ -203,6 +208,28 @@ public final class PatchedClassTransformer implements NodeTransformer {
 			new ClassReader(stream.readAllBytes()).accept(patched, 0);
 		} catch(IOException e) {
 			LOGGER.warn("could not read the patched " + input.name + ": " + e);
+			return input;
+		}
+
+		// A payload class is only a patch of this one if it really is the same class, and numbered
+		// nested names are where that assumption breaks. Those numbers are assigned by whoever built
+		// the artefact, and the two artefacts here were built differently: OptiFine's payload takes its
+		// names from the obfuscated jar, while the runtime's come from NeoForm. Measured on 1.20.1: the
+		// runtime's net.minecraft.Util$9 extends java.lang.Thread, while the payload's Util$9 is the
+		// BiFunction cache class behind Util.memoize. Installing it broke the class that uses it:
+		//
+		//   VerifyError: Bad type on operand stack
+		//     Location: net/minecraft/Util.m_137584_()V @13: invokevirtual
+		//     Reason: Type 'net/minecraft/Util$9' is not assignable to 'java/lang/Thread'
+		//
+		// OptiFine patches bodies, not hierarchies, so on a numbered name a superclass mismatch means
+		// this is a different class: the runtime's own version stays. Scoped to numbered names on
+		// purpose - on an ordinary class a changed superclass is real (OptiFine's BlockEntity extends
+		// Forge's CapabilityProvider while NeoForge's extends AttachmentHolder, and the shim for the
+		// former is what makes that swap work).
+		if(input.name.indexOf('$') >= 0 && !sameName(patched.superName, input.superName)) {
+			LOGGER.info("Left " + input.name.replace('/', '.') + " alone: the payload's copy of it extends "
+					+ patched.superName + " while the runtime's extends " + input.superName);
 			return input;
 		}
 

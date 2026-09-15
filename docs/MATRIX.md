@@ -632,7 +632,46 @@ union 读取,而不在某个类)。两个脚本已经就位:`make-probe-jar.ps1`
 > 这解释了"为什么去掉索引就没事"(不调就不会读)、"为什么换 Mth 会炸在 Mth"(Mth 的补丁第一件事就是调
 > OptiFine)、以及"为什么不换 Mth 就炸在 CrashReport"(换下一个被调用者)。
 
-**下一个实验(已想好,一次约 1.5 分钟)**:索引只留一个**不会调用 OptiFine** 的被换类(例如
-`net/minecraft/Util$1`,载荷里它 0 字段 2 方法)。能启动 ⇒ 假设成立(触发条件是"被换类调用 OptiFine 的类");
-不能启动 ⇒ 假设错,再回到"读取路径本身"上查。若假设成立,这一行需要的就不是改 transformer,
-而是**让 OptiFine 自己的类不从 union 的 mod jar 里读**(例如另一条安装路径),这是设计问题、不是 bug。
+**1.20.1 的第二个真相:SecureJar 那条报错是次生的,底下还有一个匿名类编号问题**
+
+修好探针方法后(`Util*` 这种写法在 PowerShell 里是**大小写不敏感**的,`net/minecraft/Util*` 会把
+`net/minecraft/util/Mth` 一起match进来 —— 之前三次"二分"因此都被污染了),用**按字节测出来的**条件重做探针:
+只保留"不引用 `net/optifine`"的载荷类(268 个),丢掉引用 OptiFine 的 141 个 ——
+
+- **SecureJar 那条 `FileSystemNotFoundException` 消失了**,换成一条干净、真实、可解释的错:
+
+```
+java.lang.VerifyError: Bad type on operand stack
+  Location: net/minecraft/Util.m_137584_()V @13: invokevirtual
+  Reason: Type 'net/minecraft/Util$9' is not assignable to 'java/lang/Thread'
+```
+
+也就是说:**匿名类编号在两边不一样**。运行时那份 `Util$9 extends java.lang.Thread`,而载荷里 `Util$9` 是
+`Util.memoize` 后面的 BiFunction 缓存类 —— 把载荷那份装进去,`Util` 里"造线程"的代码就过不了校验。
+这同时反过来说明:先前 SecureJar 报错**只在被换类去调 OptiFine 自己的类时出现**(那 141 个),所以
+"OptiFine 自己的类住在被 union 的 mod jar 里、这一代 securejarhandler 读不了"这个假设仍然站得住。
+
+**已经做的修正(代码里,不是脚本)**:`PatchedClassTransformer` 加了一条守卫 —— 名字里含 `$` 的类,
+如果载荷那份的父类与运行时那份不同,就**不换**(OptiFine 只改方法体、不改继承;而 `Outer$N` 的编号两边不一致
+时,父类不同就是"这不是同一个类")。守卫本身按预期生效了:
+
+```
+Left net.minecraft.Util$7 alone: the payload's copy of it extends java/lang/Thread
+while the runtime's extends java/lang/Object
+```
+
+**但它暴露了真正的形状**:守卫只挡了 `Util$7`,于是变成了"载荷的 `Util` + 运行时的 `Util$7`" —— 载荷的 `Util`
+造线程时期望自己的 `Util$7`(Thread),拿到的却是运行时那份(Object),`VerifyError` 只是**换了个类名**:
+
+```
+Type 'net/minecraft/Util$7' is not assignable to 'java/lang/Thread'
+```
+
+**结论:匿名类必须按"家族"整体决定,不能按单个类决定。** 外层类与它的 `$N` 内部类是同一份编译的产物,
+两者混搭必然自相矛盾;而载荷那一族内部自洽、运行时那一族内部自洽,所以要么整族换、要么整族不换
+(编号错位时只能整族不换)。外层类本身不需要换也没关系 —— `$N` 是私有的,外部代码不会引用它们。
+
+**下一步(明确的实现,不是探索)**:在构建期(离线、能同时看到载荷与运行时)按家族做决定 ——
+凡"族里任一成员的父类与运行时对应类不同"就把整族(外层 + 所有 `Outer$*`)从索引与载荷里去掉。
+这样剩下的族两边一致,可以整体安装;被牺牲的只是少数几个族的 OptiFine 补丁(例如 `Util`),
+而 shaders 需要的 `RenderSystem`/`Mth`/`GlStateManager` 这些**顶层类不受影响**。
