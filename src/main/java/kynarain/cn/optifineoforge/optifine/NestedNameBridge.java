@@ -280,13 +280,20 @@ public final class NestedNameBridge {
 				String name = entry.getName();
 				if(name.endsWith(".class") && !entry.isDirectory()) {
 					String internal = name.substring(0, name.length() - ".class".length());
-					String renamed = pairs.getOrDefault(internal, internal);
+					// The pairs are keyed by class name, without the payload root the entry carries. Looking
+					// them up with the root included silently missed and renamed nothing: the file kept its
+					// old name while the class inside - remapped from the constant pool, where the name has
+					// no root - got the runtime's. ModLauncher looks classes up by entry path, so it found
+					// the runtime's own copy instead of ours and the launch failed much later with
+					// NoSuchMethodError on an SRG-named accessor.
+					String lookup = internal.startsWith(PAYLOAD_ROOT) ? internal.substring(PAYLOAD_ROOT.length()) : internal;
+					String renamed = pairs.getOrDefault(lookup, lookup);
 					byte[] mapped = remap(data, pairs);
 					if(!java.util.Arrays.equals(mapped, data)) {
 						changed++;
 					}
 					data = mapped;
-					name = renamed + ".class";
+					name = (internal.startsWith(PAYLOAD_ROOT) ? PAYLOAD_ROOT : "") + renamed + ".class";
 				}
 				ZipEntry copy = new ZipEntry(name);
 				copy.setTime(entry.getTime());

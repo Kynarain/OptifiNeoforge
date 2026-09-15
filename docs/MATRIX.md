@@ -1229,3 +1229,35 @@ neoforge-20.2.88-client.jar: net/minecraft/client/particle/ParticleEngine$1Parti
 
 **下一步(1.20.2)**:先改①(条目名与索引),因为它决定"到底装的是哪一份";再改②(record 访问器沿用字段映射),
 两者都做完再启动一次。注意①②互不替代:即使装对了那一份,访问器仍是 SRG 也会与运行时的官方名对不上。
+
+**①的一行根因找到了,1.20.2 打通 —— 1.20.x 四行全覆盖(同一晚)**
+
+量到点上之后,根因是一行代码:改写工具在**查配对表时用了带 `srg/` 前缀的名字**,而配对表的键是**不带前缀的类名**
+✗ —— 于是**字节里的常量池被改了(那里用的是裸类名)、条目路径却没改** ✗✗。产物里因此同时出现:
+
+```
+entry srg/net/minecraft/client/particle/ParticleEngine$ParticleDefinition   ← 旧名(条目)
+pool  …ParticleEngine$1ParticleDefinition                                    ← 新名(类自己)
+```
+
+ML 按**条目路径**找类,自然只找到运行时那一份。修法就是查表前先剥掉 `srg/` 前缀、写回时再加回去 ✓。
+修完后产物条目变成 `optifineoforge/patched/net/minecraft/client/particle/ParticleEngine$1ParticleDefinition.class` ✓,
+启动给出:
+
+| 指标 | 1.20.2(本次) |
+|---|---|
+| `VERDICT` | **`STARTED (40s, marker: Sound engine started)`** |
+| `Setting user`(标题界面) | ✓ |
+| `[Shaders] OpenGL` | ✓ |
+| `Connected textures` | 2 行 ✓ |
+| `Pre-stitch`(OptiFine 拼图集) | 13 行 ✓ |
+| `[OptiFine]` 日志 | **239 行** ✓ |
+| 替换类 | 246 个 |
+| 新 crash report / 截图 | **无** ✓ / 916 KB ✓ |
+
+**1.20.x 这一条分支到此四行全覆盖**:1.20.1、1.20.2、1.20.4、1.20.6 —— 每行都带着 OptiFine 跑起来
+(shaders + CTM + 图集),而且各自用了不同的路线(1.20.6 无补丁树 + ship;1.20.4 SRG→官方名重映射;
+1.20.1 原样 SRG + 类名对齐;1.20.2 = 1.20.4 的路线 + SecureJarHandler 调用修复 + 类名对齐)。
+
+**遗留小项(下一轮顺手看)**:1.20.2 这次 `stderr.log` 是 14,625 字节(1.20.1 那次只有 27 字节),
+虽然 verdict 是 STARTED 且无新 crash report,但值得读一遍确认里面只是良性警告。
