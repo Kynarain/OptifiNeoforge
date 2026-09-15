@@ -1202,6 +1202,31 @@ OptiFine 的运行时 transformer**。下一步据此调整:成品类改放在**
 
 OptiFine 的类实现了游戏里的接口,而两者分属**不同模块**:我们的 jar 是 `srg` 模块,游戏是 `minecraft`
 模块。之前几轮碰不到它,是因为那时 OptiFine 的补丁根本没生效(第 68 轮反倒是"干净启动"),这条路径
-(OptiFine 的 `OptionInstance` 补丁代码在 `Options.<init>` 里被调用)以前从不执行。**下一步:让游戏模块
-把包导出给我们的模块**(或让 `srg` 模块读到 `minecraft`),即模块层的 exports/reads 问题,在
-`completeScan(IModuleLayerManager)` 那个钩子上处理最合适。
+(OptiFine 的 `OptionInstance` 补丁代码在 `Options.<init>` 里被调用)以前从不执行。
+
+### 这一轮把可能的原因逐个排掉了,只剩模块导出这一条
+
+- **不是"我们的 jar 没被 FML 当成 mod"**:实测三条线的日志里我们的 jar 都不在
+  `Found mod file` 列表里 —— 1.21.4 那条**已验证可用**的线也一样(它只有 2 条 `Found mod file`,
+  都是游戏 jar 和 neoforge universal),而它的 `OptiFineTransformer: Targets: 474` 正常工作。
+  所以"不在 mod 列表"是本项目的常态,不是这次的病因。
+- **不是 manifest**:原版 OptiFine 1.20.4 与我们打出来的 jar(1.20.4 与 1.21.4 两份)的
+  `META-INF/MANIFEST.MF` 都是 `Automatic-Module-Name: optifine`。**但报错里的模块名是 `srg`**,
+  而 `srg` 正好是 jar 里那个 union 根目录的名字 —— SecureJar 把 `srg/` 当成包根,模块名随之而来。
+- **不是残留的旧 jar**:`game1204/mods/` 里只有我们那一个 jar。
+- **不是 1.20.4 独有**:四个 OptiFine 构建(1.20.1 / 1.20.4 / 1.21.1 / 1.21.4)都带
+  `srg/net/optifine/config/SliderableValueSetInt.class`,而且**都带
+  `patch/srg/net/minecraft/client/OptionInstance$SliderableValueSet.class.xdelta`** —— 也就是说
+  OptiFine 连这个接口自己都要打补丁。差别只在于 1.20.4 这条线现在真的把补丁放进去了,于是这条路径
+  第一次被执行到。
+- **ModLauncher 的公开 API 给不出导出**:`IModuleLayerManager` 只有 `getLayer(Layer)`,
+  `ModuleLayerHandler` 有 `updateLayer(Layer, Consumer<LayerInfo>)`,但
+  `ModuleLayerHandler$LayerInfo` 是个包私有 record,字段只有 `layer` 和 `cl` —— **没有
+  `ModuleLayer.Controller`**,所以拿不到 `addExports`。而 `--add-exports` 命令行参数只作用于 boot 层
+  的解析,对 ModLauncher 动态建出来的 GAME 层无效。
+
+**下一步(按可行性排序)**:①反射拿 `ModuleLayer` 的私有 `controller` 字段(`Unsafe` 或
+`privateLookupIn`)再 `addExports(gameModule, pkg, ourModule)`,在第一个类被 transform 时做一次;
+②想办法让 FML 把我们的 jar 当成 mod 模块(FML 会给 mod 模块导出游戏包),需要看 FML 2.0.17 到底按什么
+条件导出;③确认 FML 是否只给 GAME 层的模块导出,而 transformer jar 落在 PLUGIN 层 —— 若是,则应把
+成品类的宿主换到 mod 层。**这一轮没有落地修复,只把范围收窄到这三条。**
