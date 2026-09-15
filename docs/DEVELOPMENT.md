@@ -1367,3 +1367,37 @@ attachment 体系(`setData`/`removeData`)取代了 Forge 的 capability 体系,`
 **下一轮的起点(具体到可执行)**:对**改名后**的载荷做一遍引用扫描,列出"owner 是游戏类、而该成员在
 运行时不存在"的全部引用 —— 那份清单就是这一类待处理项的完整集合(`gatherCapabilities` 只是其中第一条),
 再决定是加空实现还是把调用点去掉。
+
+### 清单做出来了,而且收得很小:10 条引用、3 个 owner
+
+新增离线工具 `MissingTargets`:扫过载荷里**每一条**对游戏成员的引用(`SrgRemap` 看不到这类,因为它只
+看 `m_`/`f_` 形状的名字,而 Forge API 成员用的是普通名字),沿继承链问运行时有没有。两次收敛很关键:
+
+   只索引运行时:            1118 个类、43162 条引用,**1259** 条"缺失"
+   再把载荷自己的类也索引:  148 条
+     —— 差额是 OptiFine **自己加进被替换类里的成员**(ModelPart.getChildModelDeep、
+        Options.ofClouds、TextureAtlasSprite.spriteNormal ...):运行时没有,但换装后的类里有,
+        调用完全成立。不索引载荷就会把它们全报成问题。
+   再索引完整库 classpath + 把 JDK 祖先视为存在:  **10 条**
+     —— 差额是 datafixers/Codec/LogUtils/authlib 这些**别的 jar**里的类(不在客户端 jar 里),
+        以及 `Direction.ordinal()` 这类从 `java.lang.Enum` 继承来的方法。
+
+最终 10 条,分成三组,每组性质不同:
+
+   8x  net/minecraft/world/level/block/entity/BlockEntity
+         gatherCapabilities()V / invalidateCaps()V / deserializeCaps(...)V / serializeCaps()... 
+         getCapabilities()Lnet/minecraftforge/common/capabilities/CapabilityDispatcher;
+         requestModelDataUpdate()V
+       → Forge 的 capability 体系,NeoForge 20.4 用 attachment 取代后删掉了;`getCapabilities` 的返回
+         类型甚至就是 **`net/minecraftforge`** 的类。这属于 `ForgeApiShims` 那一类(Forge API 在
+         NeoForge 上不存在),不是成员恢复。
+   2x  net/minecraft/launchwrapper/LaunchClassLoader.registerTransformer(String)V
+       → 来自 `optifine/OptiFineForgeTweaker`,那是 OptiFine 给 Forge 安装器用的 tweaker 类,在
+         NeoForge 上根本不会被加载(manifest 里的 `TweakClass` 指向它)。可以无视,也可以在重打包时
+         与 installer 类一起删掉。
+   5x  com/mojang/blaze3d/platform/NativeImage$WriteCallback
+         free()V / address()J / getData(JI)Ljava/nio/ByteBuffer;
+       → 这一组还没定性,下一轮要先看是接口在两边声明不同,还是 OptiFine 那份编译对着别的版本。
+
+**下一轮**:给 BlockEntity 那 8 个成员出**空实现**(走 `ForgeApiShims` 那条路,因为运行时没有 donor),
+顺手看 `NativeImage$WriteCallback` 那 5 条到底是什么,然后继续启动。
