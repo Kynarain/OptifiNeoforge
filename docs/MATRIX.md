@@ -1776,7 +1776,6 @@ Left BlockStateModel$Unbaked alone: the runtime adds members to that interface �
 | 26.x | 26.1.2 | 26.1.2.109 | 需要 `ClassProcessor` 挂载点,但 OptiFine `K1_pre2` **自带** processor,优先级最高 |
 
 ### 1.21.8 的第五个坑:"签名被加长"把 OptiFine 的钩子挤出了调用路径
-
 四处修复之后 1.21.8 的卡点仍在 `Waiting for model sprites`,这次根因是**调用路径**而不是成员:
 
 ```
@@ -1805,6 +1804,23 @@ Restored OptiFine's model sprite collection into net.minecraft.client.resources.
 但 `Waiting for model sprites` 照旧 ⇒ "缺调用"是真的,但不是全部:剩下的怀疑是**顺序**(1.21.8 这一代
 NeoForge 的贴图集装配与模型发现谁先谁后),即 OptiFine 等待的那个标志所依赖的步骤排在了等待之后。这条留作
 1.21.8 的下一步,判据仍是 `Sound engine started` 与 stderr 0 字节。
+
+### 26.1.2 的前置(下一轮的起点)
+
+`prepare-line.ps1 -McVersion 26.1.2 -NfPrefix 26.1.2` 跑通了:原版 `26.1.2.jar` ✓、**NeoForge
+26.1.2.109** 的 universal ✓、原版库 56 个补齐 ✓(LWJGL 3.4.1、authlib 7.0.63、lz4-java 等)。
+两件事与 ModLauncher 世代不同,都是量出来的:
+
+1. **没有 `-client.jar` 这一步,也不需要它**:26.1.2 的 profile 里 `inheritsFrom: 26.1.2`,游戏类由原版
+   档案提供,26 个库全是 FML 11 那一套(`fancymodloader 11.0.15`、`sponge-mixin 0.17.3`、ASM 9.9.1,
+   没有 modlauncher/securejarhandler)。installer 自己那个 `neoforge-<版本>-client.jar` 也因此始终不产出
+   (`maven` 上也没有这个 classifier:`neoforge-26.1.2.109-client.jar` 取回 404),而这不影响这条线。
+2. **挂载点只能是 `ClassProcessor`**:与 21.11.45 同因 —— 没有 ModLauncher,我们现有的
+   `ITransformationService`/`ITransformer` 无处可挂。而 OptiFine 26.1.2 的 `K1_pre2` **自带**
+   `optifine/OptiFineClassProcessor`(实现 `ClassProcessor` + `IModFileCandidateLocator`,并注册了两个
+   service 文件),所以这条线的正确做法是"让 NeoForge 接受 OptiFine 的 jar、让它自己的 processor 跑",
+   要处理的正是 FML 的 `IncompatibleModReason.OPTIFINE` 拒绝与元数据门槛。
+
 
 
 
