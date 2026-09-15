@@ -1418,3 +1418,112 @@ stderr: 0 字节                              ← 1,388,996 → 0,补丁器那 1
 **下一步(1.21.1)**:把 `PatchedClassTransformer` 也移植过去(它要读 `patched-index.txt` / `stubs.txt` /
 `keep-runtime.txt` ✓ 这三个文件搬运步骤已经产出 ✓),并在该分支的 service 里注册(顺序仍是"换类在前、
 成员回填在后" ✓)。这一支的 transformer 本来就是按 ModLauncher 11 写的,所以不需要 1.20.x 那套 ml10/ml11 适配层。
+
+---
+
+## 1.21.1 换类跑通:两个根因 + 一条模块层的硬边界(2026-09-16 凌晨)
+
+**换类 transformer 移植后:73 → 313 个类装上,但崩在两个更后面的地方。** 两个根因都被实测定位,修完之后
+1.21.1 与已验证的 1.21.4 判据齐平。
+
+### 根因一:打桩把 `com.mojang.serialization.Codec` 当成了"不存在的类"
+
+第一版移植后崩在 `TargetedConditionalEffect.equipmentDropsCodec`:
+
+```
+NullPointerException: Cannot invoke "Codec.fieldOf(String)" because the return value of
+  "Codec.validate(Function)" is null
+```
+
+不是 OptiFine 的问题,是**打桩步骤的输入不完整**:`MissingTargets` 的运行时列表里只有 NeoForge 那几个 jar,
+没有 `com.mojang:datafixerupper`,于是扫描看不到 `Codec`,判定"运行时没有" → 给真正的编解码器换了个
+**返回 null 的空实现** → 游戏恰好在等一个真 Codec 的地方炸。修法是把载荷真正会调到的库也交给扫描:
+
+```
+RemapRuntime = @( …… , com\mojang\datafixerupper\8.0.16\datafixerupper-8.0.16.jar,
+                        com\mojang\brigadier\1.3.10\brigadier-1.3.10.jar )
+```
+
+**教训**:打桩列表是"世界有多大"的定义,漏一个库不会报错,只会让一个不该被打桩的类变成 null 工厂。
+
+### 根因二:载荷的 Forge 父类在 NeoForge 运行时不存在 —— 换类会破坏继承关系
+
+第二个崩在 `AttachmentSync.onChunkSent`,离换类很远:
+
+```
+VerifyError: Bad type on operand stack
+  Location: net/neoforged/neoforge/attachment/AttachmentSync.onChunkSent(...) @82: invokestatic
+  Reason:   Type 'net/minecraft/world/level/block/entity/BlockEntity' is not assignable to
+            'net/neoforged/neoforge/attachment/AttachmentHolder'
+```
+
+实测两边的声明(javap):
+
+| | 父类 | 接口 |
+|---|---|---|
+| 载荷(OptiFine 1.21.1,Forge 目标) | `net.minecraftforge.common.capabilities.CapabilityProvider<BlockEntity>` | `net.minecraftforge.common.extensions.IForgeBlockEntity` |
+| 运行时(neoforge-21.1.250-**client**.jar,已打补丁的游戏) | `net.neoforged.neoforge.attachment.AttachmentHolder` | `net.neoforged.neoforge.common.extensions.IBlockEntityExtension` |
+
+两个关键测量:
+
+1. **游戏类来自 `neoforge-<版本>-client.jar`**,不是 `client-<版本>-srg.jar` —— 后者里 `BlockEntity extends
+   java.lang.Object`(原版形态),前者里才是 NeoForge 改过的形态。所以"运行时的版本"必须取 client jar。
+2. **载荷里"父类是 Forge 类型"的类只有一个**:`BlockEntity`。其余 32 个提到 `net/minecraftforge` 的游戏类
+   都只是在 `implements` 里提到接口(接口可以靠 shim 补齐)。判据是逐类 javap 声明行,不是猜。
+
+### 试错记录:shim 改父类行不通,模块层不允许
+
+第一版修法是"把 shim 的父类改掉"(让 `CapabilityProvider extends AttachmentHolder`),构建侧已经能自动测出
+这个映射(比对载荷与运行时的父类),但运行期立刻:
+
+```
+NoClassDefFoundError: net/neoforged/neoforge/attachment/AttachmentHolder
+  at cpw.mods.cl.ModuleClassLoader.loadFromModule(ModuleClassLoader.java:311)
+```
+
+原因在同一份日志的模块图里:
+
+```
+module graph: our module is optifine, layer manager captured
+module graph: GAME layer holds srg mixinextras.neoforge mixin_synthetic minecraft neoforge
+module graph: optifine -> minecraft: reads it = false, …… exported to it = true
+```
+
+**我方 jar(`optifine` 模块)在 GAME 层之下,模块只能读它下面的层** —— 所以 shim 引用游戏层的
+`AttachmentHolder` 解析不了;反过来 GAME 层的游戏类引用我方 shim **是通的**(前面能换 313 个类就是证据)。
+结论:**shim 永远只能是"根"(只 extends Object)**,要修继承关系只能在"被换进游戏层的那份字节"上修。
+
+### 修法:在换进去的类上改父类(离线出计划 + 运行期改写)
+
+- 新增工具 `HierarchyPlan`(`src/.../optifine/HierarchyPlan.java`):拿**载荷 jar + 运行时 jar**(client jar
+  在前,它才是打补丁后的游戏)比对每一对同名类,对"载荷父类是 `net/minecraftforge/*`,运行时父类不是
+  Object"的类,检查两件事 —— 运行时父类**是否有可被子类调用的无参构造**(`AttachmentHolder()` ✓)、
+  载荷类体里**除构造链之外是否还提到旧父类** —— 两条都过才写进 `reparent.txt`。工具不能放进运行期:
+  transformer 手里只有"同一个类的两份字节",看不到它上面的那个父类。
+- loader 侧 `PatchedClassTransformer.reparent(...)`:按计划表把 `superName` 换成运行时的父类,并把每个构造
+  函数里 `invokespecial CapabilityProvider.<init>(Ljava/lang/Class;)V` 改成
+  `invokespecial AttachmentHolder.<init>()V`(参数用 `POP` 丢掉 —— Forge 的父类只是把 `self` 存起来,
+  NeoForge 的父类把 map 放在对象自己身上,丢参数是**正确的翻译**,不是走捷径)。**没有计划表就不动**,
+  计划表与运行时父类不一致就拒绝换类并写明原因。
+- 同一轮里加的"接口并集"对**类**也生效(原先只对接口):运行时类实现了 NeoForge 的扩展接口,
+  NeoForge 自己的代码会强转它,载荷版没有这个接口就会在第一次强转处 `ClassCastException`。
+  实测这一支只有 1 个接口被并进来(`IBlockEntityExtension`),它唯一的抽象方法 `getPersistentData()`
+  正是成员回填计划已经补上的那一个(`BlockEntity.customPersistentData`)✓,所以并集是安全的。
+
+### 1.21.1 现在的判据(与 1.21.4 齐平)
+
+| 指标 | 1.21.1(neoforge-21.1.250) |
+|---|---|
+| `VERDICT` | **`STARTED (40s, marker: Sound engine started)`** ✓ |
+| `Setting user` | ✓ |
+| `Replaced ` / 换类目标 | **313 个类装上** / 目标 426 ✓ |
+| `[OptiFine]` 日志 | **223 行** ✓ |
+| `Shaders`(SMCLog 初始化 + 装载配置) | ✓ |
+| `Pre-stitch` / `Connected textures` | **14 / 3** ✓ |
+| `Caught error` | **0** ✓ |
+| stderr | **0 字节** ✓ |
+| `BlockEntity` | 载荷版装上(带 OptiFine 自己的 `nbtTag` / `nbtTagUpdateMs` / `requestModelDataUpdate`)✓ |
+
+**1.21.1 与 1.21.4 的差异(记录用)**:1.21.1 的 OptiFine 载荷按 SRG/混淆基名打补丁、运行期 transformer
+要"混淆基类资源"而运行期给不出(`Base resource not found: akr.class` ×12717),所以走**离线换类**;
+1.21.4 则是 OptiFine 自己那份 transformer 在运行期补丁(打的是 NeoForge 已改过的类,继承关系天然保留)。
