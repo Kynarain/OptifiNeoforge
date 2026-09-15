@@ -23,6 +23,7 @@ import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
 import org.objectweb.asm.tree.FieldNode;
@@ -103,6 +104,18 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 		}
 
 		int restored = 0;
+		// The field names the class has *before* anything is restored, and the distinction matters: an
+		// initialiser exists to give a value to a field this pass is about to add, so a field that was
+		// already here is the class's own business - while a field restored a moment ago is exactly the
+		// one that needs it. Taking this after the restore answers the question the wrong way round, and
+		// that mistake was made twice before it was measured: the guard added for the static-final case
+		// skipped every initialiser, including RenderSystem.PIPELINE_MODIFIERS, and the client died on
+		// its first frame with "PIPELINE_MODIFIERS is null" - the very failure the static initialiser
+		// work exists to fix.
+		Set<String> ownFields = new LinkedHashSet<>();
+		for(FieldNode field : input.fields) {
+			ownFields.add(field.name);
+		}
 		for(FieldNode field : donor.fields) {
 			if(!hasField(input, field.name, field.desc)) {
 				input.fields.add(new FieldNode(field.access, field.name, field.desc, field.signature, field.value));
@@ -135,6 +148,20 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 					continue;
 				}
 				if("()V".equals(method.desc)) {
+					// Only for a field this class does not already have. The initialiser exists to give
+					// a value to a field that was restored; a class that already declares the field fills
+					// it itself, and assigning it from another method is not merely redundant but illegal
+					// when it is static final - which is how this was found, on the line where the
+					// model-discovery family is deliberately left to the runtime and the plan still had
+					// the donor's initialiser for a field the runtime's own class declares:
+					//
+					//   IllegalAccessError: Update to static final field
+					//     ModelDiscovery$ModelWrapper.KEY_ADDITIONAL_PROPERTIES attempted from a different
+					//     method than the initializer method
+					String field = method.name.substring(MemberRestorePlan.INITIALISER_PREFIX.length());
+					if(ownFields.contains(field)) {
+						continue;
+					}
 					staticInitialisers.add(method.name);
 				} else {
 					initialisers.add(method.name);
@@ -264,6 +291,26 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 		if(!MODEL_MANAGER.equals(input.name)) {
 			return;
 		}
+		// Which of the model loader's methods this runtime actually runs is a measurement, not an
+		// assumption, and assuming it cost a round: the repair was first written into
+		// discoverModelDependencies, the widest overload - the one whose signature NeoForge grew - and a
+		// probe at the head of it never fired, while the game sat on "Waiting for model sprites". So the
+		// method the game does not call is the wrong place to repair, however right it looks. These
+		// probes say which ones it does call, and in what order, on the way to the atlas stitching that
+		// waits for OptiFine's flag.
+		for(String name : new String[] {"reload", "loadBlockModels", "discoverModelDependencies", "loadModels",
+				"apply"}) {
+			for(MethodNode method : input.methods) {
+				if(!name.equals(method.name) || method.instructions == null) {
+					continue;
+				}
+				InsnList probe = new InsnList();
+				probe.add(new LdcInsnNode("ModelManager." + name + method.desc));
+				probe.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "enter", "(Ljava/lang/String;)V", false));
+				method.instructions.insert(probe);
+				method.maxStack = Math.max(method.maxStack, 0);
+			}
+		}
 		MethodNode target = null;
 		int widest = -1;
 		for(MethodNode method : input.methods) {
@@ -289,19 +336,46 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 				return;
 			}
 		}
-		org.objectweb.asm.Type[] arguments = org.objectweb.asm.Type.getArgumentTypes(target.desc);
-		if(arguments.length < 1 || !"Ljava/util/Map;".equals(arguments[0].getDescriptor())) {
-			LOGGER.warn("Cannot restore OptiFine's sprite collection: discoverModelDependencies" + target.desc
-					+ " does not start with the map it is given");
-			return;
+		// Every overload, and this is where two wrong guesses were corrected by measurement. First the
+		// call was put in the widest overload, on the reasoning that NeoForge's callers use the grown
+		// signature - and a probe showed the method that actually runs is the *narrower* one, the
+		// payload's own. Then the payload's own version was assumed to be fine because it does contain
+		// the call - and reading its bytecode shows the call sits behind a branch:
+		//
+		//   109: ifeq 121
+		//   114: invokevirtual ModelDiscovery.resolveCustomModels:()V
+		//   118: invokestatic CustomItems.collectModelSprites:(Ljava/util/Map;)V
+		//
+		// so on a runtime where that condition does not hold the collection never happens, the flag it
+		// sets stays false, and the atlas stitch waits for it forever. Putting the call at the head of
+		// each overload makes it unconditional; {@code collectModelSprites} only walks a list and sets
+		// the flag, so calling it twice costs nothing.
+		int repaired = 0;
+		for(MethodNode method : input.methods) {
+			if(!"discoverModelDependencies".equals(method.name) || method.instructions == null) {
+				continue;
+			}
+			if(!hasMapFirstArgument(method)) {
+				continue;
+			}
+			InsnList call = new InsnList();
+			call.add(new LdcInsnNode("ModelManager.discoverModelDependencies"));
+			call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "enter", "(Ljava/lang/String;)V", false));
+			call.add(new VarInsnNode(Opcodes.ALOAD, 0));
+			call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, CUSTOM_ITEMS, COLLECT_SPRITES,
+					"(Ljava/util/Map;)V", false));
+			method.instructions.insert(call);
+			method.maxStack = Math.max(method.maxStack, 1);
+			repaired++;
 		}
-		InsnList call = new InsnList();
-		call.add(new VarInsnNode(Opcodes.ALOAD, 0));
-		call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, CUSTOM_ITEMS, COLLECT_SPRITES, "(Ljava/util/Map;)V", false));
-		target.instructions.insert(call);
-		target.maxStack = Math.max(target.maxStack, 1);
-		LOGGER.info("Restored OptiFine's model sprite collection into " + input.name.replace('/', '.')
-				+ ".discoverModelDependencies" + target.desc);
+		LOGGER.info("Restored OptiFine's model sprite collection into " + repaired
+				+ " discoverModelDependencies overload(s) of " + input.name.replace('/', '.'));
+	}
+
+	/** Whether the first argument is a map, which is the one both signatures of that method share. */
+	private static boolean hasMapFirstArgument(MethodNode method) {
+		org.objectweb.asm.Type[] arguments = org.objectweb.asm.Type.getArgumentTypes(method.desc);
+		return arguments.length >= 1 && "Ljava/util/Map;".equals(arguments[0].getDescriptor());
 	}
 
 	/** OptiFine's sprite collection, and the class that owns it. */
@@ -309,6 +383,8 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 	private static final String COLLECT_SPRITES = "collectModelSprites";
 	/** The class whose model discovery is the call path, as the module graph spells it. */
 	private static final String MODEL_MANAGER = "net/minecraft/client/resources/model/ModelManager";
+	/** Our own probe class, which the game layer can call because it reads the module this jar is. */
+	private static final String PROBE = "kynarain/cn/optifineoforge/loader/ReloadProbe";
 
 	/** The donor class for a target, or {@code null} when the jar has none. */
 	private static ClassNode donor(String internalName) {
@@ -326,8 +402,17 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 		}
 	}
 
-	private static boolean hasField(ClassNode node, String name, String descriptor) {
+	/** Whether the class declares a field of that name, whatever its type. */
+	private static boolean hasFieldNamed(ClassNode node, String name) {
 		for(FieldNode field : node.fields) {
+			if(name.equals(field.name)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static boolean hasField(ClassNode node, String name, String descriptor) {		for(FieldNode field : node.fields) {
 			if(name.equals(field.name) && descriptor.equals(field.desc)) {
 				return true;
 			}
