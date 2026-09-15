@@ -10,6 +10,8 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
 
@@ -123,8 +125,23 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		input.access = patched.access;
 		input.interfaces = patched.interfaces == null ? new ArrayList<>() : new ArrayList<>(patched.interfaces);
 		input.signature = patched.signature;
+		// Members are not the same story as the class. Taking OptiFine's word for the class flags is
+		// right - it changes them on purpose - but for a member the game's own copy may have been widened
+		// by an access transformer, and NeoForge's code then relies on that. Replacing RenderType wholesale
+		// made NeoForgeRenderTypes\$Internal fail:
+		//   IllegalAccessError: ... tried to access method 'RenderType.create(...)'
+		// OptiFine's compilation has create() narrower than NeoForge's widened version, so each member
+		// keeps whichever of the two visibilities is wider.
+		Map<String, Integer> wasMethods = visibilityOf(input.methods);
+		Map<String, Integer> wasFields = visibilityOfFields(input.fields);
 		List<FieldNode> fields = new ArrayList<>(patched.fields);
 		List<MethodNode> methods = new ArrayList<>(patched.methods);
+		for(FieldNode field : fields) {
+			field.access = wider(field.access, wasFields.get(field.name + field.desc));
+		}
+		for(MethodNode method : methods) {
+			method.access = wider(method.access, wasMethods.get(method.name + method.desc));
+		}
 		input.fields = fields;
 		input.methods = methods;
 		LOGGER.info("Replaced " + input.name.replace('/', '.') + " with OptiFine's patched version ("
@@ -133,6 +150,47 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	}
 
 	private static boolean loggedModules;
+
+	/** Visibility of each declared method, keyed by name and descriptor, for the wider-of-two rule. */
+	private static Map<String, Integer> visibilityOf(List<MethodNode> methods) {
+		Map<String, Integer> result = new LinkedHashMap<>();
+		for(MethodNode method : methods) {
+			result.putIfAbsent(method.name + method.desc, method.access);
+		}
+		return result;
+	}
+
+	private static Map<String, Integer> visibilityOfFields(List<FieldNode> fields) {
+		Map<String, Integer> result = new LinkedHashMap<>();
+		for(FieldNode field : fields) {
+			result.putIfAbsent(field.name + field.desc, field.access);
+		}
+		return result;
+	}
+
+	/** {@code access}, with its visibility replaced by the wider of its own and {@code other}'s. */
+	private static int wider(int access, Integer other) {
+		if(other == null) {
+			return access;
+		}
+		int mine = rank(access);
+		int theirs = rank(other);
+		if(theirs <= mine) {
+			return access;
+		}
+		return (access & ~VISIBILITY) | (other & VISIBILITY);
+	}
+
+	/** public 3, protected 2, package 1, private 0 - what "wider" means for the merge above. */
+	private static int rank(int access) {
+		if((access & Opcodes.ACC_PUBLIC) != 0) {
+			return 3;
+		}
+		if((access & Opcodes.ACC_PROTECTED) != 0) {
+			return 2;
+		}
+		return (access & Opcodes.ACC_PRIVATE) != 0 ? 0 : 1;
+	}
 
 	/**
 	 * Prints the real module graph once, the first time a class is transformed.
