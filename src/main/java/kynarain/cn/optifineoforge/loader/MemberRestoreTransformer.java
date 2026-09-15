@@ -21,10 +21,14 @@ import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.IntInsnNode;
+import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
+import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.MethodNode;
@@ -104,18 +108,6 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 		}
 
 		int restored = 0;
-		// The field names the class has *before* anything is restored, and the distinction matters: an
-		// initialiser exists to give a value to a field this pass is about to add, so a field that was
-		// already here is the class's own business - while a field restored a moment ago is exactly the
-		// one that needs it. Taking this after the restore answers the question the wrong way round, and
-		// that mistake was made twice before it was measured: the guard added for the static-final case
-		// skipped every initialiser, including RenderSystem.PIPELINE_MODIFIERS, and the client died on
-		// its first frame with "PIPELINE_MODIFIERS is null" - the very failure the static initialiser
-		// work exists to fix.
-		Set<String> ownFields = new LinkedHashSet<>();
-		for(FieldNode field : input.fields) {
-			ownFields.add(field.name);
-		}
 		for(FieldNode field : donor.fields) {
 			if(!hasField(input, field.name, field.desc)) {
 				input.fields.add(new FieldNode(field.access, field.name, field.desc, field.signature, field.value));
@@ -148,20 +140,13 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 					continue;
 				}
 				if("()V".equals(method.desc)) {
-					// Only for a field this class does not already have. The initialiser exists to give
-					// a value to a field that was restored; a class that already declares the field fills
-					// it itself, and assigning it from another method is not merely redundant but illegal
-					// when it is static final - which is how this was found, on the line where the
-					// model-discovery family is deliberately left to the runtime and the plan still had
-					// the donor's initialiser for a field the runtime's own class declares:
-					//
-					//   IllegalAccessError: Update to static final field
-					//     ModelDiscovery$ModelWrapper.KEY_ADDITIONAL_PROPERTIES attempted from a different
-					//     method than the initializer method
-					String field = method.name.substring(MemberRestorePlan.INITIALISER_PREFIX.length());
-					if(ownFields.contains(field)) {
-						continue;
-					}
+					// Every static initialiser is taken, including one for a field the class already
+					// declares. The guard that used to skip those was written for an IllegalAccessError
+					// and caused a worse one: it skipped RenderSystem.PIPELINE_MODIFIERS, which NeoForge's
+					// own class does not fill in on these lines, and the client died on its first frame
+					// with "PIPELINE_MODIFIERS is null". The assignment is written into the class's own
+					// static initialiser now, where it is legal whatever the field's modifiers are, so
+					// there is nothing left for the guard to protect against.
 					staticInitialisers.add(method.name);
 				} else {
 					initialisers.add(method.name);
@@ -169,11 +154,19 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 			}
 		}
 		if(!staticInitialisers.isEmpty()) {
-			// The payload's own static initialiser runs first - it is the class's - and these calls go
-			// after it, at the end, so that NeoForge's fields end up with NeoForge's values rather than
-			// the defaults the payload's initialiser knows nothing about. A class with no static
-			// initialiser at all gets one, because OptiFine's copy of a class that NeoForge added
-			// static state to may well have none.
+			// The value is *inlined* into the class's own static initialiser rather than called through a
+			// separate method, and that is the whole point: a static final field may only be assigned
+			// from the class's own <clinit>, so a call to a helper that writes it is rejected with
+			//
+			//   IllegalAccessError: Update to static final field
+			//     ModelDiscovery$ModelWrapper.KEY_ADDITIONAL_PROPERTIES attempted from a different method
+			//     than the initializer method
+			//
+			// and the earlier guard against that was worse than the disease: it skipped every initialiser
+			// for a field the class already declared, which left RenderSystem.PIPELINE_MODIFIERS null.
+			// Writing the value here is legal whether or not the field is final, whether the class
+			// already declares it, and whether the payload's own initialiser touched it - the payload's
+			// code runs first, since its instructions are already in place.
 			MethodNode clinit = null;
 			for(MethodNode method : input.methods) {
 				if("<clinit>".equals(method.name)) {
@@ -181,36 +174,60 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 					break;
 				}
 			}
-			InsnList calls = new InsnList();
+			InsnList values = new InsnList();
+			int inlined = 0;
 			for(String name : staticInitialisers) {
-				calls.add(new MethodInsnNode(Opcodes.INVOKESTATIC, input.name, name, "()V", false));
-			}
-			// The owner is a class here, and only a class: an interface was sent back before this
-			// point, because a static call on an interface has to be an InterfaceMethodref and the
-			// assignment it would make is illegal there anyway.
-			if(clinit == null) {
-				clinit = new MethodNode(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
-				clinit.instructions.add(calls);
-				clinit.instructions.add(new InsnNode(Opcodes.RETURN));
-				clinit.maxStack = 1;
-				clinit.maxLocals = 0;
-				input.methods.add(clinit);
-			} else {
-				AbstractInsnNode last = null;
-				for(AbstractInsnNode insn = clinit.instructions.getFirst(); insn != null; insn = insn.getNext()) {
-					if(insn.getOpcode() == Opcodes.RETURN) {
-						last = insn;
+				for(MethodNode method : input.methods) {
+					if(name.equals(method.name) && "()V".equals(method.desc) && method.instructions != null) {
+						for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+							if(insn.getOpcode() == Opcodes.RETURN) {
+								continue;
+							}
+							AbstractInsnNode copy = copy(insn);
+							if(copy == null) {
+								LOGGER.warn("Cannot inline " + name + " into " + input.name
+										+ ": an instruction of kind " + insn.getClass().getSimpleName()
+										+ " has no copy here; the field stays at its default");
+								inlined = -1;
+								break;
+							}
+							values.add(copy);
+						}
+						if(inlined >= 0) {
+							inlined++;
+						}
+						break;
 					}
 				}
-				if(last == null) {
-					LOGGER.warn("No return in the static initialiser of " + input.name
-							+ "; " + staticInitialisers.size() + " restored fields stay at their defaults");
-				} else {
-					clinit.instructions.insertBefore(last, calls);
-					clinit.maxStack = Math.max(clinit.maxStack, 1);
+				if(inlined < 0) {
+					break;
 				}
 			}
-			LOGGER.info("Initialised " + staticInitialisers.size() + " restored static fields in " + input.name);
+			if(inlined > 0) {
+				if(clinit == null) {
+					clinit = new MethodNode(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
+					clinit.instructions.add(values);
+					clinit.instructions.add(new InsnNode(Opcodes.RETURN));
+					clinit.maxStack = 8;
+					clinit.maxLocals = 0;
+					input.methods.add(clinit);
+				} else {
+					AbstractInsnNode last = null;
+					for(AbstractInsnNode insn = clinit.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+						if(insn.getOpcode() == Opcodes.RETURN) {
+							last = insn;
+						}
+					}
+					if(last == null) {
+						LOGGER.warn("No return in the static initialiser of " + input.name
+								+ "; " + staticInitialisers.size() + " restored fields stay at their defaults");
+					} else {
+						clinit.instructions.insertBefore(last, values);
+						clinit.maxStack = Math.max(clinit.maxStack, 8);
+					}
+				}
+				LOGGER.info("Initialised " + inlined + " restored static fields in " + input.name);
+			}
 		}
 		if(!initialisers.isEmpty()) {
 			// A restored field needs the assignment NeoForge's own class would have made; the donor
@@ -402,9 +419,48 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 		}
 	}
 
+	/**
+	 * A fresh copy of one instruction, or null for a kind the inliner does not carry.
+	 *
+	 * <p>A copy rather than the node itself, because these instructions are still linked into the donor
+	 * method's list and moving them would corrupt it. Only the kinds a value-producing run is made of
+	 * are handled: pushing a constant or a static, creating and constructing an object, a cast, and a
+	 * call. A jump or a local read never reaches here - the plan does not extract those - so a branch
+	 * would mean the extraction changed, and saying so is better than writing something wrong.</p>
+	 */
+	private static AbstractInsnNode copy(AbstractInsnNode insn) {
+		if(insn instanceof InsnNode plain) {
+			return new InsnNode(plain.getOpcode());
+		}
+		if(insn instanceof MethodInsnNode call) {
+			return new MethodInsnNode(call.getOpcode(), call.owner, call.name, call.desc, call.itf);
+		}
+		if(insn instanceof FieldInsnNode field) {
+			return new FieldInsnNode(field.getOpcode(), field.owner, field.name, field.desc);
+		}
+		if(insn instanceof TypeInsnNode type) {
+			return new TypeInsnNode(type.getOpcode(), type.desc);
+		}
+		if(insn instanceof LdcInsnNode ldc) {
+			return new LdcInsnNode(ldc.cst);
+		}
+		if(insn instanceof IntInsnNode integer) {
+			return new IntInsnNode(integer.getOpcode(), integer.operand);
+		}
+		if(insn instanceof InvokeDynamicInsnNode dynamic) {
+			// A value built through a lambda is still one expression, and 1.21.8 has one on the model
+			// path: SingleVariant$Unbaked.MAP_CODEC is Variant.MAP_CODEC.xmap(lambda, lambda), and
+			// leaving the field at its default made every blockstate in the game fail to load because
+			// NeoForge's own BlockStateModel$Unbaked.CODEC falls back to it. The bootstrap method and
+			// its arguments are shared rather than copied - they are immutable, and ASM writes them out
+			// into this class's own bootstrap table as it writes the instruction.
+			return new InvokeDynamicInsnNode(dynamic.name, dynamic.desc, dynamic.bsm, dynamic.bsmArgs.clone());
+		}
+		return null;
+	}
+
 	/** Whether the class declares a field of that name, whatever its type. */
-	private static boolean hasFieldNamed(ClassNode node, String name) {
-		for(FieldNode field : node.fields) {
+	private static boolean hasFieldNamed(ClassNode node, String name) {		for(FieldNode field : node.fields) {
 			if(name.equals(field.name)) {
 				return true;
 			}
