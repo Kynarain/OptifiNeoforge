@@ -249,6 +249,9 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		// keeps whichever of the two visibilities is wider.
 		Map<String, Integer> wasMethods = visibilityOf(input.methods);
 		Map<String, Integer> wasFields = visibilityOfFields(input.fields);
+		// Snapshotted before the swap: a few members must keep the game's body, and by the time the swap is
+		// done the originals are only reachable through this list.
+		List<MethodNode> originalMethods = new ArrayList<>(input.methods);
 		List<FieldNode> fields = new ArrayList<>(patched.fields);
 		List<MethodNode> methods = new ArrayList<>(patched.methods);
 		for(FieldNode field : fields) {
@@ -259,12 +262,71 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		}
 		input.fields = fields;
 		input.methods = methods;
+		keepRuntimeBodies(input, originalMethods);
 		LOGGER.info("Replaced " + input.name.replace('/', '.') + " with OptiFine's patched version ("
 				+ fields.size() + " fields, " + methods.size() + " methods)");
 		return input;
 	}
 
 	private static boolean loggedModules;
+
+	/**
+	 * Members whose bodies must stay the game's own, even though OptiFine's copy declares them too.
+	 *
+	 * <p>The mirror of the stub list. Some of OptiFine's methods assume a partner it does not ship: its
+	 * {@code ModelPart.getChild(String)} looks each child up by {@code child.getId()} - an id held in a
+	 * field OptiFine added - and that id is only ever set by OptiFine's own compilation of the baking code.
+	 * OptiFine patches no {@code PartDefinition} at all, so on this line the runtime bakes the parts, no ids
+	 * are ever set, every lookup returns null, and the first model that asks for a child dies with
+	 * "this.head is null" while {@code minecraft:skull} is being built. Keeping the game's plain
+	 * {@code children.get(name)} is the repair, and it is enough: the callers only want the child.</p>
+	 */
+	private static final String KEEP_RUNTIME = "/optifineoforge/keep-runtime.txt";
+
+	/** {@code owner|name|desc} for each member that keeps the game's body. */
+	private static final Set<String> KEEP_RUNTIME_MEMBERS = loadKeepRuntime();
+
+	private static Set<String> loadKeepRuntime() {
+		Set<String> result = new HashSet<>();
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(KEEP_RUNTIME)) {
+			if(stream == null) {
+				return Set.of();
+			}
+			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+				String[] parts = line.split("\t");
+				if(parts.length == 3) {
+					result.add(parts[0] + "|" + parts[1] + "|" + parts[2]);
+				}
+			}
+		} catch(IOException e) {
+			LOGGER.warn("could not read " + KEEP_RUNTIME + ": " + e);
+		}
+		if(!result.isEmpty()) {
+			LOGGER.info("Members keeping the game's body: " + result.size());
+		}
+		return Set.copyOf(result);
+	}
+
+	/** Puts the game's own version of the listed members back over the swapped-in ones. */
+	private static void keepRuntimeBodies(ClassNode input, List<MethodNode> originals) {
+		if(KEEP_RUNTIME_MEMBERS.isEmpty()) {
+			return;
+		}
+		for(MethodNode original : originals) {
+			if(!KEEP_RUNTIME_MEMBERS.contains(input.name + "|" + original.name + "|" + original.desc)) {
+				continue;
+			}
+			for(int index = 0; index < input.methods.size(); index++) {
+				MethodNode candidate = input.methods.get(index);
+				if(candidate.name.equals(original.name) && candidate.desc.equals(original.desc)) {
+					input.methods.set(index, original);
+					LOGGER.info("Kept the game's body of " + input.name.replace('/', '.') + "."
+							+ original.name + original.desc);
+					break;
+				}
+			}
+		}
+	}
 
 	/** Visibility of each declared method, keyed by name and descriptor, for the wider-of-two rule. */
 	private static Map<String, Integer> visibilityOf(List<MethodNode> methods) {

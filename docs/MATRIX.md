@@ -10,7 +10,7 @@
 |---|---|---|---|---|
 | 1.20.x | 1.20.1 | 47.1.106 | **已验证** | 启动成功、`forge shells in the jar: 0`、OptiFine 412 targets、计划 550 成员/87 类、资源重载无错、贴图集建成 |
 | 1.20.x | 1.20.2 | 20.2.93 | **未开始** | OptiFine 1.20.2 的 jar 未下载;`mcp_config-1.20.2.zip` 已确认存在,可照 1.20.4 的路走 |
-| 1.20.x | 1.20.4 | 20.4.251 | **接近**(差一步) | 换装 274 类、资源包不再被移除(`Caught error: 0`)、模型烘焙过关;当前崩在 NeoForge early-display 与 OptiFine 版 `LoadingOverlay` 的重入(`IllegalStateException: Already building` @ `NeoForgeLoadingOverlay.render`) |
+| 1.20.x | 1.20.4 | 20.4.251 | **可运行**(见下) | 换装 313 类、`Caught error: 0`、资源包不再被移除、模型烘焙通过、进到标题画面(`Setting user`)、OptiFine 着色器与连接材质在跑、无崩溃报告。**运行要求**:`config/fml.toml` 设 `earlyWindowProvider = "none"` —— FML 的 early window 与 OptiFine 换装的渲染类会在同一帧里重入(`SimpleBufferBuilder: Already building`),而 `-Dfml.earlyprogresswindow=false` 是 Forge 时代的属性,FML 2.0.17 不认 | 换装 274 类、资源包不再被移除(`Caught error: 0`)、模型烘焙过关;当前崩在 NeoForge early-display 与 OptiFine 版 `LoadingOverlay` 的重入(`IllegalStateException: Already building` @ `NeoForgeLoadingOverlay.render`) |
 | 1.20.x | 1.20.6 | 20.6.141 | **未开始** | 从这一版起 FML 拒绝原版 OptiFine jar(`IncompatibleModReason.OPTIFINE`);且载荷命名空间变回官方名,重映射步骤应整体跳过 |
 | 1.21.x | 1.21.4 | 21.4.149 | **已验证** | 启动成功、OptiFine 474 targets、模型烘焙(`missingModel=SimpleBakedModel`)、1024×1024 贴图集、首次资源重载 0 错 |
 | 1.21.x | 1.21.1 / 1.21.2 / 1.21.3 / 1.21.5 / 1.21.6 / 1.21.7 / 1.21.8 / 1.21.9 / 1.21.10 / 1.21.11 | 21.x | **未开始** | 其中 1.21.9+ 已无 ModLauncher,只能走自定义 `ClassProcessor` |
