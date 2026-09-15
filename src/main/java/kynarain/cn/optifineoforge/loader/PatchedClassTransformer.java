@@ -19,10 +19,15 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
+import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.FieldNode;
+import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.TypeInsnNode;
 
 import cpw.mods.modlauncher.api.IModuleLayerManager;
 import cpw.mods.modlauncher.api.ITransformer;
@@ -115,9 +120,197 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		}
 	}
 
+	/**
+	 * Rewrites the payload's superclass onto the runtime's, when the build planned that for this class,
+	 * and returns {@code null} on success or the reason it must not be done.
+	 *
+	 * <p>Three things have to hold, and each one is checked rather than assumed. The payload's superclass
+	 * has to be one of the Forge types this jar supplies - a shim, with no state and no superclass of its
+	 * own - because only then is discarding it lossless. The class has to be on the build's plan, which is
+	 * where the runtime superclass was inspected: it must have a constructor a subclass may chain to, and
+	 * the loader cannot look at a game class to find that out. And the class body must not name the old
+	 * superclass anywhere except in those constructor calls: a {@code super.something()} call site names
+	 * its owner, and once the class no longer extends that type the call cannot resolve.</p>
+	 *
+	 * <p>Measured on 1.21.1, the shape this exists for is exactly one class -
+	 * {@code BlockEntity extends CapabilityProvider<BlockEntity>}, whose constructor does
+	 * {@code aload_0; ldc class BlockEntity; invokespecial CapabilityProvider.<init>(Ljava/lang/Class;)V}
+	 * and whose body names the old superclass nowhere else. The Forge superclass stores a reference to
+	 * the object for its capability lookups; NeoForge's {@code AttachmentHolder} keeps its map on the
+	 * object itself, so dropping the argument is the correct translation, not a shortcut. It matters
+	 * that the class is not simply left alone: OptiFine's compilation of it carries its own state
+	 * ({@code nbtTag}, {@code nbtTagUpdateMs}) and {@code requestModelDataUpdate()}, which the runtime's
+	 * version has no reason to have.</p>
+	 */
+	private static String reparent(ClassNode patched, ClassNode runtime) {
+		String planned = REPARENTS_BY_CLASS.get(patched.name);
+		if(planned == null) {
+			return null;
+		}
+		String forgeSuper = patched.superName;
+		if(forgeSuper == null || !forgeSuper.startsWith("net/minecraftforge/")) {
+			return "the plan says to re-parent it but its copy extends " + forgeSuper + ", not a Forge type";
+		}
+		// The plan was made from the same jars, so a disagreement means the plan and the runtime are not
+		// from the same build: the runtime's class has to be the one the plan was measured against.
+		if(!planned.equals(runtime.superName)) {
+			return "the plan re-parents it onto " + planned + " while the runtime's copy extends "
+					+ runtime.superName + ", so the plan and the runtime do not match";
+		}
+		// The shim has to be a root, or it is not one of ours to discard.
+		boolean ours = PatchedClassTransformer.class.getResource("/" + forgeSuper + ".class") != null;
+		String shimSuper = ownSuperName(forgeSuper);
+		if(!ours || (shimSuper != null && !"java/lang/Object".equals(shimSuper))) {
+			return "the payload's copy of it extends " + forgeSuper + ", which this jar does not supply as "
+					+ "a shim of its own";
+		}
+		int rewritten = 0;
+		for(MethodNode method : patched.methods) {
+			if(!"<init>".equals(method.name)) {
+				continue;
+			}
+			for(AbstractInsnNode instruction : method.instructions) {
+				if(instruction instanceof MethodInsnNode call && call.getOpcode() == Opcodes.INVOKESPECIAL
+						&& forgeSuper.equals(call.owner) && "<init>".equals(call.name)) {
+					// The arguments are already on the stack, and the runtime's superclass takes none:
+					// they are discarded rather than the pushes being deleted, which keeps whatever the
+					// class evaluates for them evaluated exactly as OptiFine wrote it.
+					Type[] arguments = Type.getArgumentTypes(call.desc);
+					for(int index = arguments.length - 1; index >= 0; index--) {
+						method.instructions.insertBefore(call,
+								new InsnNode(arguments[index].getSize() == 2 ? Opcodes.POP2 : Opcodes.POP));
+					}
+					call.owner = planned;
+					call.desc = "()V";
+					call.itf = false;
+					rewritten++;
+				}
+			}
+		}
+		if(rewritten == 0) {
+			return "the payload's copy of it extends " + forgeSuper + " and no constructor of it chains to "
+					+ "that superclass, so the hierarchy cannot be rewritten";
+		}
+		String survivor = namesOldSuper(patched, forgeSuper);
+		if(survivor != null) {
+			return "the payload's copy of it extends " + forgeSuper + " and its body still names that type ("
+					+ survivor + "), which would not resolve afterwards";
+		}
+		patched.superName = planned;
+		if(patched.signature != null && patched.signature.contains(forgeSuper)) {
+			// The generic signature names the superclass it was compiled against; a stale one is not a
+			// verification problem, only a lie to anything that reads it, so it goes.
+			patched.signature = null;
+		}
+		LOGGER.info("Re-parented " + patched.name.replace('/', '.') + " from the Forge type " + forgeSuper
+				+ " onto the runtime's " + planned + " (" + rewritten + " constructor call(s) rewritten)");
+		return null;
+	}
+
+	/**
+	 * The re-parent plan, {@code class name to the runtime superclass}, produced by the build's
+	 * {@code HierarchyPlan} step. Written there and not decided here because the decision needs the
+	 * runtime superclass, which a transformer cannot look at: it holds two copies of one class, never
+	 * the class above them.
+	 */
+	private static final String REPARENTS = "/optifineoforge/reparent.txt";
+
+	private static final Map<String, String> REPARENTS_BY_CLASS = loadReparents();
+
+	private static Map<String, String> loadReparents() {
+		Map<String, String> result = new LinkedHashMap<>();
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(REPARENTS)) {
+			if(stream == null) {
+				// Lines whose payload already speaks NeoForge's hierarchy - 1.20.1, where the Forge
+				// package is the runtime's own - have nothing to move and no plan.
+				LOGGER.info("No " + REPARENTS + " in this jar; no class has its hierarchy rewritten");
+				return Map.of();
+			}
+			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+				String[] parts = line.split("\t");
+				if(parts.length == 3 && "reparent".equals(parts[0])) {
+					result.put(parts[1], parts[2]);
+				}
+			}
+		} catch(IOException e) {
+			LOGGER.warn("could not read " + REPARENTS + ": " + e);
+		}
+		LOGGER.info("Hierarchy rewrites planned: " + result.size());
+		return Map.copyOf(result);
+	}
+
+	/**
+	 * The first place a class still names a type, as a description, or null when it names it nowhere.
+	 *
+	 * <p>Instruction operands and the class's own metadata are both searched: a member reference names
+	 * its owner, a type instruction names a class, and a local variable table or an annotation can name
+	 * either. Strings are deliberately not searched - OptiFine has string constants holding class names
+	 * it looks up itself, and those are not affected by a rewrite of the hierarchy.</p>
+	 */
+	private static String namesOldSuper(ClassNode node, String internalName) {
+		String fieldType = "L" + internalName + ";";
+		for(MethodNode method : node.methods) {
+			for(AbstractInsnNode instruction : method.instructions) {
+				if(instruction instanceof MethodInsnNode call && (internalName.equals(call.owner)
+						|| call.desc.contains(fieldType))) {
+					return "a call to " + call.name + call.desc;
+				}
+				if(instruction instanceof FieldInsnNode field && (internalName.equals(field.owner)
+						|| field.desc.contains(fieldType))) {
+					return "a read of " + field.name;
+				}
+				if(instruction instanceof TypeInsnNode type && internalName.equals(type.desc)) {
+					return "a " + type.getOpcode() + " of the type";
+				}
+			}
+		}
+		return null;
+	}
+
 	/** Null-safe class-name comparison: a class with no superclass equals only another such class. */
 	private static boolean sameName(String left, String right) {
 		return left == null ? right == null : left.equals(right);
+	}
+
+	/**
+	 * Why the payload's copy of a class must not be installed, or {@code null} when it may be.
+	 *
+	 * <p>The question is not whether the two copies name the same superclass but whether the payload's
+	 * hierarchy, as it will really be loaded, still reaches the type the runtime's callers were compiled
+	 * against. Keeping {@code java.lang.Object} needs nothing: every class reaches it. Anything else has
+	 * to be found on the payload's own chain, and a Forge API type on that chain is supplied by this jar
+	 * as a shim - {@code /net/minecraftforge/...} below - whose own superclass the build re-parents, so
+	 * the walk sees the type the game will actually see.
+	 *
+	 * <p>The walk is deliberately limited to this jar's resources. Asking a class loader for a game class
+	 * from inside a transformer is the one thing that reliably produces an unusable failure, and no
+	 * shim's superclass is a game class anyway.
+	 */
+	private static String hierarchyProblem(String payloadSuper, String runtimeSuper) {
+		if(sameName(payloadSuper, runtimeSuper)) {
+			return null;
+		}
+		if(runtimeSuper == null || "java/lang/Object".equals(runtimeSuper)) {
+			return null;
+		}
+		String current = payloadSuper;
+		for(int hops = 0; hops < 16 && current != null; hops++) {
+			if(current.equals(runtimeSuper)) {
+				return null;
+			}
+			current = ownSuperName(current);
+		}
+		return "the payload's copy of it extends " + payloadSuper + " and that chain does not reach "
+				+ runtimeSuper + ", which the runtime's version extends";
+	}
+
+	/** The superclass of a class this jar ships outside the payload tree, or null if it ships none. */
+	private static String ownSuperName(String internalName) {
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream("/" + internalName + ".class")) {
+			return stream == null ? null : new ClassReader(stream.readAllBytes()).getSuperName();
+		} catch(IOException e) {
+			return null;
+		}
 	}
 
 	private static boolean hasMethod(ClassNode node, String name, String desc) {
@@ -216,26 +409,52 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 			return input;
 		}
 
-		// A payload class is only a patch of this one if it really is the same class, and numbered
-		// nested names are where that assumption breaks. Those numbers are assigned by whoever built
-		// the artefact, and the two artefacts here were built differently: OptiFine's payload takes its
-		// names from the obfuscated jar, while the runtime's come from NeoForm. Measured on 1.20.1: the
-		// runtime's net.minecraft.Util$9 extends java.lang.Thread, while the payload's Util$9 is the
-		// BiFunction cache class behind Util.memoize. Installing it broke the class that uses it:
+		// A payload class is only a patch of this one if it really is the same class, and the superclass
+		// is where that assumption is checked. Two different things make the two copies disagree.
+		//
+		// Numbered nested names: those numbers are assigned by whoever built the artefact, and the two
+		// artefacts here were built differently - OptiFine's payload takes its names from the obfuscated
+		// jar, the runtime's from NeoForm. Measured on 1.20.1: the runtime's net.minecraft.Util$9 extends
+		// java.lang.Thread, while the payload's Util$9 is the BiFunction cache class behind Util.memoize.
+		// Installing it broke the class that uses it:
 		//
 		//   VerifyError: Bad type on operand stack
 		//     Location: net/minecraft/Util.m_137584_()V @13: invokevirtual
 		//     Reason: Type 'net/minecraft/Util$9' is not assignable to 'java/lang/Thread'
 		//
-		// OptiFine patches bodies, not hierarchies, so on a numbered name a superclass mismatch means
-		// this is a different class: the runtime's own version stays. Scoped to numbered names on
-		// purpose - on an ordinary class a changed superclass is real (OptiFine's BlockEntity extends
-		// Forge's CapabilityProvider while NeoForge's extends AttachmentHolder, and the shim for the
-		// former is what makes that swap work).
-		if(input.name.indexOf('$') >= 0 && !sameName(patched.superName, input.superName)) {
-			LOGGER.info("Left " + input.name.replace('/', '.') + " alone: the payload's copy of it extends "
-					+ patched.superName + " while the runtime's extends " + input.superName);
-			return input;
+		// NeoForge's own hierarchy changes: on a Forge-targeted line the payload extends the Forge type
+		// OptiFine was compiled against, while the runtime class extends the NeoForge type that replaced
+		// it. Measured on 1.21.1 - payload BlockEntity extends
+		// net.minecraftforge.common.capabilities.CapabilityProvider, runtime BlockEntity extends
+		// net.neoforged.neoforge.attachment.AttachmentHolder - and the swap then fails far from here:
+		//
+		//   VerifyError: Bad type on operand stack
+		//     Location: net/neoforged/neoforge/attachment/AttachmentSync.onChunkSent(...) @82: invokestatic
+		//     Reason: Type 'net/minecraft/world/level/block/entity/BlockEntity' is not assignable to
+		//             'net/neoforged/neoforge/attachment/AttachmentHolder'
+		//
+		// The second case is repaired here, on the class being swapped, and where the repair happens is
+		// the whole lesson: Forge's API types travel with this jar as shims, so the obvious fix looks
+		// like re-parenting the shim - make CapabilityProvider extend AttachmentHolder - and it cannot
+		// work. This jar's module sits *below* the game layer, and a module reads the layers under it,
+		// not the ones above: the shim's own superclass then fails to resolve,
+		//
+		//   NoClassDefFoundError: net/neoforged/neoforge/attachment/AttachmentHolder
+		//     at cpw.mods.cl.ModuleClassLoader.loadFromModule(ModuleClassLoader.java:311)
+		//
+		// while the game layer reads this one without any help (the same log line says
+		// "optifine -> minecraft: reads it = false" and the swap still resolves every shim it names).
+		// So the payload's superclass is rewritten onto the runtime's instead, and {@link #reparent}
+		// does that, including the constructor's super call.
+		if(!sameName(patched.superName, input.superName)) {
+			String problem = reparent(patched, input);
+			if(problem == null) {
+				problem = hierarchyProblem(patched.superName, input.superName);
+			}
+			if(problem != null) {
+				LOGGER.info("Left " + input.name.replace('/', '.') + " alone: " + problem);
+				return input;
+			}
 		}
 
 		// Content in place rather than returning OptiFine's node: the transformers after this one in
@@ -255,18 +474,32 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		//   runtime ModelBaker extends net.neoforged.neoforge.client.extensions.IModelBakerExtension
 		//   OptiFine ModelBaker extends net.minecraftforge.client.extensions.IForgeModelBaker
 		//   NoSuchMethodError: 'BakedModel ModelBaker.bake(ResourceLocation, ModelState, Function)'
-		// Keeping both lets either route resolve. Only for interfaces: adding a superinterface to a class
-		// obliges that class to implement its abstract methods, which its swapped body may not have.
-		if((patched.access & Opcodes.ACC_INTERFACE) != 0) {
-			List<String> merged = new ArrayList<>(patched.interfaces == null ? List.<String>of() : patched.interfaces);
-			for(String name : input.interfaces) {
-				if(!merged.contains(name)) {
-					merged.add(name);
-				}
+		// Keeping both lets either route resolve.
+		//
+		// The same holds for a class, and there the runtime's interfaces are not a detail: NeoForge
+		// patches a game class to implement its extension interface and its own code then casts to it,
+		// so a swapped class that drops the interface dies at the first cast instead:
+		//   runtime BlockEntity implements net.neoforged.neoforge.common.extensions.IBlockEntityExtension
+		//   payload BlockEntity implements net.minecraftforge.common.extensions.IForgeBlockEntity
+		//   ClassCastException: BlockEntity cannot be cast to IBlockEntityExtension
+		// An interface added this way obliges the class to implement its abstract methods, and this is
+		// why the addition is safe anyway: an abstract method of an injected interface is implemented by
+		// the runtime class OptiFine compiled instead of, so it is a member of the runtime class that
+		// the payload lacks - exactly what MemberRestorePlan restores from the donor classes. Measured
+		// for the one abstract method IBlockEntityExtension declares, getPersistentData(): the plan for
+		// this line restores BlockEntity.customPersistentData, the field NeoForge's implementation reads.
+		List<String> kept = new ArrayList<>(patched.interfaces == null ? List.<String>of() : patched.interfaces);
+		int injected = 0;
+		for(String name : input.interfaces) {
+			if(!kept.contains(name)) {
+				kept.add(name);
+				injected++;
 			}
-			input.interfaces = merged;
-		} else {
-			input.interfaces = patched.interfaces == null ? new ArrayList<>() : new ArrayList<>(patched.interfaces);
+		}
+		input.interfaces = kept;
+		if((patched.access & Opcodes.ACC_INTERFACE) == 0 && injected > 0) {
+			LOGGER.info("Kept the runtime's " + injected + " interface(s) on " + input.name.replace('/', '.')
+					+ ": " + patched.interfaces.size() + " from the payload, " + kept.size() + " in place");
 		}
 		input.signature = patched.signature;
 		// Members are not the same story as the class. Taking OptiFine's word for the class flags is

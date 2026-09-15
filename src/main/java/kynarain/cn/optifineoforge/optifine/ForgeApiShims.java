@@ -303,6 +303,13 @@ public final class ForgeApiShims {
 	 *
 	 * <p>When the shell tracks emptiness, the no-argument constructor is the empty constant and every
 	 * other one is a value OptiFine built, so which constructor ran is recorded for {@code isEmpty}.</p>
+	 *
+	 * <p>A shell never extends anything but {@code Object}, and that is a measured limit rather than a
+	 * choice: this jar's module sits below the game layer, so a shim extending a game-layer type cannot
+	 * resolve it - {@code NoClassDefFoundError: net/neoforged/neoforge/attachment/AttachmentHolder} from
+	 * {@code ModuleClassLoader.loadFromModule}. A payload class that extends a Forge type therefore has
+	 * its superclass rewritten onto the runtime's by the loader instead, where the class is defined in
+	 * the game layer and the reference resolves.</p>
 	 */
 	private static void writeConstructor(ClassWriter writer, String internalName, String desc, boolean trackEmptiness) {
 		MethodVisitor constructor = writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", desc, null, null);
