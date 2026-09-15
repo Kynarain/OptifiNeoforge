@@ -75,6 +75,10 @@ public class OptifiNeoforgeTransformationService implements ITransformationServi
 		// OptiFine's compilation of a game class in place, and MemberRestoreTransformer then adds back the
 		// members NeoForge's own version has. On 1.21.4 the payload is applied by OptiFine's own
 		// transformer instead, and this one registers no targets at all because the index is absent.
+		// Anything that has to repair the class after the runtime's members are back belongs in
+		// MemberRestoreTransformer rather than in a transformer of its own: ModLauncher consults one
+		// transformer per target, so a second one declaring a class this pass already declares is built
+		// and then never invoked.
 		return List.of(new PatchedClassTransformer(), new RenderTargetFix(), new ReloadableResourceManagerFix(),
 				new TagHelperFix(),
 				new PackRootsFix(), new ReloadProbeFix(), new ModelProbeFix(), new NativeImageProbeFix(),

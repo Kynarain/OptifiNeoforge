@@ -225,8 +225,90 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 		if(restored > 0) {
 			LOGGER.info("Restored " + restored + " members in " + input.name + " from its donor");
 		}
+		repairSpriteCollection(input);
 		return input;
 	}
+
+	/**
+	 * Puts OptiFine's model-sprite collection back on the call path NeoForge replaced it on.
+	 *
+	 * <p>This is the mirror image of the restore above, and it belongs in the same pass because of the
+	 * order it needs: it has to run on the class <em>after</em> the runtime's members are back, so that
+	 * the repair lands in the method the game actually calls. It began as a transformer of its own and
+	 * was silently useless there for a reason worth writing down, because the same mistake is easy to
+	 * repeat: {@code ClassNode.name} is the <em>internal</em> name, with slashes, and the check compared
+	 * it against the dotted name, so every call returned at the first line and the only evidence was a
+	 * log line that never appeared.</p>
+	 *
+	 * <p>What it repairs: where NeoForge <em>grows a signature</em>, OptiFine's version of the method
+	 * keeps its own body and loses the call path, because NeoForge's callers are compiled against the
+	 * longer descriptor. Measured on 1.21.8:</p>
+	 *
+	 * <pre>payload  ModelManager.discoverModelDependencies(Map, LoadedModels, LoadedClientInfos)
+	 *            ... calls CustomItems.collectModelSprites(map)   &lt;- what sets the flag
+	 * runtime  ModelManager.discoverModelDependencies(Map, LoadedModels, LoadedClientInfos,
+	 *                                                 StandaloneModelLoader$LoadedModels)
+	 *            ... restored, has no such call, and is the one NeoForge calls</pre>
+	 *
+	 * <p>Nothing fails when that call is missing: {@code CustomItems.registerIcons} waits for the flag
+	 * in a loop that sleeps 100 ms and logs every fiftieth turn, so the game reaches its title screen and
+	 * then sits there printing</p>
+	 *
+	 * <pre>[OptiFine] Waiting for model sprites</pre>
+	 *
+	 * <p>The repair calls what the payload's own version calls, with the argument both signatures share
+	 * - the map - and does nothing when the collection is already reached from the method the game uses
+	 * or when the first argument is not that map.</p>
+	 */
+	private static void repairSpriteCollection(ClassNode input) {
+		if(!MODEL_MANAGER.equals(input.name)) {
+			return;
+		}
+		MethodNode target = null;
+		int widest = -1;
+		for(MethodNode method : input.methods) {
+			if(!"discoverModelDependencies".equals(method.name) || method.instructions == null) {
+				continue;
+			}
+			int arguments = org.objectweb.asm.Type.getArgumentTypes(method.desc).length;
+			if(arguments > widest) {
+				target = method;
+				widest = arguments;
+			}
+		}
+		if(target == null) {
+			LOGGER.warn("No discoverModelDependencies in " + input.name
+					+ "; OptiFine's sprite collection stays off the call path");
+			return;
+		}
+		for(AbstractInsnNode instruction : target.instructions) {
+			if(instruction instanceof MethodInsnNode call && CUSTOM_ITEMS.equals(call.owner)
+					&& COLLECT_SPRITES.equals(call.name)) {
+				LOGGER.info("OptiFine's sprite collection is already called by discoverModelDependencies"
+						+ target.desc);
+				return;
+			}
+		}
+		org.objectweb.asm.Type[] arguments = org.objectweb.asm.Type.getArgumentTypes(target.desc);
+		if(arguments.length < 1 || !"Ljava/util/Map;".equals(arguments[0].getDescriptor())) {
+			LOGGER.warn("Cannot restore OptiFine's sprite collection: discoverModelDependencies" + target.desc
+					+ " does not start with the map it is given");
+			return;
+		}
+		InsnList call = new InsnList();
+		call.add(new VarInsnNode(Opcodes.ALOAD, 0));
+		call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, CUSTOM_ITEMS, COLLECT_SPRITES, "(Ljava/util/Map;)V", false));
+		target.instructions.insert(call);
+		target.maxStack = Math.max(target.maxStack, 1);
+		LOGGER.info("Restored OptiFine's model sprite collection into " + input.name.replace('/', '.')
+				+ ".discoverModelDependencies" + target.desc);
+	}
+
+	/** OptiFine's sprite collection, and the class that owns it. */
+	private static final String CUSTOM_ITEMS = "net/optifine/CustomItems";
+	private static final String COLLECT_SPRITES = "collectModelSprites";
+	/** The class whose model discovery is the call path, as the module graph spells it. */
+	private static final String MODEL_MANAGER = "net/minecraft/client/resources/model/ModelManager";
 
 	/** The donor class for a target, or {@code null} when the jar has none. */
 	private static ClassNode donor(String internalName) {
