@@ -56,6 +56,9 @@ public final class OptifineJarFixer {
 	private static final String METADATA_NEW_CTOR =
 			"(Ljava/lang/String;Ljava/lang/String;Ljava/util/function/Supplier;Ljava/util/List;)V";
 	private static final String SET_SUPPLIER = "kynarain/cn/optifineoforge/loader/SetSupplier";
+	/** Where the set handed to that constructor comes from, and so where the wrapper is inserted. */
+	private static final String METADATA_SET_PRODUCER_OWNER = "cpw/mods/jarhandling/SecureJar";
+	private static final String METADATA_SET_PRODUCER_NAME = "getPackages";
 
 	private OptifineJarFixer() {
 	}
@@ -82,12 +85,25 @@ public final class OptifineJarFixer {
 	 * Points the {@code SimpleJarMetadata} construction at the newer signature, by wrapping the set in
 	 * the supplier that signature wants.
 	 *
+	 * <p>Where the wrapper goes was read off the bytecode after a first attempt got it wrong. The call
+	 * site, from the original class:</p>
+	 *
+	 * <pre>new SimpleJarMetadata        // [metadata]
+	 * dup                          // [metadata, metadata]
+	 * ldc "net.optifine"           // [metadata, metadata, name]
+	 * aconst_null                  // [metadata, metadata, name, version]
+	 * aload_0; SecureJar.getPackages()   // [.., name, version, set]
+	 * new ArrayList; dup; &lt;init&gt;  // [.., name, version, set, list]
+	 * invokespecial SimpleJarMetadata.&lt;init&gt;(String, String, Set, List)V</pre>
+	 *
+	 * <p>So immediately before the call the set is not on top - the list is - and duplicating anything
+	 * there produced {@code VerifyError: Bad type on operand stack}. The set is wrapped where it is
+	 * produced instead, right after {@code getPackages()}, which leaves
+	 * {@code [.., name, version, supplier]} for the rest of the sequence and the same call with a new
+	 * descriptor.</p>
+	 *
 	 * <p>Inserted rather than rewritten, which is the lesson from this class's other repair: replacing a
-	 * body deletes side effects, and the launch then fails somewhere unrelated and much later. Here the
-	 * only change is in front of the call - {@code NEW SetSupplier; DUP_X1; INVOKESPECIAL (Set)V} - which
-	 * turns {@code [this, name, version, set]} into {@code [this, name, version, supplier]} - plus the
-	 * call's own descriptor. Frames are recomputed because a stored frame at the call site may name the
-	 * set type, which is no longer what is on the stack.</p>
+	 * body deletes side effects and the launch then fails somewhere unrelated and much later.</p>
 	 */
 	private static byte[] fixJarMetadataCall(byte[] classBytes) {
 		ClassNode node = new ClassNode();
@@ -96,20 +112,30 @@ public final class OptifineJarFixer {
 
 		boolean patched = false;
 		for(MethodNode method : node.methods) {
+			// One pass to find the call this shape has, and the instruction that produces its set.
+			MethodInsnNode metadataCall = null;
+			MethodInsnNode setProducer = null;
 			for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
-				if(!(insn instanceof MethodInsnNode call) || !METADATA_OWNER.equals(call.owner)
-						|| !"<init>".equals(call.name) || !METADATA_OLD_CTOR.equals(call.desc)) {
-					continue;
+				if(insn instanceof MethodInsnNode call){
+					if(METADATA_OWNER.equals(call.owner) && "<init>".equals(call.name) && METADATA_OLD_CTOR.equals(call.desc)) {
+						metadataCall = call;
+					} else if(METADATA_SET_PRODUCER_OWNER.equals(call.owner)
+							&& METADATA_SET_PRODUCER_NAME.equals(call.name)) {
+						setProducer = call;
+					}
 				}
-				InsnList wrapper = new InsnList();
-				wrapper.add(new TypeInsnNode(Opcodes.NEW, SET_SUPPLIER));
-				wrapper.add(new InsnNode(Opcodes.DUP_X1));
-				wrapper.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, SET_SUPPLIER, "<init>",
-						"(Ljava/util/Set;)V", false));
-				method.instructions.insertBefore(call, wrapper);
-				call.desc = METADATA_NEW_CTOR;
-				patched = true;
 			}
+			if(metadataCall == null || setProducer == null){
+				continue;
+			}
+			InsnList wrapper = new InsnList();
+			wrapper.add(new TypeInsnNode(Opcodes.NEW, SET_SUPPLIER));
+			wrapper.add(new InsnNode(Opcodes.DUP_X1));
+			wrapper.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, SET_SUPPLIER, "<init>",
+					"(Ljava/util/Set;)V", false));
+			method.instructions.insert(setProducer, wrapper);
+			metadataCall.desc = METADATA_NEW_CTOR;
+			patched = true;
 		}
 		if(!patched) {
 			return classBytes;

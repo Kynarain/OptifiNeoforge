@@ -1045,3 +1045,35 @@ java.lang.VerifyError: Bad type on operand stack
 
 另外:**rig 那处"取回被修类"的改动影响所有 `-ShipPayload` 行**,所以下一轮必须先跑 1.20.4、1.20.6 回归,
 确认它们没有因为这次改动而变化(它们此前都是 `VERDICT: STARTED`)。
+
+**回归已做,插入点也按字节码改了,但 1.20.2 还没过(同一晚,把两次 VerifyError 都记下来)**
+
+- **回归 ✓**:改完 rig 之后重跑 1.20.4 与 1.20.6,两条都是 `VERDICT: STARTED (40s, marker: Sound engine started)`,
+  数字与先前一致(1.20.4: 76 成员/27 类 stub、448 目标;1.20.6: 85 成员/29 类、450 目标)✓
+  —— "取回所有被修类"这个改动对已验证的行没有副作用。
+- 反汇编原始 `OptiFineJar.lambda$1` 看清了真实的调用序列(这正是先前推理错的地方):
+
+```
+ 0: new SimpleJarMetadata          // [metadata]
+ 3: dup                            // [metadata, metadata]
+ 4: ldc "net.optifine"             // [.., name]
+ 6: aconst_null                    // [.., name, version]
+ 7: aload_0; SecureJar.getPackages()   // [.., name, version, set]
+13: new ArrayList; dup; <init>     // [.., name, version, set, list]
+20: invokespecial SimpleJarMetadata.<init>(String,String,Set,List)V
+```
+
+也就是说**紧挨着调用处栈顶是 `list` 而不是 `set`**,所以第一次在调用前插 `DUP_X1` 必错 ✓。
+改成"在 `getPackages()` 之后(即 set 刚产生的位置)包一层"之后,`VerifyError` 从 **@24 移到了 @17**(正是新插入点 ✓),
+但仍然是 `Bad type on operand stack`:
+
+```
+Location: optifine/OptiFineJar.lambda$1(...) @17: invokespecial
+Reason:   Type uninitialized 13 (current frame, stack[6]) is not assignable to 'java/util/Set'
+```
+
+`uninitialized 13` 说明执行到插入点时栈顶是一个**尚未构造完的对象**(像是那个 `ArrayList`),而不是刚取出的 `set`
+—— 也就是说插入位置在**打补丁后**的实际指令序列里仍不是我想的那个点(或该方法里另有路径会被走到)。
+**下一步(1.20.2)**:不要再靠读原始字节码推断位置 —— 把**打补丁后**的 `lambda$1` 指令序列整段 dump 出来
+(ASM 里逐条打印),按实际序列定位 `getPackages` 与我的 wrapper 的相对位置,再决定插入点;顺带确认
+`getPackages` 在同一方法里是否只出现一次(搜索取的是最后一次匹配)。
