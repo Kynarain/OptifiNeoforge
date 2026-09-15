@@ -1171,3 +1171,33 @@ java.lang.NoClassDefFoundError: net/minecraft/world/level/block/state/BlockState
 是**游戏类**(不是库)—— 先量清楚它到底为什么加载不了(是模块读取问题,还是我们换进去的某个类把
 `BlockState` 的加载路径弄坏了);这与 1.20.4 早先那次反射路径里的 `ClassNotFoundException: ItemStack` 是同一类现象,
 可以对照那次的处理方式。
+
+**1.20.2 的失败点其实是"桥在 1.20.2 上没配上对",而且它是静默的(同一晚)**
+
+真正的最新 crash report(`00:08:18`)不是 BlockState,而是:
+
+```
+java.lang.NoSuchMethodError:
+  'java.util.Optional net.minecraft.client.particle.ParticleEngine$1ParticleDefinition.f_243741_()'
+	at net.minecraft.client.particle.ParticleEngine.lambda$reload$8(ParticleEngine.java:286)
+```
+
+调用方要的是 **运行时那个名字**(`$1ParticleDefinition`)、方法名是 **SRG 形状**(`f_243741_`)—— 也就是说
+**被装载的是运行时自己那份**(官方成员名,自然没有 `f_243741_`),而不是我们按运行时名字 ship 的那份。
+去产物里核实,原因一目了然:
+
+```
+产物条目: optifineoforge/patched/net/minecraft/client/particle/ParticleEngine$ParticleDefinition.class
+索引里  : net/minecraft/client/particle/ParticleEngine$ParticleDefinition
+```
+
+**桥在 1.20.2 上没有给这个类配上对**(仍然是载荷自己的名字),所以搬运时也没改名、索引里也没有运行时那个名字,
+于是运行时那份被装了进去。而 `NestedNameBridge` 的**判据是结构完全相同**(父类 + 字段描述符集合 + 方法描述符集合):
+1.20.2 上这两份 `ParticleDefinition` 的成员集合并不完全相同(NeoForge 那侧有补丁),于是"恰好一个候选"的条件不成立,
+**它什么也没说就放弃了** —— 这是最值得改的一点:配对失败必须**出声**。
+
+**下一步(1.20.2,两处一起改)**:
+1. **让未配对可见**:列出"载荷有 `$`、运行时没有同名类、但结构也没配上"的类(以及候选与差异),否则这类
+   静默放弃以后还会以完全不相干的报错形式出现;
+2. **放宽判据但要仍然可判定**:记录类(record)的两份拷贝成员名可以不同、描述符应当相同,所以对 record
+   允许用"父类相同 + **字段描述符集合**相同"来配对;真正无法判定时宁可报歧义,也不要猜。
