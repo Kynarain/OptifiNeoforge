@@ -208,8 +208,15 @@ public final class ForgeApiShims {
 			// OptiFine calls means a group it built itself.
 			writer.visitField(Opcodes.ACC_PRIVATE, EMPTY_FLAG, "Z", null, null).visitEnd();
 		}
+		// Every member is written once, and the shell's own no-argument constructor is the first entry
+		// in that record. The payload referencing <init>()V as well is what produced two of them:
+		//   ClassFormatError: Duplicate method name "<init>" with signature "()V" in class file
+		//   net/minecraftforge/client/model/ForgeFaceData
+		// which killed the launch inside OptiFine's Reflector, on its way to loading that class.
+		java.util.Set<String> written = new java.util.HashSet<>();
 		if(!isInterface) {
 			writeConstructor(writer, internalName, "()V", tracksEmptiness);
+			written.add("<init>()V");
 		}
 		java.util.List<String> selfTypedConstants = new java.util.ArrayList<>();
 		for(FieldReference field : shape.fields.values()) {
@@ -225,7 +232,12 @@ public final class ForgeApiShims {
 				selfTypedConstants.add(field.name);
 			}
 		}
+		// The same member can arrive from more than one place - a constructor the payload references
+		// and the one this shell already has are the case that produced a class the JVM refused.
 		for(MethodReference method : shape.methods.values()) {
+			if(!written.add(method.name + method.desc)) {
+				continue;
+			}
 			if("<init>".equals(method.name)) {
 				if(!isInterface) {
 					writeConstructor(writer, internalName, method.desc, tracksEmptiness);
@@ -279,6 +291,11 @@ public final class ForgeApiShims {
 			body.visitEnd();
 		}
 		if(!selfTypedConstants.isEmpty()) {
+			// The constants are built by calling the no-argument constructor, so the shell has to have
+			// one even when the payload never referenced it.
+			if(written.add("<init>()V")) {
+				writeConstructor(writer, internalName, "()V", tracksEmptiness);
+			}
 			MethodVisitor clinit = writer.visitMethod(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
 			clinit.visitCode();
 			for(String constant : selfTypedConstants) {
