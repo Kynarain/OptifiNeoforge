@@ -2023,6 +2023,86 @@ putfield enabled
    别的 FML 部件用 `ServiceLoaderUtil.loadServices(context, ClassProcessorProvider.class)` 装载。
    ⇒ 我们的 loader 编译 classpath 在 FML 10 线上要从 modlauncher 换成 `loader-10.0.36.jar`。
 
+## 26.1.2 第一次实机:三重门,过了两道(2026-09-16 上午)
+
+这一轮把 26.x 从"完全没起跑"推进到"客户端进标题画面、OptiFine 的 processor 真的被 FML 调起来了"。
+三次运行,每次一个门:
+
+### 门一:JDK。26.1.2 要 Java 25,不是 21
+
+原版 `26.1.2.json` 写着 `javaVersion.majorVersion: 25`(`java-runtime-epsilon`),它的 JVM 参数里有
+`--sun-misc-unsafe-memory-access=allow`。用本机默认的 JDK 21 起,第一行就死:
+
+```
+Unrecognized option: --sun-misc-unsafe-memory-access=allow
+Error: Could not create the Java Virtual Machine.
+```
+
+换 `C:\Users\kynar\.jdks\jdk-25\bin\java.exe` 之后正常。**结论:26.x 线的 `Jdk` 参数是
+`$jdk25`**,1.21.x 线的 21 不适用。
+
+### 门二:FML 11 认为"这是 OptiFine"的判据,就是一个文件
+
+`IncompatibleModReason.detect(JarContents)` 是**逐条按文件存在性**判的;反编译 `loader-11.0.15.jar`
+拿到全部判据:
+
+| 判据 | 文件 |
+|---|---|
+| OLDFORGE | `mcmod.info` |
+| MINECRAFT_FORGE | `META-INF/mods.toml` |
+| FABRIC / QUILT / LITELOADER | `fabric.mod.json` / `quilt.mod.json` / `litemod.json` |
+| **OPTIFINE** | **`optifine/Installer.class`** |
+| BUKKIT | `plugin.yml` |
+
+也就是说 FML 的"拒绝 OptiFine"只是**看到官方 jar 里那个安装器类**;去掉
+`optifine/Installer*.class`(共 3 个条目)它就不再拒绝。另一个必改项是元数据:OptiFine 自带
+`META-INF/mods.toml` 写的是 `modLoader="javafml"` + **`loaderVersion="[14,)"`**(Forge 时代的范围),
+FML 11 的 javafml 是 11.x,这个范围过不了,要改成 `[1,)`。
+
+### 门三(已过):OptiFine 自带的 processor 在 FML 11 下确实会跑
+
+打完补丁的探针 jar(`preview_OptiFine_26.1.2_HD_U_K1_pre2.jar` 去掉 3 个 Installer 条目 + 改
+`loaderVersion`)放进 `mods/`,FML 11 的日志按顺序给出:
+
+```
+mods/optifine-probe.jar
+OptiFineClassProcessor.init()
+OptiFineBaseTransformerService: OptiFine ZIP file: .../mods/optifine-probe.jar
+OptiFineBaseTransformer: Forge JAR not available
+OptiFineClassProcessor: handlesClass: <每个被加载的类>
+```
+
+⇒ **26.1.2 不需要我们自己写挂载点**,OptiFine 的 `ClassProcessor` + `IModFileCandidateLocator`
+是活的。客户端也在 40 秒进入标题画面(`Sound engine started`、`Setting user` ✓)。
+
+### 门三之后的真路障:OptiFine 的补丁**取不到原版类**
+
+探针这次是"OptiFine 挂上了但一个类都没换成":stderr 836 512 字节,6917 次同一个异常的头两行是
+
+```
+java.io.IOException: Base resource not found: net/minecraft/resources/Identifier.class
+	at optifine.Patcher.applyPatch(Patcher.java:148)
+	at optifine.OptiFineBaseTransformer.getOptiFineResourcePatched(OptiFineBaseTransformer.java:331)
+	at optifine.OptiFineClassProcessor.handlesClass(OptiFineClassProcessor.java:70)
+```
+
+`Identifier` 是 26.x 的新名字(原来叫 `ResourceLocation`),说明 OptiFine 认识 26.x 的命名,问题在
+**它去哪个 jar 里找"base"**:FML 11 把游戏类放在 `minecraft` 模块里
+(`jar(~libraries/net/neoforged/minecraft-client-patched/26.1.2.109/minecraft-client-patched-26.1.2.109.jar)`),
+而 `Patcher.applyPatch` 找的是它自己解析出来的那个"基础 jar 资源"集合 —— 这也是下一轮的第一个问题:
+**它是按路径找不到,还是按名字找不到**(OptiFine 期望未打补丁的原版 jar,或期望 `srg/` 前缀)。
+
+顺带量到的两件事实,后面都要用:
+
+* FML 11 的**游戏类运行时 jar 是 `net/neoforged:minecraft-client-patched:26.1.2.109`**
+  (`~libraries/...`),这就是 26.x 线上 `MemberRestorePlan` 要对比的"运行时"那一侧;
+  profile 的 `libraries` 里**没有** NeoForge universal 的条目,FML 11 自己按
+  `~libraries/net/neoforged/neoforge/26.1.2.109/neoforge-26.1.2.109-universal.jar` 找到它 ——
+  所以 rig 的 launcher **不用改**就能起这条线(实测)。
+* 标题画面那一次的 stderr 里还有一条 GUI 文本路径的异常
+  (`GuiRenderState.lambda$forEachText$0`,26.x 新的渲染状态体系),与 OptiFine 的 Font 补丁有关,
+  等补丁真的生效之后再判它。
+
 
 
 
