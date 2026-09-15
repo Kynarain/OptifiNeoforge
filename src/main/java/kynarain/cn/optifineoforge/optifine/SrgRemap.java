@@ -23,6 +23,7 @@ import java.util.zip.ZipOutputStream;
 
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.commons.ClassRemapper;
 import org.objectweb.asm.commons.Remapper;
 import org.objectweb.asm.tree.ClassNode;
@@ -111,7 +112,10 @@ public final class SrgRemap {
 	public static Report rewrite(SrgMemberMap map, SrgMemberMap.RuntimeIndex runtime, Path in, Path out)
 			throws IOException {
 		Report report = new Report();
-		Remapper remapper = new Remapper() {
+		// The API-version constructor rather than the no-argument one: ASM 9.10 deprecated the latter,
+		// and a deprecation note on stderr is enough to abort the rig build, which treats stderr as
+		// fatal. ASM9 is what every line's runtime ships.
+		Remapper remapper = new Remapper(Opcodes.ASM9) {
 			@Override
 			public String mapMethodName(String owner, String name, String descriptor) {
 				if(!SRG_NAME.matcher(name).matches()) {

@@ -1070,3 +1070,56 @@ transformer 必须**预先声明 targets**,需要改的类有几千个,声明不
 rig 那边同时修了一处:`build-rig-jar.ps1` 原来手写四个 ASM jar(9.8),没有 `asm-commons`,于是
 `ClassRemapper`/`Remapper` 直接编译不过;现在按模块名解析,自动带上 `asm-commons`,版本也跟
 `gradle.properties` 的 `asm_version=9.10.1` 一致。
+
+## 2026-09-15:1.20.4 第一次实机启动 —— 起来了,而且是"OptiFine 在场"起来的
+
+rig 现在能在 1.20.4 上跑完整条构建链(新增第 3b 步:打完补丁、做计划**之前**先跑 `SrgRemap`),产出
+
+    mods-stage-1204/optifiNeoforge-combined.jar  5,868,899 bytes, 5940 entries, 24 donors, 48 shims
+
+构建各步的输出:
+
+    patched in 1223 ms -> optifine-patched.jar (6,724,767 bytes)
+    patched game classes: 427 (369 net/minecraft)
+    rewrote 21471 method and 17455 field names, 107 could not be resolved
+    compared 235 replaced classes (835 without a runtime counterpart), 52 members to restore
+    48 referenced Forge types in 16 packages, 44 members named on them  -> 48 stubs
+
+`48 referenced Forge types` 说明这一行**需要** Forge shims(与 1.20.1 相反 —— 那一行的 NeoForge 自带
+Forge API,所以 `-ForgeStubs $false`;20.4 的运行时里 `net/minecraftforge` 是 0 个)。
+
+启动结果:
+
+    VERDICT: STARTED (40s, marker: Sound engine started)
+      OptiFineTransformationService.onLoad / OptiFine ZIP file: mods/optifiNeoforge-combined.jar
+      OptiFineTransformer: Targets: 427
+      OptifiNeoforgeTransformationService.onLoad, alongside [mixin, OptiFine, mixin-synthetic-package, fml, OptifiNeoforge]
+      Member restore plan: 52 members across 24 classes
+      Initialised 1 restored fields in net/minecraft/client/multiplayer/ClientLevel
+      Restored 1 members in net/minecraft/client/multiplayer/ClientLevel from its donor
+      NeoForge mod loading, version 20.4.251, for MC 1.20.4
+
+**但 stderr 有 12575 行异常,而且原因正是这一行预言过的那个**:
+
+    java.io.IOException: Base resource not found: fcn.class
+        at optifine.Patcher.applyPatch(Patcher.java:148)
+        at optifine.OptiFineTransformer.getOptiFineResourcePatched(OptiFineTransformer.java:441)
+        at optifine.OptiFineTransformer.transform(OptiFineTransformer.java:195)
+    (fcn、gdy、fcn$a、geg、eqf、ewu ... 一个类一条,直到 12575 行)
+
+`fcn` 是**混淆名**。也就是说 OptiFine 的**运行时** transformer 也在按"混淆 base 名"找资源,而 NeoForge
+的运行时给它的类是**官方名**的 —— 和离线打补丁时那个 `Base resource not found: eon.class` 是同一个原因,
+只是这次发生在类的加载路径上。异常被 ModLauncher 逐类吞掉,原类照用,所以游戏能起来,但**OptiFine 的
+补丁实际没有生效**:它只是被加载了,没有被织进去。
+
+这一步把 1.20.2/1.20.4 剩下的设计问题问清楚了:**不能再指望 OptiFine 的运行时 transformer 去打补丁**。
+补丁必须由我们在离线阶段打完、改名完,然后把**结果类**放进 jar,让 `OptiFineTransformer` 直接取到成品
+(它只有在存在 `patch/srg` 条目时才会去 `getOptiFineResourcePatched`,所以接下来要验的是:把
+`patch/srg/**` 从发布 jar 里去掉、把 `srg/<official path>` 换成我们改好名的成品类,它是否会直接返回成品)。
+这也正是前面几轮把离线改名做扎实的用处 —— 那条路现在成了唯一可走的路。
+
+另外记两处 rig 的坑,都曾把"工具写 stderr"变成"看起来像编译失败":
+`javac` 的 deprecation note 和 `git worktree add` 的进度输出都会让 `$ErrorActionPreference='Stop'` 直接
+中止构建;现在 rig 用 `Continue` + 显式检查 `$LASTEXITCODE`,并且 `SrgRemap` 改用 `Remapper(Opcodes.ASM9)`
+构造器(无参构造在 ASM 9.10 里已弃用)。`-Out` 的父目录现在也会自动创建 —— 缺目录以前表现为 zip 写入器
+深处的 NullReferenceException,而不是"目录不存在"。
