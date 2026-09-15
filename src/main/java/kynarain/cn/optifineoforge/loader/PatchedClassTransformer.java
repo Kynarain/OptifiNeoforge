@@ -469,6 +469,32 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 			}
 		}
 
+		// An interface that the runtime adds members to is left as the runtime has it, and this is a
+		// measured rule rather than caution. An interface carries no constructor, so the only place a
+		// static field of it can be assigned is its static initialiser - and installing OptiFine's copy
+		// replaces that initialiser with one that knows nothing about NeoForge's fields. Measured on
+		// 1.21.8, where the runtime's BlockStateModel$Unbaked declares SINGLE_MODEL_CODEC and
+		// WEIGHTED_MODEL_CODEC that NeoForge's own BlockStateModelHooks reads while registering block
+		// state models. The plan restores the declarations so that the members exist, but the donor of an
+		// interface carries no initialiser to restore the values with, and what is left is a field the
+		// runtime would have filled and that nothing fills here.
+		//
+		// There is also a blunt form of the same failure, which is how this was found rather than
+		// predicted: the donors are written as plain classes, so a restored interface field arrives with
+		// the class's modifiers -
+		//
+		//   java.lang.ClassFormatError: Illegal field modifiers in class BlockStateModel$Unbaked: 0x9
+		//
+		// 0x9 being public static with no final, which no interface field may be. Normalising the
+		// modifiers would have made the class loadable and left it broken in the way described above, so
+		// the class is not installed at all.
+		if((patched.access & Opcodes.ACC_INTERFACE) != 0 && RESTORED_CLASSES.contains(patched.name)) {
+			LOGGER.info("Left " + patched.name.replace('/', '.') + " alone: the runtime adds members to that "
+					+ "interface, and installing OptiFine's copy would replace the static initialiser that "
+					+ "fills them");
+			return input;
+		}
+
 		// Content in place rather than returning OptiFine's node: the transformers after this one in
 		// the chain, ours included, are handed the same node and expect the class they were told about.
 		input.superName = patched.superName;
@@ -565,6 +591,33 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		LOGGER.info("Replaced " + input.name.replace('/', '.') + " with OptiFine's patched version ("
 				+ fields.size() + " fields, " + methods.size() + " methods)");
 		return input;
+	}
+
+	/**
+	 * The classes the member restore plan has something to put back into, read from the same file the
+	 * transformer that does the restoring reads. Only the owner of each line matters here.
+	 */
+	private static final String MEMBER_RESTORES = "/optifineoforge/member-restores.txt";
+
+	private static final Set<String> RESTORED_CLASSES = loadRestoredClasses();
+
+	private static Set<String> loadRestoredClasses() {
+		Set<String> result = new HashSet<>();
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(MEMBER_RESTORES)) {
+			if(stream == null) {
+				return Set.of();
+			}
+			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+				String[] parts = line.trim().split(" ", 4);
+				if(parts.length >= 4) {
+					result.add(parts[1]);
+				}
+			}
+		} catch(IOException e) {
+			LOGGER.warn("could not read " + MEMBER_RESTORES + ": " + e);
+		}
+		LOGGER.info("Classes with members to restore: " + result.size());
+		return Set.copyOf(result);
 	}
 
 	private static boolean loggedModules;

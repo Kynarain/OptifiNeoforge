@@ -22,6 +22,7 @@ import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
 import org.objectweb.asm.tree.FieldNode;
@@ -109,6 +110,8 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 			}
 		}
 		List<String> initialisers = new ArrayList<>();
+		List<String> staticInitialisers = new ArrayList<>();
+		boolean isInterface = (input.access & Opcodes.ACC_INTERFACE) != 0;
 		for(MethodNode method : donor.methods) {
 			if(!hasMethod(input, method.name, method.desc)) {
 				MethodNode copy = new MethodNode(method.access, method.name, method.desc, method.signature,
@@ -118,8 +121,69 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 				restored++;
 			}
 			if(method.name.startsWith(MemberRestorePlan.INITIALISER_PREFIX)) {
-				initialisers.add(method.name);
+				// Two shapes: an instance initialiser takes the object, a static one takes nothing and
+				// belongs in the class's static initialiser instead of in every constructor.
+				if(isInterface) {
+					// An interface is the one class these must not be called in, and the launch that
+					// proved it failed twice over. Its own static initialiser already fills its fields,
+					// so the call is pointless; a call written as a class method reference is rejected
+					// outright - "Method 'void BlockStateModel$Unbaked.optifineoforge$init$...()' must be
+					// InterfaceMethodref constant" - and one written correctly would be worse, because
+					// an interface's fields are final and assigning one from another method is rejected
+					// in turn. So no initialiser is called for an interface; the methods stay in the
+					// donor and are simply not used.
+					continue;
+				}
+				if("()V".equals(method.desc)) {
+					staticInitialisers.add(method.name);
+				} else {
+					initialisers.add(method.name);
+				}
 			}
+		}
+		if(!staticInitialisers.isEmpty()) {
+			// The payload's own static initialiser runs first - it is the class's - and these calls go
+			// after it, at the end, so that NeoForge's fields end up with NeoForge's values rather than
+			// the defaults the payload's initialiser knows nothing about. A class with no static
+			// initialiser at all gets one, because OptiFine's copy of a class that NeoForge added
+			// static state to may well have none.
+			MethodNode clinit = null;
+			for(MethodNode method : input.methods) {
+				if("<clinit>".equals(method.name)) {
+					clinit = method;
+					break;
+				}
+			}
+			InsnList calls = new InsnList();
+			for(String name : staticInitialisers) {
+				calls.add(new MethodInsnNode(Opcodes.INVOKESTATIC, input.name, name, "()V", false));
+			}
+			// The owner is a class here, and only a class: an interface was sent back before this
+			// point, because a static call on an interface has to be an InterfaceMethodref and the
+			// assignment it would make is illegal there anyway.
+			if(clinit == null) {
+				clinit = new MethodNode(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
+				clinit.instructions.add(calls);
+				clinit.instructions.add(new InsnNode(Opcodes.RETURN));
+				clinit.maxStack = 1;
+				clinit.maxLocals = 0;
+				input.methods.add(clinit);
+			} else {
+				AbstractInsnNode last = null;
+				for(AbstractInsnNode insn = clinit.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+					if(insn.getOpcode() == Opcodes.RETURN) {
+						last = insn;
+					}
+				}
+				if(last == null) {
+					LOGGER.warn("No return in the static initialiser of " + input.name
+							+ "; " + staticInitialisers.size() + " restored fields stay at their defaults");
+				} else {
+					clinit.instructions.insertBefore(last, calls);
+					clinit.maxStack = Math.max(clinit.maxStack, 1);
+				}
+			}
+			LOGGER.info("Initialised " + staticInitialisers.size() + " restored static fields in " + input.name);
 		}
 		if(!initialisers.isEmpty()) {
 			// A restored field needs the assignment NeoForge's own class would have made; the donor

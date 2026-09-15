@@ -300,8 +300,17 @@ public final class MemberRestorePlan {
 		return missing;
 	}
 
-	private static List<MethodNode> missingMethods(ClassNode mine, ClassNode theirs) {
-		Map<String, MethodNode> present = new TreeMap<>();
+	/** Whether a class declares any member at all with this name, whatever its descriptor. */
+	private static boolean hasMemberNamed(ClassNode node, String name) {
+		for(MethodNode method : node.methods) {
+			if(method.name.equals(name)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static List<MethodNode> missingMethods(ClassNode mine, ClassNode theirs) {		Map<String, MethodNode> present = new TreeMap<>();
 		for(MethodNode method : mine.methods) {
 			present.put(method.name + " " + method.desc, method);
 		}
@@ -311,7 +320,21 @@ public final class MemberRestorePlan {
 				continue; // a class initialiser cannot be copied without the class it initialises
 			}
 			if(method.name.startsWith("lambda$") || method.name.startsWith("access$")) {
-				continue; // synthetic
+				// Synthetics are skipped because the two artefacts number their lambdas independently:
+				// the same name can be two different methods, and then the payload's body is the right
+				// one to keep. That is a risk only while the name exists at all, and insisting on it
+				// outright was wrong in the other direction. Measured on 1.21.8: NeoForge's
+				// RenderPipelines.registerCustomPipelines is restored - the payload is compiled against
+				// vanilla, which has no such method - and its body calls
+				// lambda$registerCustomPipelines$0, which the payload has nowhere. The class was then
+				// installed with a restored method whose callee was missing, and the launch died with
+				//
+				//   NoSuchMethodError: 'void RenderPipelines.lambda$registerCustomPipelines$0(RenderPipeline)'
+				//
+				// So a synthetic is restored exactly when its name appears nowhere in the payload.
+				if(hasMemberNamed(mine, method.name)) {
+					continue;
+				}
 			}
 			String key = method.name + " " + method.desc;
 			if(!present.containsKey(key)) {
@@ -345,6 +368,28 @@ public final class MemberRestorePlan {
 					donor.methods.add(initialiser);
 				} else {
 					System.out.println("  no safe initialiser for field " + internalName + "." + field.name);
+				}
+			} else {
+				// A restored static field needs its value as much as an instance field does, and its
+				// assignment lives in the class's static initialiser - the one part of the runtime's
+				// class a swap always replaces. Measured on 1.21.8, where leaving it out produced
+				//
+				//   NullPointerException: Cannot invoke "PipelineModifierStack.apply(RenderPipeline)"
+				//     because "com.mojang.blaze3d.systems.RenderSystem.PIPELINE_MODIFIERS" is null
+				//
+				// while RenderSystem was drawing its first frame. The field is NeoForge's, the payload's
+				// class initialiser knows nothing about it, and the plan had restored the declaration
+				// without the value.
+				MethodNode initialiser = staticInitialiser(runtime, internalName, field);
+				if(initialiser != null) {
+					donor.methods.add(initialiser);
+				} else if(!"I".equals(field.desc) && !"Z".equals(field.desc) && !"F".equals(field.desc)
+						&& !"J".equals(field.desc) && !"D".equals(field.desc)) {
+					// Primitives are the case that is fine without one: a primitive field restored as
+					// zero is what the payload's own code expects when it never reads NeoForge's use of
+					// it, and a reference field restored as null is not worth reporting either - but an
+					// object field that NeoForge's code then dereferences is, so it is said out loud.
+					System.out.println("  no safe static initialiser for field " + internalName + "." + field.name);
 				}
 			}
 		}
@@ -553,6 +598,68 @@ public final class MemberRestorePlan {
 		initialiser.instructions.add(new InsnNode(Opcodes.RETURN));
 		initialiser.maxStack = 8;
 		initialiser.maxLocals = 1;
+		return initialiser;
+	}
+
+	/**
+	 * The static counterpart: the value the runtime's {@code <clinit>} gives a static field.
+	 *
+	 * <p>Only a straight-line run with no local variable reads is taken, exactly as for an instance
+	 * field, and the wrapper has no arguments because a static field is assigned from nothing but the
+	 * expression itself. The transformer calls it from the target class's static initialiser - after the
+	 * payload's own code, so that what OptiFine's initialiser sets is not overwritten by it.</p>
+	 *
+	 * @return a static method taking no arguments, or {@code null} when no safe assignment was found
+	 */
+	private static MethodNode staticInitialiser(ClassNode runtime, String internalName, FieldNode field) {
+		for(MethodNode clinit : runtime.methods) {
+			if(!"<clinit>".equals(clinit.name) || clinit.instructions == null) {
+				continue;
+			}
+			for(AbstractInsnNode insn = clinit.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+				if(!(insn instanceof FieldInsnNode store) || store.getOpcode() != Opcodes.PUTSTATIC) {
+					continue;
+				}
+				if(!internalName.equals(store.owner) || !field.name.equals(store.name)
+						|| !field.desc.equals(store.desc)) {
+					continue;
+				}
+				List<AbstractInsnNode> slice = new ArrayList<>();
+				boolean safe = true;
+				for(AbstractInsnNode back = insn.getPrevious(); back != null; back = back.getPrevious()) {
+					if(back instanceof LabelNode || back instanceof JumpInsnNode || back instanceof TableSwitchInsnNode
+							|| back instanceof LookupSwitchInsnNode || back instanceof LineNumberNode
+							|| back instanceof FrameNode) {
+						break;
+					}
+					if(back instanceof VarInsnNode) {
+						// A local in a static initialiser is either a value from a helper this class
+						// still owns or something the payload's copy would have to recompute: not taken.
+						safe = false;
+						break;
+					}
+					slice.add(0, back);
+				}
+				if(safe && !slice.isEmpty()) {
+					return staticInitialiserFrom(internalName, field, slice);
+				}
+			}
+		}
+		return null;
+	}
+
+	/** Wraps a value-producing run into the static assignment helper the transformer calls. */
+	private static MethodNode staticInitialiserFrom(String internalName, FieldNode field,
+			List<AbstractInsnNode> value) {
+		MethodNode initialiser = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+				INITIALISER_PREFIX + field.name, "()V", null, null);
+		for(AbstractInsnNode step : value) {
+			initialiser.instructions.add(step);
+		}
+		initialiser.instructions.add(new FieldInsnNode(Opcodes.PUTSTATIC, internalName, field.name, field.desc));
+		initialiser.instructions.add(new InsnNode(Opcodes.RETURN));
+		initialiser.maxStack = 8;
+		initialiser.maxLocals = 0;
 		return initialiser;
 	}
 
