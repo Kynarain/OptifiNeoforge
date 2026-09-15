@@ -1164,3 +1164,44 @@ OptiFine 的运行时 transformer**。下一步据此调整:成品类改放在**
 顺带一个否定结果:试过 `-KeepPatchData` 想让"保留 patch 数据"和"不保留"做对比,结果两次产出**字节数完全
 相同** —— 因为 `Patcher.process` 的输出 jar 里**根本没有 `patch/` 目录**(它的 roots 只有
 `assets, doc, notch, optifine, srg`)。这个开关量不到任何东西,已在 rig 注释里写明。
+
+## 2026-09-15:成品类改放安全路径 + 我方 transformer 换装 —— 补丁终于真的生效了
+
+按上一节的结论换了装法:成品类不再平铺在 `srg/` 下,而是放到 `optifineoforge/patched/`
+(**427 个**),`srg/` 只留 OptiFine 自己的类(643 个),另写一份 `optifineoforge/patched-index.txt`
+(因为 ModLauncher 的 transformer 必须**先**声明 targets)。新增 `PatchedClassTransformer`(在 `loader`
+包里,注册在**最前**,这样后面的 `MemberRestoreTransformer` 是在换装后的类上补 NeoForge 的成员):
+
+    Patched-class targets: 427
+    Replaced net.minecraft.client.gui.GuiGraphics with OptiFine's patched version (10 fields, 84 methods)
+    Replaced net.minecraft.client.renderer.RenderType with OptiFine's patched version (68 fields, 114 methods)
+    ... 实际换装 112 个类,stderr 0 行,OptiFineTransformer: Targets: 0(它自己不再需要打补丁)
+
+**两个坑,都是"失败被静默"的类型:**
+
+1. 索引最初写成**带 `.class` 的条目路径**,而 `Target.targetClass` 要的是类名,于是没有任何 target 匹配,
+   `transform()` **一次都没被调用**,日志里也看不出异常("Replaced" 0 条)。现在索引写裸类名,并且
+   读取端也兼容 `.class` 后缀;索引缺失时改成打一条 info(以前是静默 `Set.of()`)。
+2. `SrgRemap` 会造出**重复方法**。实测 `ModelPart`:
+
+       改名前: getChild(String) 出现 1 次(另有 getChildModelDeep/getChildDeep)
+       改名后: getChild(String) 出现 2 次   → ClassFormatError: Duplicate method name "getChild"
+
+   原因是 OptiFine 的载荷是**混的**:一部分成员已经是运行时的名字,另一部分还是 SRG 名,于是改名可能落到
+   类里已经存在的名字上。现在改写器会检查"目标名字 + 描述符是否已被本类声明",是则**拒绝这次改名**并计数:
+
+       rewrote 21435 method and 17449 field names, 107 could not be resolved,
+       42 renames refused because the class already has that name
+
+**接着撞上的是新问题,而且只有补丁真的生效了才会遇到**:
+
+    java.lang.IllegalAccessError: class net.optifine.config.SliderableValueSetInt cannot access its
+    superinterface net.minecraft.client.OptionInstance$SliderableValueSet
+    (net.optifine.config.SliderableValueSetInt is in module srg ...;
+     net.minecraft.client.OptionInstance$SliderableValueSet is in module minecraft@1.20.4 ...)
+
+OptiFine 的类实现了游戏里的接口,而两者分属**不同模块**:我们的 jar 是 `srg` 模块,游戏是 `minecraft`
+模块。之前几轮碰不到它,是因为那时 OptiFine 的补丁根本没生效(第 68 轮反倒是"干净启动"),这条路径
+(OptiFine 的 `OptionInstance` 补丁代码在 `Options.<init>` 里被调用)以前从不执行。**下一步:让游戏模块
+把包导出给我们的模块**(或让 `srg` 模块读到 `minecraft`),即模块层的 exports/reads 问题,在
+`completeScan(IModuleLayerManager)` 那个钩子上处理最合适。
