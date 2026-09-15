@@ -760,3 +760,27 @@ java.lang.IllegalAccessError: Update to non-static final field
 
 **下一步(1.20.1,明确)**:在 `PatchedClassTransformer` 合并字段访问位时,**不要从载荷继承 `ACC_FINAL`**
 (字段的 final 位以运行时那份为准;运行时非 final 就必须保持非 final)。这一条改完再跑 1.20.1。
+
+**这条"不要继承 final"试过了,结果是错的,已回退(同晚,负结果照样记下来)**
+
+改动本身:合并字段访问位时,若运行时那份不是 final 就清掉 final。结果**两条线一起退**:
+
+- **1.20.4 从 `TIMEOUT (181s)` 退成 `EXITED (10s)`**(明确回归,失败出现在崩溃上报那条路径里的
+  `RenderSystem.<clinit>`);
+- **1.20.1 冒出新错**,而且这个新错正是这条规则**自己造出来的**:
+
+```
+java.lang.RuntimeException: java.lang.ClassFormatError:
+  Illegal field modifiers in class com/mojang/blaze3d/vertex/VertexConsumer: 0x9
+```
+
+`0x9` = `public final`,而**接口字段必须是 `public static final`** —— 清 final 的做法把不该动的位动了,
+真正的差异其实是 **`static` 位**:载荷那份 `VertexConsumer` 的字段没有 static(0x9),运行时那份有(0x19)。
+也就是说字段的访问位要**逐位**处理,并且 `static`/`final` 都应当以**运行时那份**为准,而不是笼统地"清 final"。
+
+回退后 1.20.4 立刻恢复:`VERDICT: TIMEOUT (181s)`、`Runtime stubs to add: 76 members across 27 classes`、
+`Patched-class targets: 448`(仍是那组验证过的数字)。
+
+**下一步(1.20.1,按位重写这条规则)**:字段合并时把 `ACC_STATIC` 与 `ACC_FINAL` 都取**运行时那份**
+(载荷新增的字段没有运行时对应,则保留载荷自己的位);接口字段确保最终是 `public static final`。
+另外这两次实验都说明一件事:**动访问位的改动必须先跑 1.20.4 回归**,它是最容易把已验证的行弄坏的地方。
