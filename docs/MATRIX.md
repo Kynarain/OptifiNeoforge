@@ -1764,16 +1764,48 @@ Left BlockStateModel$Unbaked alone: the runtime adds members to that interface �
 三行的判据与改动前**逐项一致**,而回填的成员数明显变多(lambda 与静态初值那两条规则的作用),说明这两条
 规则补的是"本来就没填上的东西",没有动到已验证的行为 ✓。
 
-### 当前修订(2026-09-16 01:45)
+### 当前修订(2026-09-16 02:05)
 
 | 线 | 版本 | NeoForge | 状态 |
 |---|---|---|---|
 | 1.20.x | 1.20.1 / 1.20.2 / 1.20.4 / 1.20.6 | 47.1.106 / 20.2.88 / 20.4.251 / 20.6.141 | **已验证**(四条;1.20.2/1.20.4 带已知的 Reflector 缺陷) |
 | 1.21.x | 1.21.1 / 1.21.3 / 1.21.4 | 21.1.250 / 21.3.97 / 21.4.149 | **已验证**(三条,判据与基线一致) |
-| 1.21.x | 1.21.8 | 21.8.54 | **部分**:进到标题画面与资源重载,卡在 `[OptiFine] Waiting for model sprites`(见上) |
-| 1.21.x | 1.21 / 1.21.6 / 1.21.7 | 21.0.167 / 21.6.20-beta / 21.7.25-beta | 前置已装好(1.21.6 / 1.21.7 的 OptiFine 预览与 NeoForge 均已就位),未起跑 |
+| 1.21.x | 1.21.8 | 21.8.54 | **部分**:进到标题画面与资源重载,卡在 `[OptiFine] Waiting for model sprites`(见下) |
+| 1.21.x | 1.21 / 1.21.6 / 1.21.7 | 21.0.167 / 21.6.20-beta / 21.7.25-beta | 前置已装好,未起跑 |
 | 1.21.x | 1.21.9 / 1.21.10 / 1.21.11 | 21.9.16-beta / 21.10.64 / 21.11.45 | 需要 `ClassProcessor` 挂载点(1.21.11 的 OptiFine J9 只有 ModLauncher service) |
 | 26.x | 26.1.2 | 26.1.2.109 | 需要 `ClassProcessor` 挂载点,但 OptiFine `K1_pre2` **自带** processor,优先级最高 |
+
+### 1.21.8 的第五个坑:"签名被加长"把 OptiFine 的钩子挤出了调用路径
+
+四处修复之后 1.21.8 的卡点仍在 `Waiting for model sprites`,这次根因是**调用路径**而不是成员:
+
+```
+载荷   ModelManager.discoverModelDependencies(Map, LoadedModels, LoadedClientInfos)
+         └─ 调 CustomItems.collectModelSprites(map)   ← 真正把那个标志置位的地方
+运行时 ModelManager.discoverModelDependencies(Map, LoadedModels, LoadedClientInfos,
+                                              StandaloneModelLoader$LoadedModels)
+         └─ 从运行时回填进来的,没有那个调用,而 NeoForge 的调用方编译的是这个长签名
+```
+
+**NeoForge 给方法加长签名之后,OptiFine 那份带钩子的重载就再也调不到了** —— 而缺这个调用不会报错:
+`CustomItems.registerIcons` 是在一个"睡 100 ms、每 50 次打一行"的循环里等这个标志的,于是游戏能进标题画面,
+然后一直刷那一行。修法是在回填成分之后,把载荷那份所调用的东西补到运行时那份里(参数取两边共有的那个 Map)。
+
+这一步还留下一条**自己踩过的坑**,值得记:这个修复最初写成独立 transformer,结果"注册了但从不生效",
+原因是 `ClassNode.name` 是**内部名(带斜线)**,而我拿点号名去比,于是每次调用都在第一行返回,唯一的症状就是
+"该出现的日志行没出现"。现在它并入成员回填那一遍(顺序上也必须如此:回填之后才轮到修调用路径)。
+
+**修完之后仍卡**:日志已经出现
+
+```
+Restored OptiFine's model sprite collection into net.minecraft.client.resources.model.ModelManager.
+  discoverModelDependencies(...4 个参数...)
+```
+
+但 `Waiting for model sprites` 照旧 ⇒ "缺调用"是真的,但不是全部:剩下的怀疑是**顺序**(1.21.8 这一代
+NeoForge 的贴图集装配与模型发现谁先谁后),即 OptiFine 等待的那个标志所依赖的步骤排在了等待之后。这条留作
+1.21.8 的下一步,判据仍是 `Sound engine started` 与 stderr 0 字节。
+
 
 
 
