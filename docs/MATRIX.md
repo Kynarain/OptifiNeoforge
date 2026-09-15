@@ -1336,3 +1336,34 @@ libraries\net\neoforged\neoforge\21.1.250\  → 空
 按它报的坐标逐个手工取回,再重跑安装。
 
 OptiFine 侧:1.21.1 的正式版 jar(`OptiFine_1.21.1_HD_U_J1.jar`)本地已有 ✓。
+
+**1.21.1 装好了、能启动,但 OptiFine 没生效 —— 分行差异的教科书例子(同一晚)**
+
+装好之后(NeoForge 21.1.250,client jar 5,675,624 字节;顺带记一个坑:installer 连报两次
+`SocketTimeoutException`,依次手工取回 `neoforge-21.1.250-universal.jar` 与
+`net.neoforged:neoform:1.21.1-20240808.144430@zip` 后才装上 ✓),这一行:
+
+| 指标 | 1.21.1 |
+|---|---|
+| `VERDICT` | `STARTED (40s, marker: Sound engine started)` |
+| `Setting user` | ✓ |
+| `[Shaders] OpenGL` / `Connected textures` / `Pre-stitch` | **0 / 0 / 0** ✗ |
+| `[OptiFine]` 日志 | **0 行** ✗ |
+| stderr | **1,388,996 字节 / 12717 行** ✗ |
+
+stderr 的头部就是原因:
+
+```
+java.io.IOException: Base resource not found: akr.class
+	at LAYER SERVICE/optifine/optifine.Patcher.applyPatch(Patcher.java:148)
+```
+
+**`akr.class` 是混淆名** —— 也就是说 **1.21.1 的 OptiFine 载荷是按 SRG/混淆基名打补丁的**,而这一行的运行时
+交给它的是官方名,于是它一个补丁都贴不上(与 1.20.2 / 1.20.4 当初同一个病)。1.21.4 之所以没事,是因为
+它那一版 OptiFine 与运行时的命名**正好对得上**(stderr 0 字节 ✓)。
+
+**结论(下一轮的方向已确定)**:1.21.1 这一行需要 1.20.2/1.20.4 用过的**离线载荷路线** —— 即
+`ShipPayload` + `SrgRemap`(SRG→官方名)+ `MissingTargets`(打桩)—— 而这些工具**都不在 1.21.x 分支上**。
+所以路线 2 不再是"可选":**要把成熟工具集移植到 1.21.x 分支**(`SrgRemap`、`MissingTargets`、
+`NestedFamilyGuard`、`NestedNameBridge`,以及与该分支命名空间相应的映射文件),同时保留"该行用自己工具集"
+的开关,因为 1.21.4 只需要其中的一部分。
