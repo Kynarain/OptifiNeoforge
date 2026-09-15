@@ -960,3 +960,40 @@ rig 在 plan/stub/ship **之前**把 `$patched` 换成这份对齐后的 jar,所
 **1.20.2 这一行现在的准备度**:OptiFine jar ✓、NeoForge 20.2.88 ✓(已装,`neoforge-20.2.88-client.jar`);
 还缺 **1.20.2 的原版客户端 jar**(管道打补丁要用混淆 jar)与 **`mcp_config-1.20.2.zip`**(这一行是 SRG 载荷 +
 官方名运行时的组合,与 1.20.4 同类,需要那份映射表来建 SRG↔official 表)。
+
+**1.20.2 构建通过、启动卡在 OptiFine 自己与 SecureJarHandler 的版本错配上(同一晚,已量到具体签名)**
+
+准备度补齐后(原版 jar 本来就在、`mcp1202-joined.tsrg` 5,781,794 字节已解出、ModLauncher 10.0.9、
+1.20.2 游戏 jar 实测是官方名 `literal`),**构建整条流水线都正常**:
+
+```
+patched game classes: 423 (365 net/minecraft)
+rewrote 21289 method and 17305 field names, 80 could not be resolved, 10 refused
+bridged nested names: 2 → rewrote references in 1132 classes
+payload: 1091 classes, 404 moved to optifineoforge/patched
+compared 233 replaced classes (828 without a runtime counterpart), 56 members to restore, 4 donors closed
+```
+
+启动则死在 **OptiFine 自己的 `OptiFineJar`** 上,而且原因是一个纯粹的**库版本错配**:
+
+```
+NoSuchMethodError: 'void cpw.mods.jarhandling.impl.SimpleJarMetadata.<init>(java.lang.String, java.lang.String, java.util.S…'
+	at optifine.OptiFineJar.lambda$1(OptiFineJar.java:24)
+	at optifine.OptiFineJar.<init>(OptiFineJar.java:24)
+	at optifine.OptiFineTransformationService.completeScan(OptiFineTransformationService.java:82)
+```
+
+两侧都用 javap 量过:
+
+| | `SimpleJarMetadata` 的第三个参数 |
+|---|---|
+| OptiFine 1.20.2 调用的 | `java.util.Set<String>`(即 **2.1.10** 那一代) |
+| NeoForge 20.2.88 profile 里的 securejarhandler **2.1.24** | `java.util.function.Supplier<java.util.Set<String>>` |
+
+也就是说 **OptiFine 的 1.20.2 preview 是针对更老的 SecureJarHandler 编译的**,而 20.2.88 已经换成新版;
+1.20.4/1.20.6 那两行没这个问题,是因为它们对应的 OptiFine 与 SecureJarHandler 时代对得上。
+
+**下一步(1.20.2,两条路,先试便宜的那条)**:①装一个**更早的 NeoForge 20.2.x**,看它的
+securejarhandler 是不是 2.1.10 —— 是的话这一行很可能直接可跑(与 1.20.4 同一类路线);②若所有 20.2.x 都是
+2.1.24,就用现成的 ASM 工具把 OptiFine 那个 `invokespecial` 改成新签名(把 `Set` 包成 `Supplier`,`() -> set`
+这种形态在字节码里很好写),这与 `OptifineJarFixer` 修 `toFile` 是同一类处理。
