@@ -890,3 +890,29 @@ rig 已经按"运行时的名字"ship 这些类并写进索引;**1.20.4 仍是 `
 **下一步(1.20.1,收尾这座桥)**:在 `NestedNameBridge` 的基础上加一遍**载荷类名重写**(与 `SrgRemap`
 同一套 ASM `Remapper` 机制,只是改的是类名而不是成员名):把载荷里对旧名的**引用**改成运行时名,
 同时 rig 继续按运行时名 ship 类本身。两半都到位后,`ParticleEngine` 调的就是运行时真实存在的类名了。
+
+**桥的两半都到位,1.20.1 打通了(同一晚)**
+
+`NestedNameBridge --rewrite <in> <out> <runtime…>`:用同一份配对表,把载荷里所有对旧类名的**引用**
+(常量池、描述符、Signature、InnerClasses)改成运行时的名字,配对的那个类自己也换成运行时名;
+rig 在 plan/stub/ship **之前**把 `$patched` 换成这份对齐后的 jar,所以下游看到的都是运行时名。
+
+实测改写规模:`1.20.4: 3 对 / 1143 个类被改写`、`1.20.1: 2 对 / 2210 个类被改写`。
+
+**结果:两条线都是 `VERDICT: STARTED (40s, marker: Sound engine started)`,1.20.1 首次真正跑起来** ——
+验收口径与其它行一致:
+
+| 指标 | 1.20.1(本次) |
+|---|---|
+| `Setting user`(进标题界面) | ✓ |
+| `[Shaders] OpenGL Version` | ✓ `4.6.0 NVIDIA 591.86` |
+| `Connected textures` | 2 行 ✓ |
+| `Pre-stitch`(OptiFine 拼图集) | 12 行 ✓ |
+| `[OptiFine]` 日志 | **157 行** ✓ |
+| 替换类 | 233 个 |
+| **stderr** | **27 字节**(基本干净) |
+| 截图 / 新 crash report | 927 KB / **无** ✓ |
+
+至此 **1.20.x 的 1.20.1、1.20.4、1.20.6 三行都已实机跑通**(1.20.6 是 4.24 MB 载荷路线、1.20.4 是
+官方名重映射路线、1.20.1 是 SRG 原样 + 类名对齐路线);这一行只剩 **1.20.2**(需要 OptiFine 1.20.2 的 jar,
+本地没有,`mcp_config-1.20.2.zip` 已在)。

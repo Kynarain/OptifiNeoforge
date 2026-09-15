@@ -169,8 +169,24 @@ public final class NestedNameBridge {
 
 	public static void main(String[] args) throws IOException {
 		// usage: NestedNameBridge <payload jar> <runtime jar> [more runtime jars...]
+		//        NestedNameBridge --rewrite <in jar> <out jar> <runtime jar> [more...]
+		if(args.length > 0 && "--rewrite".equals(args[0])) {
+			if(args.length < 4) {
+				System.err.println("usage: NestedNameBridge --rewrite <in jar> <out jar> <runtime jar> [more...]");
+				System.exit(2);
+			}
+			List<Path> jars = new ArrayList<>();
+			for(int index = 3; index < args.length; index++) {
+				jars.add(Path.of(args[index]));
+			}
+			Map<String, String> found = pairs(Path.of(args[1]), jars);
+			int rewritten = rewrite(Path.of(args[1]), Path.of(args[2]), found);
+			System.err.println("rewrote references in " + rewritten + " classes for " + found.size() + " paired name(s)");
+			return;
+		}
 		if(args.length < 2) {
 			System.err.println("usage: NestedNameBridge <payload jar> <runtime jar> [more...]");
+			System.err.println("       NestedNameBridge --rewrite <in jar> <out jar> <runtime jar> [more...]");
 			System.exit(2);
 		}
 		List<Path> runtime = new ArrayList<>();
@@ -185,5 +201,70 @@ public final class NestedNameBridge {
 		for(Map.Entry<String, String> pair : pairs.entrySet()) {
 			System.err.println("  " + pair.getKey() + " -> " + pair.getValue());
 		}
+	}
+
+	/**
+	 * Copies {@code in} to {@code out} with every reference to a paired name rewritten to the name the
+	 * runtime uses, and with the paired classes themselves carrying the runtime's name internally.
+	 *
+	 * <p>Both halves are needed, and the launch is what proved it: shipping the payload's class under
+	 * the runtime's name alone moved the class and left the payload's own <em>references</em> spelling
+	 * the old name - the swapped {@code ParticleEngine} still called
+	 * {@code ParticleEngine$ParticleDefinition}, so after the move not even that name existed. The
+	 * rewrite is the same ASM machinery {@link SrgRemap} uses for member names, applied to class names.
+	 *
+	 * @return the number of classes whose bytes changed
+	 */
+	public static int rewrite(Path in, Path out, Map<String, String> pairs) throws IOException {
+		if(pairs.isEmpty()) {
+			java.nio.file.Files.copy(in, out, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+			return 0;
+		}
+		Path parent = out.toAbsolutePath().getParent();
+		if(parent != null) {
+			java.nio.file.Files.createDirectories(parent);
+		}
+		int changed = 0;
+		try(ZipFile source = new ZipFile(in.toFile());
+				java.util.zip.ZipOutputStream sink = new java.util.zip.ZipOutputStream(java.nio.file.Files.newOutputStream(out))) {
+			for(Enumeration<? extends ZipEntry> it = source.entries(); it.hasMoreElements();) {
+				ZipEntry entry = it.nextElement();
+				byte[] data;
+				try(InputStream stream = source.getInputStream(entry)) {
+					data = stream.readAllBytes();
+				}
+				String name = entry.getName();
+				if(name.endsWith(".class") && !entry.isDirectory()) {
+					String internal = name.substring(0, name.length() - ".class".length());
+					String renamed = pairs.getOrDefault(internal, internal);
+					byte[] mapped = remap(data, pairs);
+					if(!java.util.Arrays.equals(mapped, data)) {
+						changed++;
+					}
+					data = mapped;
+					name = renamed + ".class";
+				}
+				ZipEntry copy = new ZipEntry(name);
+				copy.setTime(entry.getTime());
+				sink.putNextEntry(copy);
+				sink.write(data);
+				sink.closeEntry();
+			}
+		}
+		return changed;
+	}
+
+	private static byte[] remap(byte[] bytes, Map<String, String> pairs) {
+		ClassNode node = new ClassNode();
+		ClassReader reader = new ClassReader(bytes);
+		reader.accept(new org.objectweb.asm.commons.ClassRemapper(node, new org.objectweb.asm.commons.Remapper() {
+			@Override
+			public String map(String internalName) {
+				return pairs.getOrDefault(internalName, internalName);
+			}
+		}), 0);
+		org.objectweb.asm.ClassWriter writer = new org.objectweb.asm.ClassWriter(0);
+		node.accept(writer);
+		return writer.toByteArray();
 	}
 }
