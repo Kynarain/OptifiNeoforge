@@ -613,3 +613,26 @@ SRG 名(所以 412 个目标全部 `Base resource not found`)。结论是这一�
 失败就说明是这一个类,不失败就说明是"只要换类就炸"(那问题在 transformer 的注册时机/securejarhandler 的
 union 读取,而不在某个类)。两个脚本已经就位:`make-probe-jar.ps1`(删条目)、
 `make-index-probe.ps1 -Keep "<通配符>"`(裁索引),一次 build+launch 约 1.5 分钟。
+
+**二分做完了,答案是"不是某一个类"(2026-09-15 当晚)**
+
+- **只留 `net/minecraft/util/Mth` 一条**(`Patched-class targets: 1`):仍然以同一条栈死在
+  `Mth.<clinit>`。
+- **把 `Mth` 放进 `-SkipSwapped`**(让运行时自己那份留下):错误只是**换了个类** —— 变成
+  `CrashReport.m_127526_(CrashReport.java:170)`,而且还是在 `Main.main:149`(也就是崩溃上报那条路径里)。
+
+所以这不是"某个类不能换",而是**"只要有类被我们换掉,就会在某个类读取上炸"**。结合三条已知:
+同样的代码在 1.20.4 上没事(ML 版本相同,securejarhandler 不同)、去掉索引就正常、
+失败点每次都是"被换过的类第一次调用 OptiFine 自己的类的时候" —— 目前最站得住的假设是:
+
+> 1.20.1 这一代的 securejarhandler 在**读取被 union 进游戏层的 mod jar 里的类**时会走
+> `Jar$JarModuleDataProvider.open` → `Paths.get(union 路径)` 而抛 `FileSystemNotFoundException`。
+> 我们的 mod jar 正是被 union 的(模块名 `optifine`,在 GAME 层),而 **OptiFine 自己的类就住在里面**
+> (`srg/net/optifine/**`)。于是一旦某个被换过的游戏类去调 OptiFine 的辅助类,读取就炸 ——
+> 这解释了"为什么去掉索引就没事"(不调就不会读)、"为什么换 Mth 会炸在 Mth"(Mth 的补丁第一件事就是调
+> OptiFine)、以及"为什么不换 Mth 就炸在 CrashReport"(换下一个被调用者)。
+
+**下一个实验(已想好,一次约 1.5 分钟)**:索引只留一个**不会调用 OptiFine** 的被换类(例如
+`net/minecraft/Util$1`,载荷里它 0 字段 2 方法)。能启动 ⇒ 假设成立(触发条件是"被换类调用 OptiFine 的类");
+不能启动 ⇒ 假设错,再回到"读取路径本身"上查。若假设成立,这一行需要的就不是改 transformer,
+而是**让 OptiFine 自己的类不从 union 的 mod jar 里读**(例如另一条安装路径),这是设计问题、不是 bug。
