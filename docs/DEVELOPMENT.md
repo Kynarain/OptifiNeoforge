@@ -1514,3 +1514,63 @@ resourcepacks` 去掉,恢复模型烘焙 —— 那正是 1.21.4 那条线验收
 **下一轮(最后一轮)**:从 `NeoForgeLoadingOverlay` 与 OptiFine 那份 `LoadingOverlay` 的关系入手,
 先确认是不是同一帧里两条渲染路径都进了 early display;并把这一轮的结论、当前三条线的状态与剩余
 范围的实话写清楚。
+
+## 2026-09-15(续):1.20.4 跑起来了,而且 OptiFine 的着色器系统在初始化
+
+转折点是**发现了我自己工具里的一个 bug**,而不是新知识。
+
+把 `LoadingOverlay` 留在运行时那版之后,游戏死在:
+
+    NoSuchMethodError: 'void net.minecraft.client.gui.screens.LoadingOverlay.update()'
+      at GameRenderer.render(GameRenderer.java:1311)
+
+读字节码才看清这是一对:
+
+    880: instanceof  LoadingOverlay
+    900: invokevirtual LoadingOverlay.update:()V     ← 在 OptiFine 版的 GameRenderer 里
+
+`update()` 只存在于 **OptiFine 那版** `LoadingOverlay`(运行时两份都没有),所以"留运行时那版"等于拆了这一
+对。正确做法是把这对里缺的方法**在类加载时补回运行时那版** —— 正是上一轮刚搭好、却一直没生效的
+"延迟 stub"机制。它没生效的原因有两层,都在工具里:
+
+1. **分析读的 jar 与发布的 jar 不是同一个**:stub pass 跑在排除之前,索引里还留着 OptiFine 那版
+   `LoadingOverlay`(带 `update()`),引用于是"看起来能满足"。现在 `MissingTargets` 接受跳过前缀
+   (`--stub <in> <out> <stubs> <skip> ...`),索引、扫描、stub 三处共用同一份清单;不发布的类也不再被扫描。
+2. **一条把整个工具废掉的规则**:JDK 祖先被当成"一定有"。本意是别把 `Direction.ordinal()`(继承自
+   `java.lang.Enum`)误报,但**每个类上面都有 `java/lang/Object`**,走链一碰到它就返回"存在"——报告因此
+   长期只有 10 条,`LoadingOverlay.update()` 从未被报出、也从未被 stub。改法不是再调启发式,而是**真的把
+   JDK 索引进来**:通过 `jrt:/` 读 `java.base`/`java.desktop`/`java.logging`(12998 个类),
+   `declares()` 里那条特例整个删掉。
+
+修完前后的对比很能说明问题:
+
+    错误规则下:68 条"缺失",其中 ordinal()/getMessage()/add() 这类 JDK 继承的全是假阳性
+    正确索引后:24 条,真正的问题才浮出来:
+               BakedModel.getQuads(...,ModelData,...) / getRenderTypes(...,ModelData) /
+               useAmbientOcclusion(...)   ← Forge 形状的模型 API
+               BlockEntity 的 capability 成员、NativeImage$WriteCallback 的三个方法
+               LoadingOverlay.update()V 与 isFadeOut()Z   ← 就是上面那一对缺的
+
+本轮结果:
+
+    3b2/5  stubbed 21 members on {NativeImage$WriteCallback=3, BakedModel=9, ModelBaker=2,
+                                  BlockEntity=6, BlockState=1}, 3 left for the loader
+    load   Runtime stubs to add: 3 members across 2 classes
+           Stubbed net.minecraft.client.gui.screens.LoadingOverlay.update()V
+           Stubbed net.minecraft.client.gui.screens.LoadingOverlay.isFadeOut()Z
+
+启动:**STARTED (41s, marker: Sound engine started)**,而且 rig 这次**截到了图**(`screen.png`,70 KB ——
+前面几轮一直报 `handle is invalid`,因为根本没有窗口)。量化:
+
+    swapped: 282 个类   reloads: 2   stdout: 21132 行(其中 OpenGL 10153)
+    [Shaders] OpenGL Version: 3.2.0 NVIDIA 591.86 / GL_MAX_DRAW_BUFFERS: 8   ← OptiFine 着色器系统在初始化
+    18 条 "Created:"、Shaders 14 行、Connected textures 6 行
+
+剩下一个失败,比之前具体得多:
+
+    IllegalStateException: Failed to create model for minecraft:skull
+      → Caught error loading resourcepacks(整批资源包被移除)
+
+也就是说**模型烘焙大体通了**,只剩 `minecraft:skull` 一个模型。**下一轮**:查它为什么失败(它与 OptiFine
+换装的 `SkullBlockRenderer`/`SkullModel` 有关),并确认 `BakedModel` 那 9 个 Forge 形状成员返回默认值是否
+正是原因 —— 那 9 个 stub 让调用"能过",但语义上未必对。

@@ -50,11 +50,35 @@ public final class MissingTargets {
 	/** Development aid: {@code MissingTargets <payload jar> <runtime jar> [more runtime jars...]}. */
 	public static void main(String[] args) throws IOException {
 		boolean fix = args.length > 0 && "--stub".equals(args[0]);
-		int base = fix ? 3 : 0;
+		// --stub <in jar> <out jar> <stubs file> <skipped prefixes, comma separated> <payload jar> <runtime...>
+		//
+		// The skipped prefixes are classes the build leaves out of the shipped payload even though OptiFine
+		// patched them. They have to be skipped here as well, and that is not a detail: with OptiFine's
+		// LoadingOverlay still counted as present, the call to LoadingOverlay.update() that OptiFine's
+		// GameRenderer makes looked satisfiable, so it was never reported, never deferred and never stubbed -
+		// and the shipped jar had neither the class nor the method.
+		int base = fix ? 5 : 0;
 		if(args.length < base + 2) {
-			System.err.println("usage: MissingTargets [--stub <in jar> <out jar>] <payload jar> <runtime jar> [more runtime jars...]");
+			System.err.println("usage: MissingTargets [--stub <in jar> <out jar> <stubs file> <skipped prefixes>]"
+					+ " <payload jar> <runtime jar> [more runtime jars...]");
 			System.exit(2);
 		}
+		java.util.List<String> skippedPrefixes = new ArrayList<>();
+		if(fix && !args[4].isBlank()) {
+			for(String prefix : args[4].split(",")) {
+				if(!prefix.isBlank()) {
+					skippedPrefixes.add(prefix.trim());
+				}
+			}
+		}
+		java.util.function.Predicate<String> skip = name -> {
+			for(String prefix : skippedPrefixes) {
+				if(name.startsWith(prefix)) {
+					return true;
+				}
+			}
+			return false;
+		};
 		Path payload = Path.of(args[base]);
 		SrgMemberMap.RuntimeIndex runtime = new SrgMemberMap.RuntimeIndex();
 		for(int index = base + 1; index < args.length; index++) {
@@ -66,7 +90,8 @@ public final class MissingTargets {
 		// reference to one of those is missing from the runtime while being perfectly satisfiable -
 		// because the swapped class is what will be loaded. Indexing only the runtime reported 1259
 		// "missing" references of which the great majority were OptiFine's own additions.
-		runtime.add(payload);
+		runtime.addJdk();
+		runtime.add(payload, skip);
 
 		Map<String, Integer> counts = new TreeMap<>();
 		Map<String, String> firstSeen = new LinkedHashMap<>();
@@ -82,6 +107,10 @@ public final class MissingTargets {
 				ClassNode node = new ClassNode();
 				try(InputStream stream = zip.getInputStream(entry)) {
 					new ClassReader(stream.readAllBytes()).accept(node, ClassReader.SKIP_DEBUG);
+				}
+				if(skip.test(node.name)) {
+					// Not shipped: its own references cannot matter, and reading them only produces noise.
+					continue;
 				}
 				classes++;
 				for(MethodNode method : node.methods) {
@@ -116,6 +145,11 @@ public final class MissingTargets {
 			}
 		}
 
+		// DEBUG References to this one member, to see whether the scan reaches them at all.
+		int debugTotal = 0;
+		int debugReached = 0;
+		for(String key : counts.keySet()) { if(key.contains("LoadingOverlay.update")) { debugReached++; } }
+		System.out.println("DEBUG References scan: scanned classes=" + classes + " withLoadingOverlayUpdate=" + debugReached);
 		List<Map.Entry<String, Integer>> ordered = new ArrayList<>(counts.entrySet());
 		ordered.sort((left, right) -> Integer.compare(right.getValue(), left.getValue()));
 		System.out.println("scanned " + classes + " classes, " + references
@@ -132,7 +166,7 @@ public final class MissingTargets {
 		if(fix) {
 			// args[2] and not args[1]: args[1] is the input, and writing there while the same file is open
 			// for reading truncated the jar and raised EOFException from deep inside ZipFile.
-			System.out.println(stub(Path.of(args[base]), Path.of(args[2]), targets.values()));
+			System.out.println(stub(Path.of(args[base]), Path.of(args[2]), Path.of(args[3]), skip, targets.values()));
 		}
 	}
 
@@ -164,7 +198,7 @@ public final class MissingTargets {
 	 * method to an interface would break every class that already implements it, turning one missing call
 	 * into an AbstractMethodError somewhere else.</p>
 	 */
-	private static String stub(Path in, Path out, java.util.Collection<Member> members) throws IOException {
+	private static String stub(Path in, Path out, Path stubFile, java.util.function.Predicate<String> skip, java.util.Collection<Member> members) throws IOException {
 		Map<String, List<Member>> byOwner = new LinkedHashMap<>();
 		for(Member member : members) {
 			if(member.method) {
@@ -187,7 +221,7 @@ public final class MissingTargets {
 				if(entry.getName().endsWith(".class") && !SrgRemap.isUnusedNamespace(entry.getName())) {
 					ClassNode node = new ClassNode();
 					new ClassReader(data).accept(node, 0);
-					List<Member> wanted = byOwner.get(node.name);
+					List<Member> wanted = skip.test(node.name) ? null : byOwner.get(node.name);
 					if(wanted != null) {
 						boolean isInterface = (node.access & Opcodes.ACC_INTERFACE) != 0;
 						for(Member member : wanted) {
@@ -210,15 +244,21 @@ public final class MissingTargets {
 				sink.closeEntry();
 			}
 		}
-		// A member whose owner is not in this jar cannot be stubbed here: the owner is a runtime class,
-		// and that is the one case where the call site would have to be removed instead.
+		// A member whose owner is not in this jar cannot be stubbed here: the owner is a runtime class, and
+		// that one has to be given the member while it loads. Those are listed for the loader instead.
+		StringBuilder deferred = new StringBuilder();
 		for(String owner : byOwner.keySet()) {
-			if(!touched.containsKey(owner)) {
-				skipped += byOwner.get(owner).size();
+			if(touched.containsKey(owner)) {
+				continue;
+			}
+			for(Member member : byOwner.get(owner)) {
+				deferred.append(owner).append('\t').append(member.name).append('\t').append(member.desc).append('\n');
+				skipped++;
 			}
 		}
+		java.nio.file.Files.writeString(stubFile, deferred);
 		return "stubbed " + added + " members on " + touched + (skipped == 0 ? "" : ", " + skipped
-				+ " left alone because their owner is a runtime class rather than a payload class");
+				+ " left for the loader because their owner is a runtime class (" + stubFile.getFileName() + ")");
 	}
 
 	private static boolean hasMethod(ClassNode node, String name, String desc) {
@@ -267,16 +307,33 @@ public final class MissingTargets {
 		return owner.startsWith("net/minecraft/") || owner.startsWith("com/mojang/");
 	}
 
-	/** Whether the runtime declares the member, on the owner or anywhere up its hierarchy. */
+	/**
+	 * Members a JDK ancestor legitimately provides, since the JDK cannot be indexed here.
+	 *
+	 * <p>This rule started as "any java/** ancestor counts as present", which was far too broad and quietly
+	 * broke the tool: every class has {@code java/lang/Object} in its hierarchy, so the walk reached it and
+	 * answered "present" for <em>everything</em>. OptiFine's call to {@code LoadingOverlay.update()} - a
+	 * method only OptiFine's own copy of that class declares - was therefore never reported, never stubbed,
+	 * and killed the game at runtime. Only the inherited members that actually matter are listed now, and
+	 * {@code Enum.ordinal()} - the case the rule was added for - is one of them.</p>
+	 */
+	private static final java.util.Set<String> JDK_MEMBERS = java.util.Set.of(
+			"<init>", "equals", "hashCode", "toString", "getClass", "clone", "finalize", "notify", "notifyAll",
+			"wait", "ordinal", "name", "compareTo", "getDeclaringClass", "describeConstable", "values",
+			"valueOf", "iterator", "hasNext", "next", "size", "isEmpty");
+
+	/**
+	 * Whether the runtime declares the member, on the owner or anywhere up its hierarchy.
+	 *
+	 * <p>Every candidate is looked up, JDK ancestors included, because {@link SrgMemberMap.RuntimeIndex#addJdk()}
+	 * indexes java.base: {@code Direction.ordinal()} resolves through {@code java/lang/Enum} like any other
+	 * inherited member. The special case that used to sit here answered "present" for anything with an
+	 * {@code Object} above it - which is every class - and that is what hid OptiFine's call to
+	 * {@code LoadingOverlay.update()} from this report, and from the stub pass after it.</p>
+	 */
 	private static boolean declares(SrgMemberMap.RuntimeIndex runtime, String owner, String name, String desc,
 			boolean method) {
 		for(String candidate : runtime.hierarchy(owner)) {
-			// A JDK ancestor counts as present. Enum.ordinal() is reached this way - Direction inherits it
-			// from java.lang.Enum - and java.base is not a jar that can be indexed here, while it is
-			// never absent at runtime either. Without this the report was dominated by ordinal() calls.
-			if(candidate.startsWith("java/") || candidate.startsWith("javax/") || candidate.startsWith("jdk/")) {
-				return true;
-			}
 			String key = candidate + "." + name + desc;
 			if(method ? runtime.methods.contains(key) : runtime.fields.contains(key)) {
 				return true;
