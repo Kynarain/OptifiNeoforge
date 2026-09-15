@@ -1527,3 +1527,82 @@ module graph: optifine -> minecraft: reads it = false, …… exported to it = t
 **1.21.1 与 1.21.4 的差异(记录用)**:1.21.1 的 OptiFine 载荷按 SRG/混淆基名打补丁、运行期 transformer
 要"混淆基类资源"而运行期给不出(`Base resource not found: akr.class` ×12717),所以走**离线换类**;
 1.21.4 则是 OptiFine 自己那份 transformer 在运行期补丁(打的是 NeoForge 已改过的类,继承关系天然保留)。
+
+---
+
+## 把"改父类"移到 1.20.x:一次测量、两次拒绝、一条边界(2026-09-16 凌晨)
+
+1.21.1 的修法(`HierarchyPlan` 出计划 + loader 在换进去的类上改父类)在 1.20.x 上先照搬了一遍,结果是
+**两条已验证的线立刻给出反例**,而这两个反例都很值钱:它们把"什么情况下不许改"写成了可判定的规则。
+
+### 先说结论:这条分支现在**不启用**父类改写(默认没有计划就是不改)
+
+1.20.4/1.20.2 的载荷 `BlockEntity` 同样 `extends net.minecraftforge.common.capabilities.CapabilityProvider`,
+而运行时的父类是 NeoForge 的替代品:
+
+| 线 | 运行时父类 | 无参构造 | 载荷是否覆写它的 final 成员 |
+|---|---|---|---|
+| 1.21.1 / 20.4.251 | `net.neoforged.neoforge.attachment.AttachmentHolder` | 有(`AttachmentHolder()`)✓ | 没有 ✓ → **可改** |
+| 1.20.2 / 20.2.88 | `net.neoforged.neoforge.common.capabilities.CapabilityProvider` | 没有,只有 `(Class)` / `(Class,boolean)` | **有** ✗ → 不许改 |
+
+1.20.2 的实测崩法(改父类那一版):
+
+```
+IncompatibleClassChangeError: class net.minecraft.world.level.block.entity.BlockEntity
+  overrides final method
+  net.neoforged.neoforge.common.capabilities.CapabilityProvider.serializeCaps()Lnet/minecraft/nbt/CompoundTag;
+```
+
+因为 20.2 那一版的 `CapabilityProvider` 把 `gatherCapabilities()` / `getCapabilities()` / `serializeCaps()` /
+`deserializeCaps(CompoundTag)` 全声明成 **final**,而 OptiFine 的 `BlockEntity` 恰好覆写了它们(这些方法是
+**打桩步骤**补进载荷的,所以要在**打过桩的 jar** 上判,不是在补丁产物上判 —— 第一版判据看错了 jar,
+于是"检查存在但没拦住",这一点也是实测出来的)。
+
+修法两步,都落在工具里而不是靠人记:
+
+1. `HierarchyPlan` 增加一条判据:**载荷声明了运行时父类声明为 final 的同名同描述符成员 → 拒绝**。
+   实测输出(1.20.2,按 rig 的 jar 顺序):
+   `no reparent for net/minecraft/world/level/block/entity/BlockEntity: it declares
+   deserializeCaps(Lnet/minecraft/nbt/CompoundTag;)V, which the runtime superclass … declares final` ✓
+2. 1.20.x 的 loader 里,父类改写的**失败不再是"拒绝换类",而只是记一行日志**:这条分支的已验证行为是
+   "照载荷自己的父类换进去",改成拒绝就是改了已验证的东西。1.21.x 侧保留拒绝(那一支的实测是
+   "拒绝 = 记一行 + 游戏照跑,不拒绝 = VerifyError 崩",所以拒绝更安全)。
+
+### 一次被排除的假归因(记录用)
+
+1.20.4 装上父类改写的第一次运行里 stderr 有 14,481 字节,里面是
+
+```
+NoClassDefFoundError: net/minecraft/world/level/block/state/BlockState
+Caused by: ClassNotFoundException: net.minecraft.world.level.block.state.BlockState
+  at net.optifine.reflect.ReflectorMethod.getMethod(ReflectorMethod.java:238)
+```
+
+看起来很像是这次改动的副作用,**但不是**:改动之前的基线运行 `logs/run-nf1204-regcheck` 的 stderr 是
+**同样 14,481 字节、同样 8 条错误、同样三条头**(`BlockState` / `Caused by` / `ItemStack`)。也就是说
+1.20.4 早就带着这个缺陷在跑(判据 `Setting user` ✓、`Pre-stitch` ×13、OptiFine 着色器与 CTM 都在跑),
+它是一条**独立的待办**,不是这次改动引入的。**教训**:回归比较要比"stderr 大小 + 错误行集合",
+不能只看"有没有报错"。
+
+### 这条分支现在的状态
+
+- `HierarchyPlan` 已进 1.20.x 的离线工具集(`src/.../optifine/HierarchyPlan.java`),rig 的构建步骤会跑它并
+  把结果作为 `optifineoforge/reparent.txt` 打进 jar;**没有这个文件 = 一行都不改**,这就是默认。
+- 1.20.2 的计划是空(被 final 覆写判据拒绝)✓,1.20.4 的计划是
+  `BlockEntity → AttachmentHolder via ()V` ✓,1.20.1 无计划(那一支的 Forge 包就是运行时自己的包,
+  两边继承关系本来就一致)✓。
+
+### 四条线的回归(2026-09-16 00:55–00:59,同一批连续跑)
+
+| 线 | VERDICT | `Setting user` | `[OptiFine]` | `Pre-stitch` | CTM | `Caught error` | stderr | 父类改写 |
+|---|---|---|---|---|---|---|---|---|
+| 1.21.1 / 21.1.250 | `STARTED (40s)` | ✓ | 223 | 14 | 3 | 0 | **0 字节** | **已改写** ✓(plan 1 条) |
+| 1.21.4 / 21.4.149 | `STARTED (40s)` | ✓ | 232 | 14 | 3 | 0 | **0 字节** | 无计划(该线不换类,OptiFine 自己补丁 474 个目标)✓ |
+| 1.20.4 / 20.4.251 | `STARTED (40s)` | ✓ | 241 | 13 | 3 | 0 | 14,481 字节(= 基线) | **已改写** ✓(plan 1 条) |
+| 1.20.2 / 20.2.88 | `STARTED (40s)` | ✓ | 239 | 13 | 2 | 0 | 14,631 字节(= 基线形状) | 计划为空 ✓,日志写明"照载荷自己的父类换" |
+
+1.21.4 那一行的 232 行 `[OptiFine]` 与 14 次 `Pre-stitch` 与它移植前的基线**完全一致**,说明这一轮改动没有
+碰到它的路径 ✓。1.20.2 是这一轮唯一"先坏后修"的线:改父类那一版 `EXITED (10s)`,加上 final 判据之后回到
+`STARTED` ✓。
+
+
