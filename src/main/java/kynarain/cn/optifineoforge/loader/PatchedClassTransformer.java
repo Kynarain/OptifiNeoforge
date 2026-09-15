@@ -16,10 +16,12 @@ import java.util.Set;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.MethodNode;
 
+import cpw.mods.modlauncher.api.IModuleLayerManager;
 import cpw.mods.modlauncher.api.ITransformer;
 import cpw.mods.modlauncher.api.ITransformerVotingContext;
 import cpw.mods.modlauncher.api.TransformerVoteResult;
@@ -60,6 +62,9 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	static final String PREFIX = "/optifineoforge/patched/";
 	private static final String INDEX = "/optifineoforge/patched-index.txt";
 
+	/** The three access bits that say who may use a class; everything else in the word is not visibility. */
+	private static final int VISIBILITY = Opcodes.ACC_PUBLIC | Opcodes.ACC_PRIVATE | Opcodes.ACC_PROTECTED;
+
 	private static final Set<Target> TARGETS = loadTargets();
 
 	private static Set<Target> loadTargets() {
@@ -93,6 +98,7 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 
 	@Override
 	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
+		logModulesOnce();
 		ClassNode patched;
 		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(PREFIX + input.name + ".class")) {
 			if(stream == null) {
@@ -108,6 +114,13 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		// Content in place rather than returning OptiFine's node: the transformers after this one in
 		// the chain, ours included, are handed the same node and expect the class they were told about.
 		input.superName = patched.superName;
+		// The access flags matter as much as the members, and taking only part of the word was the mistake.
+		// Forcing the visibility bits fixed "cannot access its superinterface" - OptiFine makes
+		// OptionInstance$SliderableValueSet public so that its own class may implement it - and the very
+		// next launch failed the mirror image: "cannot inherit from final class OptionInstance", because
+		// OptiFine's patch also drops final so that SliderPercentageOptionOF may extend it. OptiFine's
+		// compilation is the version of this class for this runtime, so its whole access word wins.
+		input.access = patched.access;
 		input.interfaces = patched.interfaces == null ? new ArrayList<>() : new ArrayList<>(patched.interfaces);
 		input.signature = patched.signature;
 		List<FieldNode> fields = new ArrayList<>(patched.fields);
@@ -117,6 +130,59 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		LOGGER.info("Replaced " + input.name.replace('/', '.') + " with OptiFine's patched version ("
 				+ fields.size() + " fields, " + methods.size() + " methods)");
 		return input;
+	}
+
+	private static boolean loggedModules;
+
+	/**
+	 * Prints the real module graph once, the first time a class is transformed.
+	 *
+	 * <p>Added because the access failure was being reasoned about backwards, from an error message:
+	 * {@code IllegalAccessError: class net.optifine.config.SliderableValueSetInt cannot access its
+	 * superinterface net.minecraft.client.OptionInstance$SliderableValueSet (鈥?is in module srg 鈥? 鈥?is
+	 * in module minecraft@1.20.4 鈥?}. Reading the graph says directly whether the game's package is not
+	 * exported to us, or whether we cannot read the game module at all - two different repairs.</p>
+	 *
+	 * <p>Only module metadata is touched: no game class is loaded, which would be a bad thing to do from
+	 * inside a transformer.</p>
+	 */
+	private static void logModulesOnce() {
+		if(loggedModules) {
+			return;
+		}
+		loggedModules = true;
+		try {
+			Module ours = PatchedClassTransformer.class.getModule();
+			IModuleLayerManager layers = OptifiNeoforgeTransformationService.layers();
+			LOGGER.info("module graph: our module is " + ours.getName() + ", layer manager "
+					+ (layers == null ? "not captured" : "captured"));
+			if(layers == null) {
+				return;
+			}
+			layers.getLayer(IModuleLayerManager.Layer.GAME).ifPresent(layer -> {
+				StringBuilder names = new StringBuilder();
+				for(Module module : layer.modules()) {
+					names.append(module.getName()).append(' ');
+				}
+				LOGGER.info("module graph: GAME layer holds " + names.toString().trim());
+				layer.findModule("minecraft").ifPresent(game -> {
+					// Both edges matter and they are granted separately, which is the whole reason this
+					// probe exists: an export to a module that cannot read the game is worth nothing, and
+					// the first measurement showed exactly that shape - the export went to 'optifine'
+					// while the payload actually lives in 'srg'.
+					for(String candidate : new String[] {"optifine", "srg", "neoforge"}) {
+						layer.findModule(candidate).ifPresent(module -> LOGGER.info(
+								"module graph: " + candidate + " -> minecraft: reads it = " + module.canRead(game)
+										+ ", net.minecraft.client is exported to it = "
+										+ game.isExported("net.minecraft.client", module)
+										+ ", net.minecraft.resources is exported to it = "
+										+ game.isExported("net.minecraft.resources", module)));
+					}
+				});
+			});
+		} catch(Throwable t) {
+			LOGGER.warn("module probe failed: " + t);
+		}
 	}
 
 	@Override
@@ -129,3 +195,4 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		return TARGETS;
 	}
 }
+

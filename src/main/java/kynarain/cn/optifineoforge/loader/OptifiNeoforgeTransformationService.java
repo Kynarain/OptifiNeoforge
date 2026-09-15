@@ -52,7 +52,15 @@ public class OptifiNeoforgeTransformationService implements ITransformationServi
 
 	@Override
 	public List<Resource> completeScan(IModuleLayerManager layerManager) {
+		layers = layerManager;
 		return List.of();
+	}
+
+	/** The layer manager, kept so a transformer can inspect the module graph once classes are loading. */
+	private static volatile IModuleLayerManager layers;
+
+	static IModuleLayerManager layers() {
+		return layers;
 	}
 
 	@Override
