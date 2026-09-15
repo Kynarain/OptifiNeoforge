@@ -1317,3 +1317,22 @@ OptifineJar    OptifineJarFixer  OptifinePipeline
 下一步是 1.21.x 分支上的其余行(1.21 / 1.21.1 / 1.21.3 / 1.21.6–1.21.11):它们的 OptiFine jar 和
 对应的 NeoForge 都要按 `fetch-optifine.ps1` 的办法去取/安装,然后复用 `1214` 这套参数(那条分支的工具集、
 ModLauncher 11、官方名载荷)。
+
+**1.21.1 的准备度(同一晚,一半到位)**
+
+- **原版 1.21.1 客户端 jar ✓**:从镜像取版本 json 再按 `downloads.client.url` 从 Mojang 的 piston-data 下,
+  得到 26,836,906 字节(`versions\1.21.1\1.21.1.jar`)。
+- **NeoForge 21.1.x 一共 243 个构建,最新 21.1.250** ✓,installer 也下下来了,但**装出来的东西不完整**:
+
+```
+client jar present: False
+profile present: True
+libraries\net\neoforged\neoforge\21.1.250\  → 空
+```
+
+也就是说 profile 目录建了、`neoforge-21.1.250-client.jar` 没有,而且 `libraries` 下对应目录是**空的** ——
+这与 20.6.141 那次"安装器提前失败"是同一形态。**下一步**:像 20.6.141 那样把 installer 的输出**完整**记到文件
+再读(这一轮脚本只把输出追加进日志、但日志里没有它期待的报错,所以要先把 stdout/stderr 都存下来),
+按它报的坐标逐个手工取回,再重跑安装。
+
+OptiFine 侧:1.21.1 的正式版 jar(`OptiFine_1.21.1_HD_U_J1.jar`)本地已有 ✓。
