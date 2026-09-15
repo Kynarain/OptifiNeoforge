@@ -1435,3 +1435,42 @@ stderr 只剩 4 条 `NoClassDefFoundError`(其中一条是 `net.minecraft.world.
 **下一轮该做的**:把那 4 条 NoClassDefFoundError 的完整堆栈读出来(现在只看到尾部),确认它们是不是
 同一类问题(某个换装类的字段描述符在模块尚未就绪时被解析);然后按 1.21.4 那条线的验收清单核对
 (贴图集、模型烘焙、资源重载无错),把 1.20.4 从"能启动"推进到"行为与已验证线一致"。
+
+### 剩下那个真问题查清了:Forge **扩展接口**上继承来的成员在 shim 里丢了
+
+4 条异常读完,全是同一形状且**不致命** —— OptiFine 的反射(`ReflectorMethod.getMethod`)在解析
+`BlockState`/`ItemStack` 时经 builtin loader 抛出 `ClassNotFoundException`,被吞掉、该可选特性跳过。
+真正的问题在 stdout 里那一条 `Caught error loading resourcepacks`(整批资源包被移除,也就是**模型烘焙没了**):
+
+    NoSuchMethodError: 'BakedModel ModelBaker.bake(ResourceLocation, ModelState, Function)'
+      at net.minecraft.client.renderer.block.model.MultiVariant.bake(MultiVariant.java:71)
+      at ...multipart.MultiPart.bake
+      at ...model.ModelBakery$ModelBakerImpl.bake
+
+两边都量了:
+
+- 运行时的 `ModelBaker` 是 **NeoForge 版**:只有 `getModel(ResourceLocation)` 和
+  `bake(ResourceLocation, ModelState)`(两参数);
+- 我们发出去的 `ModelBaker`(`ModelBaker` 确实被换装了,日志里有这一行)是 OptiFine 版:
+  `public interface ModelBaker extends net.minecraftforge.client.extensions.IForgeModelBaker`,
+  自己只声明那两个方法 —— **三参数的 `bake` 是从那个 Forge 扩展接口继承来的**;
+- 而那个 shim 是**空的**:
+
+      105  net/minecraftforge/client/extensions/IForgeModelBaker.class
+       99  net/minecraftforge/client/extensions/IForgeFont.class
+      104  net/minecraftforge/client/extensions/IForgePoseStack.class
+
+  一百来字节 = 没有成员的接口。`ForgeApiShims` 的规则是"每个被引用的 Forge 类型出一个 stub,成员取
+  **OptiFine 的类直接点名在它上面的**字段与方法";而这里 OptiFine 调用的是
+  `ModelBaker.bake(三参数)`(owner 是 `ModelBaker`),**从没在 `IForgeModelBaker` 上点过名**,于是它是空的,
+  那条继承来的方法就消失了 —— 结果 `ModelBakery$ModelBakerImpl`(换装后**确实**有那个三参数方法)
+  也救不了 `invokeinterface`,因为接口里查不到。
+
+**要修什么(下一轮)**:让这些 shim **接口**补上"载荷里的实现类提供了、而运行时接口没有"的公开方法
+(按实现类去反推),这样 `bake(三参数)` 会出现在接口上,调用可解析。这是个通病,不止 `ModelBaker` 一处:
+凡是 OptiFine 通过 Forge 扩展接口继承成员的地方都会这样。修完应当能把 `Caught error loading
+resourcepacks` 去掉,恢复模型烘焙 —— 那正是 1.21.4 那条线验收时用过的判据之一。
+
+顺带记下 shim 名单里的一处可疑现象:`net/minecraftforge/cl.class`、`cli.class`、`clien.class`、
+`client/m.class` 这类**名字明显被截断**的条目也在 48 个 shim 里。它们同样只有七十来字节,不影响本次
+诊断(真正相关的 `IForgeModelBaker` 名字是完整的),但下一轮顺手确认一下是否是生成时截断。
