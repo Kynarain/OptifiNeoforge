@@ -1261,3 +1261,33 @@ ML 按**条目路径**找类,自然只找到运行时那一份。修法就是查
 
 **遗留小项(下一轮顺手看)**:1.20.2 这次 `stderr.log` 是 14,625 字节(1.20.1 那次只有 27 字节),
 虽然 verdict 是 STARTED 且无新 crash report,但值得读一遍确认里面只是良性警告。
+
+**转向 1.21.x:rig 驱动不动那一行,原因是"两边的工具集代差"(同一晚,已量到具体类名)**
+
+建好 `1.21.x` 的 worktree(分支 21db5b2)、确认 21.4.149 用的是 **ModLauncher 11.0.4 + FML 6.0.18**、
+游戏 jar 是官方名之后,用现在的 rig 去建 1.21.4 会在**打桩那一步**失败,报的是三个"类找不到":
+
+```
+java.lang.ClassNotFoundException: kynarain.cn.optifineoforge.optifine.NestedFamilyGuard
+java.lang.ClassNotFoundException: kynarain.cn.optifineoforge.optifine.NestedNameBridge
+java.lang.ClassNotFoundException: kynarain.cn.optifineoforge.optifine.MissingTargets
+```
+
+原因很清楚:`1.21.x` 分支的 `optifine` 工具集只有
+
+```
+DonorVerifier  ForgeApiShims  MemberRestorePlan  OptifineConfig
+OptifineJar    OptifineJarFixer  OptifinePipeline
+```
+
+——**没有** `MissingTargets`(打桩)、**没有** `SrgRemap`(改名)、也没有这一轮新写的 `NestedFamilyGuard` /
+`NestedNameBridge`。这些都是这几十轮在 **1.20.x** 分支上长出来的,而两条分支按项目纪律是**互相独立**的
+(不做跨分支合并),所以"拿 1.20.x 的 rig 去驱动 1.21.x"必然缺件。
+
+**两条可选路线(下一轮择一)**:
+1. **按行降级**:给 rig 加一个"工具集"开关,驱动 1.21.x 时跳过 3b1(家族)/3b4(桥)/3b2(打桩)——
+   1.21.4 当初**就是在这些工具存在之前**跑通的(那时的产物保留了补丁数据 ✓),所以这条路是**有先例、有把握**的;
+2. **把成熟工具集移植到 1.21.x 分支**(拷贝并按该行的命名空间调整)——更彻底,但工作量大,而且要先确认那一行
+   到底需不需要(1.21.x 的载荷已是官方名 ✓,未必需要 SRG 改名那一套)。
+
+先走 1 把 1.21.4 重新跑通拿回基线,再决定移植哪些工具到 1.21.x。
