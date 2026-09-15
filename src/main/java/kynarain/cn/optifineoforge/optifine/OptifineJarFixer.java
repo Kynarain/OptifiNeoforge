@@ -47,14 +47,129 @@ public final class OptifineJarFixer {
 	private static final String SERVICE = "optifine/OptiFineTransformationService";
 	private static final String TO_FILE = "toFile";
 	private static final String TO_FILE_DESC = "(Ljava/net/URI;)Ljava/io/File;";
+	/** The class that builds a SecureJarHandler metadata object with the older generation's signature. */
+	private static final String JAR_CLASS = "optifine/OptiFineJar";
+	private static final String METADATA_OWNER = "cpw/mods/jarhandling/impl/SimpleJarMetadata";
+	/** Third parameter: the set itself under 2.1.10, a supplier of it under 2.1.24. */
+	private static final String METADATA_OLD_CTOR =
+			"(Ljava/lang/String;Ljava/lang/String;Ljava/util/Set;Ljava/util/List;)V";
+	private static final String METADATA_NEW_CTOR =
+			"(Ljava/lang/String;Ljava/lang/String;Ljava/util/function/Supplier;Ljava/util/List;)V";
+	private static final String SET_SUPPLIER = "kynarain/cn/optifineoforge/loader/SetSupplier";
+	/** Where the set handed to that constructor comes from, and so where the wrapper is inserted. */
+	private static final String METADATA_SET_PRODUCER_OWNER = "cpw/mods/jarhandling/SecureJar";
+	private static final String METADATA_SET_PRODUCER_NAME = "getPackages";
 
 	private OptifineJarFixer() {
 	}
 
-	/** Whether the jar entry name is the class this fixer rewrites. */
+	/** Whether the jar entry name is a class this fixer rewrites. */
 	public static boolean handles(String entryName) {
 		String name = entryName.endsWith(".class") ? entryName.substring(0, entryName.length() - ".class".length()) : entryName;
-		return SERVICE.equals(name);
+		return SERVICE.equals(name) || JAR_CLASS.equals(name);
+	}
+
+	/** The repair this entry needs, which is none for anything else in the jar. */
+	public static byte[] fix(String entryName, byte[] classBytes) {
+		String name = entryName.endsWith(".class") ? entryName.substring(0, entryName.length() - ".class".length()) : entryName;
+		if(SERVICE.equals(name)) {
+			return fixServicePath(classBytes);
+		}
+		if(JAR_CLASS.equals(name)) {
+			return fixJarMetadataCall(classBytes);
+		}
+		return classBytes;
+	}
+
+	/**
+	 * Replaces the body of the lambda that builds the metadata, rather than inserting into it.
+	 *
+	 * <p>The wrapper has to turn the set {@code getPackages()} returns into the {@code Supplier} the
+	 * newer signature wants, and inserting that in the middle of the existing sequence did not verify,
+	 * even though the emitted instructions were exactly the intended ones - measured by disassembling
+	 * the patched class:</p>
+	 *
+	 * <pre> 8: SecureJar.getPackages()Ljava/util/Set;
+	 * 13: new SetSupplier; 16: dup_x1; 17: &lt;init&gt;(Set)V
+	 * 20: new ArrayList ...
+	 * 27: SimpleJarMetadata.&lt;init&gt;(String, String, Supplier, List)V</pre>
+	 *
+	 * <p>and yet {@code VerifyError: Type uninitialized 13 ... is not assignable to 'java/util/Set'}. The
+	 * instructions are right, so the frames are the problem: the writer recomputes them, and for
+	 * {@code SetSupplier} - which the platform class loader cannot see - the common-superclass fallback
+	 * answers {@code java/lang/Object}, so the recomputed frame and the instructions disagree and the
+	 * verifier believes the frame.</p>
+	 *
+	 * <p>So the method is written whole. This lambda is self-contained and has no side effects to lose,
+	 * which is what makes replacement safe here and unsafe for {@code toFile} (where it deleted a static
+	 * field assignment):</p>
+	 *
+	 * <pre>private static JarMetadata lambda$1(SecureJar jar) {
+	 *     return new SimpleJarMetadata("net.optifine", null, new SetSupplier(jar.getPackages()), new ArrayList&lt;&gt;());
+	 * }</pre>
+	 *
+	 * <p>The rewrite happens only for a method that still calls the old signature, so a line whose
+	 * SecureJarHandler never had it is left exactly as it is.</p>
+	 */
+	private static byte[] fixJarMetadataCall(byte[] classBytes) {
+		ClassNode node = new ClassNode();
+		ClassReader reader = new ClassReader(classBytes);
+		reader.accept(node, 0);
+
+		boolean patched = false;
+		for(MethodNode method : node.methods) {
+			if(!containsOldMetadataCall(method)) {
+				continue;
+			}
+			method.instructions = metadataConstruction();
+			method.tryCatchBlocks = new java.util.ArrayList<>();
+			method.localVariables = null;
+			patched = true;
+		}
+		if(!patched) {
+			return classBytes;
+		}
+		ClassWriter writer = new SafeClassWriter(reader, ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+		node.accept(writer);
+		return writer.toByteArray();
+	}
+
+	/** Whether this method still builds the metadata with the set itself as the third argument. */
+	private static boolean containsOldMetadataCall(MethodNode method) {
+		for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if(insn instanceof MethodInsnNode call && METADATA_OWNER.equals(call.owner)
+					&& "<init>".equals(call.name) && METADATA_OLD_CTOR.equals(call.desc)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * <pre>
+	 * new SimpleJarMetadata("net.optifine", null, new SetSupplier(jar.getPackages()), new ArrayList&lt;&gt;())
+	 * </pre>
+	 */
+	private static InsnList metadataConstruction() {
+		InsnList list = new InsnList();
+		list.add(new TypeInsnNode(Opcodes.NEW, METADATA_OWNER));
+		list.add(new InsnNode(Opcodes.DUP));
+		list.add(new LdcInsnNode("net.optifine"));
+		list.add(new InsnNode(Opcodes.ACONST_NULL));
+		list.add(new VarInsnNode(Opcodes.ALOAD, 0));
+		list.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, METADATA_SET_PRODUCER_OWNER,
+				METADATA_SET_PRODUCER_NAME, "()Ljava/util/Set;", true));
+		// A single call, not new/dup: the set is already on the stack and the JVM wants an argument on
+		// top of an invokespecial, so arranging the wrapper by hand got the shape wrong twice. Measured
+		// with the frame dump: "Type uninitialized 13 (stack[6]) is not assignable to 'java/util/Set'".
+		list.add(new MethodInsnNode(Opcodes.INVOKESTATIC, SET_SUPPLIER, "of",
+				"(Ljava/util/Set;)Ljava/util/function/Supplier;", false));
+		list.add(new TypeInsnNode(Opcodes.NEW, "java/util/ArrayList"));
+		list.add(new InsnNode(Opcodes.DUP));
+		list.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/util/ArrayList", "<init>", "()V", false));
+		list.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, METADATA_OWNER, "<init>", METADATA_NEW_CTOR, false));
+		list.add(new InsnNode(Opcodes.ARETURN));
+		return list;
 	}
 
 	/**
@@ -71,9 +186,21 @@ public final class OptifineJarFixer {
 		boolean patched = false;
 		for(MethodNode method : node.methods) {
 			if(TO_FILE.equals(method.name) && TO_FILE_DESC.equals(method.desc)) {
-				method.instructions = stripSuffixesThenFile();
-				method.tryCatchBlocks = new java.util.ArrayList<>();
-				method.localVariables = null;
+				// Two shapes of this method exist, and they need opposite treatment. In the flavour
+				// whose non-union branch builds the file from the URI itself - 1.20.1 - the body is
+				// already right for plain files and the union path only needs the trailing "!" cut;
+				// replacing that body deletes the static ofZipFileUrl assignment its own
+				// getResourceUrl depends on, and the launch then dies much later, far from here,
+				// reading a class through a union path:
+				//   FileSystemNotFoundException ... Jar$JarModuleDataProvider.open
+				// In the flavour that builds it from uri.getPath() - 1.20.4, 1.21.4 - the "#<index>!"
+				// stays in the string and the whole method is replaced, which is what fixed
+				// "NoSuchFileException: ...jar#177" there.
+				if(!insertBangStrip(method)) {
+					method.instructions = stripSuffixesThenFile();
+					method.tryCatchBlocks = new java.util.ArrayList<>();
+					method.localVariables = null;
+				}
 				patched = true;
 			}
 		}
@@ -119,6 +246,82 @@ public final class OptifineJarFixer {
 				return "java/lang/Object";
 			}
 		}
+	}
+
+	/**
+	 * Cuts the union filesystem's trailing {@code !} off the path OptiFine already computed, by adding
+	 * instructions after the {@code #}-strip the original performs and leaving everything else alone.
+	 *
+	 * <p>Found rather than assumed: the {@code #}-strip is the {@code substring} call that follows the
+	 * {@code "#"} constant, and the value it stores is the local the rest of the method reads. The
+	 * temporary slot is taken past {@code maxLocals}, so nothing the original uses can be clobbered.</p>
+	 *
+	 * @return whether the strip was inserted, i.e. whether this OptiFine handles the union scheme itself
+	 */
+	private static boolean insertBangStrip(MethodNode method) {
+		// The gate is which shape this is, and it is visible in the method: this flavour's non-union
+		// branch builds the file from the URI itself - new File(URI) - so that branch is already
+		// correct and only the union path needs the extra cut. The other flavour builds it from
+		// uri.getPath(), which leaves "#<index>!" inside the string when the scheme is not "union" -
+		// that is the "NoSuchFileException: ...jar#177" this fixer was written for - and there the
+		// whole method has to be replaced. Measured on both jars rather than assumed from sizes.
+		boolean buildsFileFromUri = false;
+		for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if(insn instanceof MethodInsnNode call && "java/io/File".equals(call.owner)
+					&& "<init>".equals(call.name) && "(Ljava/net/URI;)V".equals(call.desc)) {
+				buildsFileFromUri = true;
+				break;
+			}
+		}
+		if(!buildsFileFromUri) {
+			return false;
+		}
+
+		AbstractInsnNode hashStripEnd = null;
+		for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if(!(insn instanceof LdcInsnNode ldc) || !"#".equals(ldc.cst)) {
+				continue;
+			}
+			// "#" ... substring(II)String ... astore <path local>
+			AbstractInsnNode cursor = insn;
+			VarInsnNode stored = null;
+			for(int step = 0; step < 6 && cursor != null; step++) {
+				cursor = cursor.getNext();
+				if(cursor instanceof MethodInsnNode call && "substring".equals(call.name)) {
+					AbstractInsnNode after = cursor.getNext();
+					if(after instanceof VarInsnNode var && var.getOpcode() == Opcodes.ASTORE) {
+						stored = var;
+					}
+				}
+			}
+			if(stored != null) {
+				hashStripEnd = stored;
+				break;
+			}
+		}
+		if(hashStripEnd == null) {
+			return false;
+		}
+		int slot = Math.max(method.maxLocals, 1);
+		method.maxLocals = slot + 1;
+		int pathLocal = ((VarInsnNode) hashStripEnd).var;
+		LabelNode afterBang = new LabelNode();
+
+		InsnList list = new InsnList();
+		list.add(new VarInsnNode(Opcodes.ALOAD, pathLocal));
+		list.add(new LdcInsnNode("!"));
+		list.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(Ljava/lang/String;)I", false));
+		list.add(new VarInsnNode(Opcodes.ISTORE, slot));
+		list.add(new VarInsnNode(Opcodes.ILOAD, slot));
+		list.add(new JumpInsnNode(Opcodes.IFLT, afterBang));
+		list.add(new VarInsnNode(Opcodes.ALOAD, pathLocal));
+		list.add(new InsnNode(Opcodes.ICONST_0));
+		list.add(new VarInsnNode(Opcodes.ILOAD, slot));
+		list.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;", false));
+		list.add(new VarInsnNode(Opcodes.ASTORE, pathLocal));
+		list.add(afterBang);
+		method.instructions.insert(hashStripEnd, list);
+		return true;
 	}
 
 	/**
@@ -189,11 +392,14 @@ public final class OptifineJarFixer {
 		return list;
 	}
 
-	/** Development aid: report what the fixer would do to a class file. */
+	/** Development aid: report what the fixer would do to a class file, and write the result beside it. */
 	public static void main(String[] args) throws Exception {
 		byte[] before = java.nio.file.Files.readAllBytes(java.nio.file.Path.of(args[0]));
 		byte[] after = fixServicePath(before);
 		System.out.println("before " + before.length + " bytes, after " + after.length + " bytes, changed=" + (before.length != after.length || !java.util.Arrays.equals(before, after)));
+		java.nio.file.Path written = java.nio.file.Path.of(args[0] + ".patched");
+		java.nio.file.Files.write(written, after);
+		System.out.println("wrote " + written);
 		ClassNode node = new ClassNode();
 		new ClassReader(after).accept(node, 0);
 		for(MethodNode method : node.methods) {
