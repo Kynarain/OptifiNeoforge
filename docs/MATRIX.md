@@ -702,3 +702,24 @@ securejarhandler 打不开 —— 这**正是 `OptifineJarFixer` 当初为它的
 **下一步(1.20.1)**:看 `OptifineJarFixer` 现在到底修了哪几个类的方法,再把同一处理扩到
 `additionalClassesLocator` 的实现上(1.20.1 的 OptiFine jar 里,它多半与 service 在同一个类里,
 但用的 API 不同);修好之后这一行应当能带着完整载荷启动。
+
+**顺手修掉一个自己造的回归(同晚,记下来是因为它是"接口契约"而不是笔误)**
+
+给 `NestedFamilyGuard` 接线时,我把 stub pass 的 skip 表从"内部名"改成了"点名"
+(`$_ -replace '/', '.'`),理由是 `MissingTargets` 的用法写的是 "skipped prefixes"。
+结果是 **1.20.4 从 STARTED 退化成 15 秒退出**,而失败信息看着毫不相干:
+
+```
+java.lang.NoSuchMethodError: 'void net.minecraft.client.gui.screens.LoadingOverlay.update()'
+```
+
+原因链:`MissingTargets` 的 skip 谓词是拿**类文件里读出来的内部名**去比(`skip.test(node.name)`),
+点名永远匹配不上 → `LoadingOverlay` 不再被排除出"载荷索引" → 它自己声明的 `update()` 被判为**可满足**
+(而不是"只有 OptiFine 那份才有")→ 于是不再生成那条延迟 stub → 运行时一调用就 `NoSuchMethodError`。
+这是文档里早就写过的那个陷阱("with OptiFine's LoadingOverlay still counted as present …"),只是这次是
+我自己踩的。**契约:给这两个工具的 skip 表一律用内部名(带斜杠)。**
+
+修好后 1.20.4 立刻恢复:`VERDICT: TIMEOUT (201s)`(跑满整个 200 秒窗口,即稳定存活)、
+`Runtime stubs to add: 76 members across 27 classes`、`Patched-class targets: 448` —— 与当初验证的那组数字一致。
+`NestedFamilyGuard` 本身在 1.20.4 上只找出 `com/mojang/blaze3d/vertex/VertexMultiConsumer` 一个族并跳过,
+且已用 `-NoFamilyGuard` 对照实验证明它**不是**那次退化的原因。
