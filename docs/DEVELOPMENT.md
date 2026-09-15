@@ -1474,3 +1474,43 @@ resourcepacks` 去掉,恢复模型烘焙 —— 那正是 1.21.4 那条线验收
 顺带记下 shim 名单里的一处可疑现象:`net/minecraftforge/cl.class`、`cli.class`、`clien.class`、
 `client/m.class` 这类**名字明显被截断**的条目也在 48 个 shim 里。它们同样只有七十来字节,不影响本次
 诊断(真正相关的 `IForgeModelBaker` 名字是完整的),但下一轮顺手确认一下是否是生成时截断。
+
+### 真相不是 shim 空,而是**换装接口时把超接口列表整个换掉了**
+
+继续查下去发现前面的推断还差一层。把两份运行时的 `ModelBaker` 都 javap 出来对比:
+
+    NeoForm 的:  interface ModelBaker { getModel(ResourceLocation); bake(ResourceLocation, ModelState); }
+    NeoForge 的: interface ModelBaker extends net.neoforged.neoforge.client.extensions.IModelBakerExtension
+                 { getModel(ResourceLocation); bake(ResourceLocation, ModelState); }
+
+**三参数的 `bake` 在 NeoForge 那边是从它自己的扩展接口 `IModelBakerExtension` 继承来的**,而 OptiFine 那份
+`ModelBaker` 继承的是 **Forge** 的对应物 `IForgeModelBaker`(我们的空 shim)。两边各自"借"了不同扩展接口的
+方法,而我在换装时 `input.interfaces = patched.interfaces` —— **把运行时的超接口列表整个替换掉了**,
+于是运行时自己的调用方(`MultiVariant.bake` 是按 `IModelBakerExtension` 编译的)再也找不到那条路:
+
+    NoSuchMethodError: 'BakedModel ModelBaker.bake(ResourceLocation, ModelState, Function)'
+
+修法与前面几条同源——**取并集而不是替换**(只在接口上做:给类加超接口会要求它实现那些抽象方法,
+而换装后的类体未必有):
+
+    if((patched.access & ACC_INTERFACE) != 0) {
+        merged = patched.interfaces + input.interfaces 中缺的那些
+        input.interfaces = merged
+    }
+
+结果:**`Caught error: 0`** —— 资源包不再被整批移除,模型烘焙这一关过了(换装数 271 → 274)。
+
+紧接着冒出的是新的一层,而且这次是**真崩溃**(上一轮那次没有崩溃报告):
+
+    java.lang.IllegalStateException: Already building.
+      at fml_earlydisplay/SimpleBufferBuilder.begin
+      at ...DisplayWindow.paintFramebuffer
+      at neoforge/NeoForgeLoadingOverlay.render(NeoForgeLoadingOverlay.java:84)
+      Description: Rendering overlay
+
+原因方向很清楚:**OptiFine 换装了 `LoadingOverlay`**(日志里有 `Replaced ...LoadingOverlay ... (25 fields,
+12 methods)`),它的加载画面代码与 NeoForge 的 early-display 叠在一起,`SimpleBufferBuilder` 被重入。
+这也解释了为什么上一轮"跑得久却没崩":那时 OptiFine 的加载画面补丁因接口解析失败没有真正执行。
+**下一轮(最后一轮)**:从 `NeoForgeLoadingOverlay` 与 OptiFine 那份 `LoadingOverlay` 的关系入手,
+先确认是不是同一帧里两条渲染路径都进了 early display;并把这一轮的结论、当前三条线的状态与剩余
+范围的实话写清楚。
