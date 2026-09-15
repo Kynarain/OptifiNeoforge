@@ -1291,3 +1291,29 @@ OptifineJar    OptifineJarFixer  OptifinePipeline
    到底需不需要(1.21.x 的载荷已是官方名 ✓,未必需要 SRG 改名那一套)。
 
 先走 1 把 1.21.4 重新跑通拿回基线,再决定移植哪些工具到 1.21.x。
+
+**路线 1 做完:1.21.4 拿回基线(同一晚)**
+
+给 rig 加了 `-NoNameBridge`(家族那一步本来就有 `-NoFamilyGuard`,打桩那一步已有 `-StubMissing $false`),
+`build-line.ps1` 的 `1214` 条目就显式声明"这一行用自己那套工具":`StubMissing = $false`、
+`NoFamilyGuard = $true`、`NoNameBridge = $true` —— 于是不再调用那条分支没有的三个工具 ✓。
+(过程中因为重复键 `StubMissing` 报了一次 PowerShell 的 `DuplicateKeyInHashLiteral`,是编辑失误,已修。)
+
+1.21.4 实测(与当初那条基线一致,而且更干净):
+
+| 指标 | 1.21.4(本次) |
+|---|---|
+| `VERDICT` | **`STARTED (40s, marker: Sound engine started)`** |
+| `Setting user`(标题界面) | ✓ |
+| `[Shaders] OpenGL` | ✓ |
+| `Connected textures` | 3 行 ✓ |
+| `Pre-stitch` | 14 行 ✓ |
+| `[OptiFine]` 日志 | **232 行** ✓ |
+| `Replaced net` | **0**(这一行本来就是让 OptiFine 自己的 transformer 打补丁)✓ |
+| **stderr** | **0 字节** ✓ |
+| 新 crash report / 截图 | **无** ✓ / 1.15 MB ✓ |
+
+**到此前五行已实机验证**:1.20.1、1.20.2、1.20.4、1.20.6(1.20.x 分支)+ 1.21.4(1.21.x 分支)。
+下一步是 1.21.x 分支上的其余行(1.21 / 1.21.1 / 1.21.3 / 1.21.6–1.21.11):它们的 OptiFine jar 和
+对应的 NeoForge 都要按 `fetch-optifine.ps1` 的办法去取/安装,然后复用 `1214` 这套参数(那条分支的工具集、
+ModLauncher 11、官方名载荷)。
