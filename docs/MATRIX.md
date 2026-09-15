@@ -1113,3 +1113,31 @@ private static JarMetadata lambda$1(SecureJar jar) {
 
 用 ASM 从头写这段(约 15 条指令),不再触碰既有栈;`COMPUTE_FRAMES` 在这种小型直线代码上不会遇到
 公共父类判定问题。这样 1.20.2 这一处就能过,且与"定点插入"的教训一致:**该整段重写时整段重写,该插入时才插入**。
+
+**修好了:SecureJarHandler 那一处已通过(同一晚,顺手纠正了一个一直搞错的操作数顺序)**
+
+整段重写之后错误没变,于是去看 verifier 打出来的**帧**,才发现我一直把 `invokespecial` 的操作数顺序弄反了:
+
+```
+bci: @17
+stack: { uninitialized 0, uninitialized 0, 'java/lang/String', null,
+         uninitialized 13, 'java/util/Set', uninitialized 13 }
+Reason: Type uninitialized 13 (current frame, stack[6]) is not assignable to 'java/util/Set'
+```
+
+`invokespecial` 是**参数在栈顶**、objectref 在其下方(不是"接收者在最上面"),所以我那个
+`new; dup_x1` 恰好把 helper 放到了顶上 —— 报错说的就是这个。既然集合已经在栈上,最省事的做法是
+**用一个静态工厂**代替构造器:`SetSupplier.of(Set)` 返回 `Supplier`,于是整段就变成一条
+`invokestatic (Ljava/util/Set;)Ljava/util/function/Supplier;`,不需要手工摆栈 ✓。
+
+结果:**`SimpleJarMetadata` 那条错误彻底消失**(stdout 里 0 处)✓,1.20.2 已经跨过 OptiFine 的
+transformation service 加载,失败点换成了下一个环境差异:
+
+```
+java.lang.NoClassDefFoundError: com/mojang/authlib/minecraft/TelemetryPropertyContainer
+```
+
+**下一步(1.20.2)**:又是"库代际差异",这次是 **authlib** —— OptiFine 的 1.20.2 preview 引用了一个
+20.2.88 profile 里那份 authlib 没有的类。候选做法:①在启动脚本构造的 classpath 里把**更新版 authlib**
+放在前面(启动脚本本来就在拼 classpath ✓,这是最干净的一条);②像 Forge API 那样为 `com.mojang.authlib.*`
+做壳 —— 但要小心与真实 authlib 模块的包冲突,**不推荐先做这条**。

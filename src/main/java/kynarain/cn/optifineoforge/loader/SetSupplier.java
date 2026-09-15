@@ -35,6 +35,23 @@ public final class SetSupplier implements Supplier<Set<String>> {
 		this.values = values;
 	}
 
+	/**
+	 * The same thing as the constructor, as a single call the repaired bytecode can make.
+	 *
+	 * <p>A factory rather than a constructor on purpose: at the point of repair the set is already on the
+	 * operand stack, and wrapping it with {@code new/dup} needs the receiver below an argument that the
+	 * JVM wants on top - operand order was got wrong twice by reasoning about it, and the frame dump
+	 * settled it:
+	 *
+	 * <pre>Reason: Type uninitialized 13 (current frame, stack[6]) is not assignable to 'java/util/Set'</pre>
+	 *
+	 * <p>One {@code invokestatic} turns the set into the supplier and no stack shape has to be arranged
+	 * by hand.</p>
+	 */
+	public static Supplier<Set<String>> of(Set<String> values) {
+		return new SetSupplier(values);
+	}
+
 	@Override
 	public Set<String> get() {
 		return values;

@@ -82,28 +82,34 @@ public final class OptifineJarFixer {
 	}
 
 	/**
-	 * Points the {@code SimpleJarMetadata} construction at the newer signature, by wrapping the set in
-	 * the supplier that signature wants.
+	 * Replaces the body of the lambda that builds the metadata, rather than inserting into it.
 	 *
-	 * <p>Where the wrapper goes was read off the bytecode after a first attempt got it wrong. The call
-	 * site, from the original class:</p>
+	 * <p>The wrapper has to turn the set {@code getPackages()} returns into the {@code Supplier} the
+	 * newer signature wants, and inserting that in the middle of the existing sequence did not verify,
+	 * even though the emitted instructions were exactly the intended ones - measured by disassembling
+	 * the patched class:</p>
 	 *
-	 * <pre>new SimpleJarMetadata        // [metadata]
-	 * dup                          // [metadata, metadata]
-	 * ldc "net.optifine"           // [metadata, metadata, name]
-	 * aconst_null                  // [metadata, metadata, name, version]
-	 * aload_0; SecureJar.getPackages()   // [.., name, version, set]
-	 * new ArrayList; dup; &lt;init&gt;  // [.., name, version, set, list]
-	 * invokespecial SimpleJarMetadata.&lt;init&gt;(String, String, Set, List)V</pre>
+	 * <pre> 8: SecureJar.getPackages()Ljava/util/Set;
+	 * 13: new SetSupplier; 16: dup_x1; 17: &lt;init&gt;(Set)V
+	 * 20: new ArrayList ...
+	 * 27: SimpleJarMetadata.&lt;init&gt;(String, String, Supplier, List)V</pre>
 	 *
-	 * <p>So immediately before the call the set is not on top - the list is - and duplicating anything
-	 * there produced {@code VerifyError: Bad type on operand stack}. The set is wrapped where it is
-	 * produced instead, right after {@code getPackages()}, which leaves
-	 * {@code [.., name, version, supplier]} for the rest of the sequence and the same call with a new
-	 * descriptor.</p>
+	 * <p>and yet {@code VerifyError: Type uninitialized 13 ... is not assignable to 'java/util/Set'}. The
+	 * instructions are right, so the frames are the problem: the writer recomputes them, and for
+	 * {@code SetSupplier} - which the platform class loader cannot see - the common-superclass fallback
+	 * answers {@code java/lang/Object}, so the recomputed frame and the instructions disagree and the
+	 * verifier believes the frame.</p>
 	 *
-	 * <p>Inserted rather than rewritten, which is the lesson from this class's other repair: replacing a
-	 * body deletes side effects and the launch then fails somewhere unrelated and much later.</p>
+	 * <p>So the method is written whole. This lambda is self-contained and has no side effects to lose,
+	 * which is what makes replacement safe here and unsafe for {@code toFile} (where it deleted a static
+	 * field assignment):</p>
+	 *
+	 * <pre>private static JarMetadata lambda$1(SecureJar jar) {
+	 *     return new SimpleJarMetadata("net.optifine", null, new SetSupplier(jar.getPackages()), new ArrayList&lt;&gt;());
+	 * }</pre>
+	 *
+	 * <p>The rewrite happens only for a method that still calls the old signature, so a line whose
+	 * SecureJarHandler never had it is left exactly as it is.</p>
 	 */
 	private static byte[] fixJarMetadataCall(byte[] classBytes) {
 		ClassNode node = new ClassNode();
@@ -112,29 +118,12 @@ public final class OptifineJarFixer {
 
 		boolean patched = false;
 		for(MethodNode method : node.methods) {
-			// One pass to find the call this shape has, and the instruction that produces its set.
-			MethodInsnNode metadataCall = null;
-			MethodInsnNode setProducer = null;
-			for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
-				if(insn instanceof MethodInsnNode call){
-					if(METADATA_OWNER.equals(call.owner) && "<init>".equals(call.name) && METADATA_OLD_CTOR.equals(call.desc)) {
-						metadataCall = call;
-					} else if(METADATA_SET_PRODUCER_OWNER.equals(call.owner)
-							&& METADATA_SET_PRODUCER_NAME.equals(call.name)) {
-						setProducer = call;
-					}
-				}
-			}
-			if(metadataCall == null || setProducer == null){
+			if(!containsOldMetadataCall(method)) {
 				continue;
 			}
-			InsnList wrapper = new InsnList();
-			wrapper.add(new TypeInsnNode(Opcodes.NEW, SET_SUPPLIER));
-			wrapper.add(new InsnNode(Opcodes.DUP_X1));
-			wrapper.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, SET_SUPPLIER, "<init>",
-					"(Ljava/util/Set;)V", false));
-			method.instructions.insert(setProducer, wrapper);
-			metadataCall.desc = METADATA_NEW_CTOR;
+			method.instructions = metadataConstruction();
+			method.tryCatchBlocks = new java.util.ArrayList<>();
+			method.localVariables = null;
 			patched = true;
 		}
 		if(!patched) {
@@ -143,6 +132,44 @@ public final class OptifineJarFixer {
 		ClassWriter writer = new SafeClassWriter(reader, ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
 		node.accept(writer);
 		return writer.toByteArray();
+	}
+
+	/** Whether this method still builds the metadata with the set itself as the third argument. */
+	private static boolean containsOldMetadataCall(MethodNode method) {
+		for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if(insn instanceof MethodInsnNode call && METADATA_OWNER.equals(call.owner)
+					&& "<init>".equals(call.name) && METADATA_OLD_CTOR.equals(call.desc)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * <pre>
+	 * new SimpleJarMetadata("net.optifine", null, new SetSupplier(jar.getPackages()), new ArrayList&lt;&gt;())
+	 * </pre>
+	 */
+	private static InsnList metadataConstruction() {
+		InsnList list = new InsnList();
+		list.add(new TypeInsnNode(Opcodes.NEW, METADATA_OWNER));
+		list.add(new InsnNode(Opcodes.DUP));
+		list.add(new LdcInsnNode("net.optifine"));
+		list.add(new InsnNode(Opcodes.ACONST_NULL));
+		list.add(new VarInsnNode(Opcodes.ALOAD, 0));
+		list.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, METADATA_SET_PRODUCER_OWNER,
+				METADATA_SET_PRODUCER_NAME, "()Ljava/util/Set;", true));
+		// A single call, not new/dup: the set is already on the stack and the JVM wants an argument on
+		// top of an invokespecial, so arranging the wrapper by hand got the shape wrong twice. Measured
+		// with the frame dump: "Type uninitialized 13 (stack[6]) is not assignable to 'java/util/Set'".
+		list.add(new MethodInsnNode(Opcodes.INVOKESTATIC, SET_SUPPLIER, "of",
+				"(Ljava/util/Set;)Ljava/util/function/Supplier;", false));
+		list.add(new TypeInsnNode(Opcodes.NEW, "java/util/ArrayList"));
+		list.add(new InsnNode(Opcodes.DUP));
+		list.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/util/ArrayList", "<init>", "()V", false));
+		list.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, METADATA_OWNER, "<init>", METADATA_NEW_CTOR, false));
+		list.add(new InsnNode(Opcodes.ARETURN));
+		return list;
 	}
 
 	/**
