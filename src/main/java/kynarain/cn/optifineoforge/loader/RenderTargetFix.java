@@ -17,9 +17,6 @@ import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
-import cpw.mods.modlauncher.api.ITransformer;
-import cpw.mods.modlauncher.api.ITransformerVotingContext;
-import cpw.mods.modlauncher.api.TransformerVoteResult;
 
 /**
  * Puts back the constructor OptiFine's replacement of a class drops.
@@ -40,7 +37,7 @@ import cpw.mods.modlauncher.api.TransformerVoteResult;
  * is there, rather than to rewrite the caller: the caller is NeoForge's own code and there may be
  * more than one of them.</p>
  */
-public final class RenderTargetFix implements ITransformer<ClassNode> {
+public final class RenderTargetFix implements NodeTransformer {
 	/** The class OptiFine replaces, and the constructor NeoForge's callers expect. */
 	static final String RENDER_TARGET = "com.mojang.blaze3d.pipeline.RenderTarget";
 	private static final String ONE_ARG = "(Z)V";
@@ -49,7 +46,7 @@ public final class RenderTargetFix implements ITransformer<ClassNode> {
 	private static final String STENCIL_FIELD = "useStencil";
 
 	@Override
-	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
+	public ClassNode transform(ClassNode input) {
 		boolean addedField = addStencilField(input);
 		if(hasConstructor(input, TWO_ARG)) {
 			return input;
@@ -99,14 +96,10 @@ public final class RenderTargetFix implements ITransformer<ClassNode> {
 		return false;
 	}
 
-	@Override
-	public TransformerVoteResult castVote(ITransformerVotingContext context) {
-		return TransformerVoteResult.YES;
-	}
 
 	@Override
-	public Set<Target> targets() {
-		return Set.of(Target.targetClass(RENDER_TARGET));
+	public Set<String> targetClasses() {
+		return Set.of(RENDER_TARGET);
 	}
 
 }

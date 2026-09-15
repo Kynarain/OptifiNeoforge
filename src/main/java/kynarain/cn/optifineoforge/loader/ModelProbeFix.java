@@ -18,9 +18,6 @@ import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
-import cpw.mods.modlauncher.api.ITransformer;
-import cpw.mods.modlauncher.api.ITransformerVotingContext;
-import cpw.mods.modlauncher.api.TransformerVoteResult;
 
 /**
  * Marks the start of the model bake and of the render dispatcher's reload, so their order is visible.
@@ -31,7 +28,7 @@ import cpw.mods.modlauncher.api.TransformerVoteResult;
  * model. When a reloaded dispatcher gets a null model, the answer is one of two things, and the log
  * now tells them apart: apply had not run yet, or apply ran and produced nothing.</p>
  */
-public final class ModelProbeFix implements ITransformer<ClassNode> {
+public final class ModelProbeFix implements NodeTransformer {
 	/** The class that bakes, and the method that fills in the models. */
 	static final String MODEL_MANAGER = "net.minecraft.client.resources.model.ModelManager";
 	private static final String APPLY = "apply";
@@ -49,7 +46,7 @@ public final class ModelProbeFix implements ITransformer<ClassNode> {
 			org.apache.logging.log4j.LogManager.getLogger("OptifiNeoforge");
 
 	@Override
-	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
+	public ClassNode transform(ClassNode input) {
 		// ModLauncher matches targets by dotted name but hands over a node whose name is internal.
 		String name = input.name.replace('/', '.');
 		int probed = 0;
@@ -175,15 +172,11 @@ public final class ModelProbeFix implements ITransformer<ClassNode> {
 		return list;
 	}
 
-	@Override
-	public TransformerVoteResult castVote(ITransformerVotingContext context) {
-		return TransformerVoteResult.YES;
-	}
 
 	@Override
-	public Set<Target> targets() {
-		return Set.of(Target.targetClass(MODEL_MANAGER), Target.targetClass(BLOCK_RENDER_DISPATCHER),
-				Target.targetClass(MODEL_BAKERY), Target.targetClass(UNBAKED_MODEL), Target.targetClass(BLOCK_MODEL));
+	public Set<String> targetClasses() {
+		return Set.of(MODEL_MANAGER, BLOCK_RENDER_DISPATCHER,
+				MODEL_BAKERY, UNBAKED_MODEL, BLOCK_MODEL);
 	}
 
 }

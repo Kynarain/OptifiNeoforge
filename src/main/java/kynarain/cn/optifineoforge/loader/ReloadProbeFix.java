@@ -18,9 +18,6 @@ import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
-import cpw.mods.modlauncher.api.ITransformer;
-import cpw.mods.modlauncher.api.ITransformerVotingContext;
-import cpw.mods.modlauncher.api.TransformerVoteResult;
 
 /**
  * Hands the reload listener list to {@link ReloadProbe} as the reload is created.
@@ -35,7 +32,7 @@ import cpw.mods.modlauncher.api.TransformerVoteResult;
  * {@code updateListenersFrom} was supposed to have replaced, and seeing the real order is the only
  * way to tell which of the two won.</p>
  */
-public final class ReloadProbeFix implements ITransformer<ClassNode> {
+public final class ReloadProbeFix implements NodeTransformer {
 	/** The class whose reload the probe watches. */
 	static final String RELOADABLE = "net/minecraft/server/packs/resources/ReloadableResourceManager";
 	/** The method that turns the list into a reload, and the field it reads to get it. */
@@ -47,7 +44,7 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 	private static final String PROBE = "kynarain/cn/optifineoforge/loader/ReloadProbe";
 
 	@Override
-	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
+	public ClassNode transform(ClassNode input) {
 		for(MethodNode method : input.methods) {
 			if(CREATE_RELOAD.equals(method.name)) {
 				probeCreateReload(input, method);
@@ -105,14 +102,10 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 		return call;
 	}
 
-	@Override
-	public TransformerVoteResult castVote(ITransformerVotingContext context) {
-		return TransformerVoteResult.YES;
-	}
 
 	@Override
-	public Set<Target> targets() {
-		return Set.of(Target.targetClass(RELOADABLE));
+	public Set<String> targetClasses() {
+		return Set.of(RELOADABLE);
 	}
 
 }

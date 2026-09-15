@@ -29,9 +29,6 @@ import org.objectweb.asm.tree.MethodNode;
 
 import kynarain.cn.optifineoforge.optifine.MemberRestorePlan;
 
-import cpw.mods.modlauncher.api.ITransformer;
-import cpw.mods.modlauncher.api.ITransformerVotingContext;
-import cpw.mods.modlauncher.api.TransformerVoteResult;
 
 /**
  * Puts back, in bulk and with their original bodies, the members OptiFine's replacements drop.
@@ -51,7 +48,7 @@ import cpw.mods.modlauncher.api.TransformerVoteResult;
  * original body is the same repair without the guesswork; where a copied body names something
  * OptiFine renamed, that shows up as a single missing member and can be dealt with on its own.</p>
  */
-public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
+public final class MemberRestoreTransformer implements NodeTransformer {
 	private static final Logger LOGGER = LogManager.getLogger("OptifiNeoforge");
 	/** The list of classes to act on, as written by the offline generator. */
 	private static final String PLAN_RESOURCE = "/optifineoforge/member-restores.txt";
@@ -90,7 +87,7 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 	}
 
 	@Override
-	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
+	public ClassNode transform(ClassNode input) {
 		if(!targets.contains(input.name)) {
 			return input;
 		}
@@ -221,16 +218,12 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 			ReloadableResourceManagerFix.RESOURCE_MANAGER + " getListeners ()Ljava/util/List;",
 			ReloadableResourceManagerFix.RESOURCE_MANAGER + " updateListenersFrom (Lnet/neoforged/neoforge/event/SortedReloadListenerEvent;)V");
 
-	@Override
-	public TransformerVoteResult castVote(ITransformerVotingContext context) {
-		return TransformerVoteResult.YES;
-	}
 
 	@Override
-	public Set<Target> targets() {
-		Set<Target> result = new LinkedHashSet<>();
+	public Set<String> targetClasses() {
+		Set<String> result = new LinkedHashSet<>();
 		for(String name : targets) {
-			result.add(Target.targetClass(name));
+			result.add(name);
 		}
 		return result;
 	}

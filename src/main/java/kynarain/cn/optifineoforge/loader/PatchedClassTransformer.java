@@ -25,9 +25,6 @@ import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.MethodNode;
 
 import cpw.mods.modlauncher.api.IModuleLayerManager;
-import cpw.mods.modlauncher.api.ITransformer;
-import cpw.mods.modlauncher.api.ITransformerVotingContext;
-import cpw.mods.modlauncher.api.TransformerVoteResult;
 
 /**
  * Puts OptiFine's own compilation of a game class in place of NeoForge's.
@@ -59,7 +56,7 @@ import cpw.mods.modlauncher.api.TransformerVoteResult;
  * compilation lacks is put back by {@link MemberRestoreTransformer}, which is why this transformer has
  * to run first.</p>
  */
-public final class PatchedClassTransformer implements ITransformer<ClassNode> {
+public final class PatchedClassTransformer implements NodeTransformer {
 	private static final Logger LOGGER = LogManager.getLogger("OptifiNeoforge");
 	/** Where the finished classes are stored, so that no game package is claimed by this module. */
 	static final String PREFIX = "/optifineoforge/patched/";
@@ -156,10 +153,10 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	/** The three access bits that say who may use a class; everything else in the word is not visibility. */
 	private static final int VISIBILITY = Opcodes.ACC_PUBLIC | Opcodes.ACC_PRIVATE | Opcodes.ACC_PROTECTED;
 
-	private static final Set<Target> TARGETS = loadTargets();
+	private static final Set<String> TARGETS = loadTargets();
 
-	private static Set<Target> loadTargets() {
-		Set<Target> targets = new HashSet<>();
+	private static Set<String> loadTargets() {
+		Set<String> targets = new HashSet<>();
 		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(INDEX)) {
 			if(stream == null) {
 				// Lines where OptiFine already speaks the runtime's names need none of this, and the
@@ -173,12 +170,12 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 					continue;
 				}
 				// Accept both the bare class name and the entry path: the index first shipped as entry
-				// paths, and Target.targetClass then received 'Foo.class' as a class name, so no target
+				// paths, and the target factory then received 'Foo.class' as a class name, so no target
 				// ever matched and the transformer was silently never called.
 				if(name.endsWith(".class")) {
 					name = name.substring(0, name.length() - ".class".length());
 				}
-				targets.add(Target.targetClass(name.replace('/', '.')));
+				targets.add(name.replace('/', '.'));
 			}
 		} catch(IOException e) {
 			LOGGER.warn("could not read " + INDEX + ": " + e);
@@ -188,7 +185,7 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	}
 
 	@Override
-	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
+	public ClassNode transform(ClassNode input) {
 		logModulesOnce();
 		// Stubs first and unconditionally, because some belong to runtime classes that are never swapped -
 		// the case that used to fall through the gap. OptiFine's GameRenderer calls
@@ -420,13 +417,9 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		}
 	}
 
-	@Override
-	public TransformerVoteResult castVote(ITransformerVotingContext context) {
-		return TransformerVoteResult.YES;
-	}
 
 	@Override
-	public Set<Target> targets() {
+	public Set<String> targetClasses() {
 		return TARGETS;
 	}
 }

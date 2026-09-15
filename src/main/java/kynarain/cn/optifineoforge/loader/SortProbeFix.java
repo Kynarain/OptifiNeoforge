@@ -17,9 +17,6 @@ import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
-import cpw.mods.modlauncher.api.ITransformer;
-import cpw.mods.modlauncher.api.ITransformerVotingContext;
-import cpw.mods.modlauncher.api.TransformerVoteResult;
 
 /**
  * Reports what {@code ReloadListenerSort.sort} is handed: the anchor and the registry size.
@@ -32,7 +29,7 @@ import cpw.mods.modlauncher.api.TransformerVoteResult;
  *
  * <p>Diagnostic only, silent unless {@code -Doptifineoforge.debug.reload=true} is set.</p>
  */
-public final class SortProbeFix implements ITransformer<ClassNode> {
+public final class SortProbeFix implements NodeTransformer {
 	/** NeoForge's sorter, and the method whose arguments are worth printing. */
 	static final String SORT = "net.neoforged.neoforge.resource.ReloadListenerSort";
 	private static final String METHOD = "sort";
@@ -40,7 +37,7 @@ public final class SortProbeFix implements ITransformer<ClassNode> {
 	private static final String PROBE = "kynarain/cn/optifineoforge/loader/ReloadProbe";
 
 	@Override
-	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
+	public ClassNode transform(ClassNode input) {
 		if(!SORT.equals(input.name.replace('/', '.'))) {
 			return input;
 		}
@@ -94,14 +91,10 @@ public final class SortProbeFix implements ITransformer<ClassNode> {
 		return input;
 	}
 
-	@Override
-	public TransformerVoteResult castVote(ITransformerVotingContext context) {
-		return TransformerVoteResult.YES;
-	}
 
 	@Override
-	public Set<Target> targets() {
-		return Set.of(Target.targetClass(SORT));
+	public Set<String> targetClasses() {
+		return Set.of(SORT);
 	}
 
 }

@@ -11,7 +11,6 @@ import java.util.Set;
 import cpw.mods.modlauncher.api.IEnvironment;
 import cpw.mods.modlauncher.api.IModuleLayerManager;
 import cpw.mods.modlauncher.api.ITransformationService;
-import cpw.mods.modlauncher.api.ITransformer;
 import cpw.mods.modlauncher.api.IncompatibleEnvironmentException;
 
 import org.apache.logging.log4j.LogManager;
@@ -69,13 +68,17 @@ public class OptifiNeoforgeTransformationService implements ITransformationServi
 	}
 
 	@Override
-	public List<ITransformer> transformers() {
+	public List transformers() {
 		LOGGER.info("OptifiNeoforgeTransformationService.transformers");
 		// PatchedClassTransformer is first on purpose: it puts OptiFine's compilation of a game class in
 		// place, and MemberRestoreTransformer then adds back the members NeoForge's own version has.
-		return List.of(new PatchedClassTransformer(), new RenderTargetFix(), new ReloadableResourceManagerFix(),
-				new TagHelperFix(),
+		//
+		// The raw List is deliberate and measured: it overrides List<ITransformer> under ModLauncher 10
+		// and List<? extends ITransformer<?>> under 11, and it was compiled against both jars. The
+		// bodies below are loader-neutral; ModLauncherAdapter is the line's own transformer flavour.
+		return ModLauncherAdapter.wrap(List.of(new PatchedClassTransformer(), new RenderTargetFix(),
+				new ReloadableResourceManagerFix(), new TagHelperFix(),
 				new PackRootsFix(), new ReloadProbeFix(), new ModelProbeFix(), new NativeImageProbeFix(),
-				new SortProbeFix(), new MemberRestoreTransformer());
+				new SortProbeFix(), new MemberRestoreTransformer()));
 	}
 }

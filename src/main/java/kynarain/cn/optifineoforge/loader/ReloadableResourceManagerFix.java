@@ -16,9 +16,6 @@ import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
-import cpw.mods.modlauncher.api.ITransformer;
-import cpw.mods.modlauncher.api.ITransformerVotingContext;
-import cpw.mods.modlauncher.api.TransformerVoteResult;
 
 /**
  * Puts back the listener accessor OptiFine's replacement of the resource manager drops.
@@ -34,7 +31,7 @@ import cpw.mods.modlauncher.api.TransformerVoteResult;
  * <p>Here the restoration is exact rather than approximate: the field is still there under the same
  * name and type, so the accessor is written as a plain getter for it.</p>
  */
-public final class ReloadableResourceManagerFix implements ITransformer<ClassNode> {
+public final class ReloadableResourceManagerFix implements NodeTransformer {
 	static final String RESOURCE_MANAGER = "net/minecraft/server/packs/resources/ReloadableResourceManager";
 	private static final String GET_LISTENERS = "getListeners";
 	private static final String GET_LISTENERS_DESC = "()Ljava/util/List;";
@@ -51,7 +48,7 @@ public final class ReloadableResourceManagerFix implements ITransformer<ClassNod
 	}
 
 	@Override
-	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
+	public ClassNode transform(ClassNode input) {
 		if(!hasField(input, LISTENERS_FIELD)) {
 			return input;
 		}
@@ -132,14 +129,10 @@ public final class ReloadableResourceManagerFix implements ITransformer<ClassNod
 		return false;
 	}
 
-	@Override
-	public TransformerVoteResult castVote(ITransformerVotingContext context) {
-		return TransformerVoteResult.YES;
-	}
 
 	@Override
-	public Set<Target> targets() {
-		return Set.of(Target.targetClass(RESOURCE_MANAGER));
+	public Set<String> targetClasses() {
+		return Set.of(RESOURCE_MANAGER);
 	}
 
 }

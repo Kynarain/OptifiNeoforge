@@ -14,9 +14,6 @@ import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 
-import cpw.mods.modlauncher.api.ITransformer;
-import cpw.mods.modlauncher.api.ITransformerVotingContext;
-import cpw.mods.modlauncher.api.TransformerVoteResult;
 
 /**
  * Marks {@code NativeImage.close} and {@code NativeImage.upload}, with a short stack for the close.
@@ -27,7 +24,7 @@ import cpw.mods.modlauncher.api.TransformerVoteResult;
  *
  * <p>Diagnostic only, and silent unless {@code -Doptifineoforge.debug.reload=true} is set.</p>
  */
-public final class NativeImageProbeFix implements ITransformer<ClassNode> {
+public final class NativeImageProbeFix implements NodeTransformer {
 	/** The class OptiFine replaces, and the two methods worth watching. */
 	static final String NATIVE_IMAGE = "com.mojang.blaze3d.platform.NativeImage";
 	private static final String CLOSE = "close";
@@ -35,7 +32,7 @@ public final class NativeImageProbeFix implements ITransformer<ClassNode> {
 	private static final String PROBE = "kynarain/cn/optifineoforge/loader/ReloadProbe";
 
 	@Override
-	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
+	public ClassNode transform(ClassNode input) {
 		if(!NATIVE_IMAGE.equals(input.name.replace('/', '.'))) {
 			return input;
 		}
@@ -56,14 +53,10 @@ public final class NativeImageProbeFix implements ITransformer<ClassNode> {
 		return list;
 	}
 
-	@Override
-	public TransformerVoteResult castVote(ITransformerVotingContext context) {
-		return TransformerVoteResult.YES;
-	}
 
 	@Override
-	public Set<Target> targets() {
-		return Set.of(Target.targetClass(NATIVE_IMAGE));
+	public Set<String> targetClasses() {
+		return Set.of(NATIVE_IMAGE);
 	}
 
 }

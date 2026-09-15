@@ -13,9 +13,6 @@ import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 
-import cpw.mods.modlauncher.api.ITransformer;
-import cpw.mods.modlauncher.api.ITransformerVotingContext;
-import cpw.mods.modlauncher.api.TransformerVoteResult;
 
 /**
  * Points OptiFine's pack scanning at {@link PackRoots} instead of {@code Path.toFile}.
@@ -28,7 +25,7 @@ import cpw.mods.modlauncher.api.TransformerVoteResult;
  * it is. A scan of OptiFine's own classes finds only two that call {@code Path.toFile} at all: this
  * one, and {@code OptiFineTransformationService}, whose call the repack already rewrites.</p>
  */
-public final class PackRootsFix implements ITransformer<ClassNode> {
+public final class PackRootsFix implements NodeTransformer {
 	/** The class whose pack scanning has to survive a union filesystem. */
 	static final String RES_UTILS = "net.optifine.util.ResUtils";
 	/** The call being replaced, and the one that replaces it. */
@@ -39,7 +36,7 @@ public final class PackRootsFix implements ITransformer<ClassNode> {
 	private static final String PACK_ROOTS_DESC = "(Ljava/nio/file/Path;)Ljava/io/File;";
 
 	@Override
-	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
+	public ClassNode transform(ClassNode input) {
 		int replaced = 0;
 		for(MethodNode method : input.methods) {
 			for(AbstractInsnNode instruction : method.instructions) {
@@ -58,14 +55,10 @@ public final class PackRootsFix implements ITransformer<ClassNode> {
 				&& TO_FILE.equals(call.name) && TO_FILE_DESC.equals(call.desc);
 	}
 
-	@Override
-	public TransformerVoteResult castVote(ITransformerVotingContext context) {
-		return TransformerVoteResult.YES;
-	}
 
 	@Override
-	public Set<Target> targets() {
-		return Set.of(Target.targetClass(RES_UTILS));
+	public Set<String> targetClasses() {
+		return Set.of(RES_UTILS);
 	}
 
 }

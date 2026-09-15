@@ -14,9 +14,6 @@ import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
-import cpw.mods.modlauncher.api.ITransformer;
-import cpw.mods.modlauncher.api.ITransformerVotingContext;
-import cpw.mods.modlauncher.api.TransformerVoteResult;
 
 /**
  * Puts back the Forge-flavoured tag helper OptiFine calls and NeoForge does not have.
@@ -48,7 +45,7 @@ import cpw.mods.modlauncher.api.TransformerVoteResult;
  * does have, rather than to rewrite OptiFine's call sites: there may be more than one of them, and
  * the reflective lookup only needs the method to exist.</p>
  */
-public final class TagHelperFix implements ITransformer<ClassNode> {
+public final class TagHelperFix implements NodeTransformer {
 	/** The class OptiFine reflects into; the two tags it wants live here. */
 	static final String ITEM_TAGS = "net.minecraft.tags.ItemTags";
 	/** The Forge helper OptiFine looks for, and the NeoForge helper it delegates to. */
@@ -59,7 +56,7 @@ public final class TagHelperFix implements ITransformer<ClassNode> {
 	private static final String CONVENTION_TAGS = "kynarain/cn/optifineoforge/loader/ConventionTags";
 
 	@Override
-	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
+	public ClassNode transform(ClassNode input) {
 		if(hasMethod(input, FORGE_CREATE) || !hasMethod(input, NEAREST_CREATE)) {
 			return input;
 		}
@@ -91,14 +88,10 @@ public final class TagHelperFix implements ITransformer<ClassNode> {
 		return false;
 	}
 
-	@Override
-	public TransformerVoteResult castVote(ITransformerVotingContext context) {
-		return TransformerVoteResult.YES;
-	}
 
 	@Override
-	public Set<Target> targets() {
-		return Set.of(Target.targetClass(ITEM_TAGS));
+	public Set<String> targetClasses() {
+		return Set.of(ITEM_TAGS);
 	}
 
 }

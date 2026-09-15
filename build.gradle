@@ -33,9 +33,30 @@ base {
     archivesName = project.archives_base_name
 }
 
-// Every version on this line runs on Java 21; the value lives in gradle.properties so all three
-// lines state their own requirement in the same place.
+// The Java requirement is per line - 17 for 1.20.1 to 1.20.4, 21 for 1.20.6 - and lives in
+// gradle.properties so all three branches state their own requirement in the same place.
 def targetJavaVersion = Integer.parseInt(project.target_java_version.toString())
+
+// The ModLauncher generation decides which transformer adapter is compiled. This line serves both
+// generations - 1.20.1 to 1.20.4 run ModLauncher 10, 1.20.6 runs 11 - and their transformer
+// interfaces differ in a way no single source file can bridge: 10 requires a parameterized
+// ITransformer and has no getTargetType(), 11 makes getTargetType() abstract. Both adapters are
+// therefore in the tree under the same class name, and exactly one source root is compiled. Same
+// rule as -Pneoforge: a target that was not verified has to be stated rather than guessed.
+def defaultModLauncher = project.modlauncher_generation.toString()
+def targetModLauncher = project.findProperty('modlauncher')?.toString()
+if(targetModLauncher == null){
+    if(targetMc != defaultMc){
+        throw new GradleException(
+            "no ModLauncher generation recorded for Minecraft ${targetMc}: pass -Pmodlauncher=10 or 11 " +
+            "(1.20.1 to 1.20.4 are 10, 1.20.6 is 11), and record the line in docs/MATRIX.md once verified")
+    }
+    targetModLauncher = defaultModLauncher
+}
+if(!(targetModLauncher in ['10', '11'])){
+    throw new GradleException("unknown ModLauncher generation '${targetModLauncher}': expected 10 or 11")
+}
+sourceSets.main.java.srcDir "src/ml${targetModLauncher}/java"
 
 neoForge {
     version = targetNeoForge
