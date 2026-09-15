@@ -997,3 +997,23 @@ NoSuchMethodError: 'void cpw.mods.jarhandling.impl.SimpleJarMetadata.<init>(java
 securejarhandler 是不是 2.1.10 —— 是的话这一行很可能直接可跑(与 1.20.4 同一类路线);②若所有 20.2.x 都是
 2.1.24,就用现成的 ASM 工具把 OptiFine 那个 `invokespecial` 改成新签名(把 `Set` 包成 `Supplier`,`() -> set`
 这种形态在字节码里很好写),这与 `OptifineJarFixer` 修 `toFile` 是同一类处理。
+
+**路子①走不通,已实测;②的具体做法也已明确(同一晚)**
+
+maven 上 `net.neoforged:neoforge` 的 20.2 系列只有 **7 个构建(20.2.86 – 20.2.93)**,逐个装起来查
+profile 里的 securejarhandler:**全是 2.1.24**(20.2.86 / 20.2.88 / 20.2.93 实测;另外 4 个那两次安装没产出 profile);
+而 `net.neoforged:forge` 那一组**根本没有 1.20.2 的构建**(0 条)。对照一下正在跑通的 1.20.1 那一行:
+它的 profile 用的是 **securejarhandler 2.1.10** —— 也就是说 **OptiFine 是拿"它那个年代的 SecureJarHandler"
+编译的**,1.20.1 对得上所以能跑,1.20.2 的 preview 对不上(2.1.10 的调用 vs 2.1.24 的签名)所以起不来。
+不存在"换个 20.2.x 就好"的可能。
+
+**逐字节修法(下一步实现)**:OptiFine 的 `optifine/OptiFineJar.class` 里那一处调用要改签名——
+2.1.24 的第三个参数是 `Supplier<Set<String>>`,而栈上此刻是一个 `Set`。做法:
+
+1. 在我们的 jar 里放一个极小的 `Supplier<Set<String>>` 实现(带一个吃 `Set` 的构造器),放在
+   `kynarain/cn/optifineoforge/loader/` 下就行 —— rig 第 5 步本来就会把这个包的类加进产物 ✓;
+2. 在 `OptifineJarFixer` 里加一条处理:`handles()` 增认 `optifine/OptiFineJar`,在那条 `invokespecial` 之前
+   **插入** `NEW helper; DUP_X1; INVOKESPECIAL helper.<init>(Ljava/util/Set;)V` —— 栈就从
+   `[this,name,version,set]` 变成 `[this,name,version,supplier]`,原调用照旧执行 ✓。
+
+这与修 `toFile` 是同一类"定点插入"而非"整段替换",也是本轮学到的教训(整段替换删副作用那次)。
