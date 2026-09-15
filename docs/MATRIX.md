@@ -1077,3 +1077,39 @@ Reason:   Type uninitialized 13 (current frame, stack[6]) is not assignable to '
 **下一步(1.20.2)**:不要再靠读原始字节码推断位置 —— 把**打补丁后**的 `lambda$1` 指令序列整段 dump 出来
 (ASM 里逐条打印),按实际序列定位 `getPackages` 与我的 wrapper 的相对位置,再决定插入点;顺带确认
 `getPackages` 在同一方法里是否只出现一次(搜索取的是最后一次匹配)。
+
+**打补丁后的序列 dump 出来了:指令是对的,但 verifier 仍然不认(同一晚,所以改用"整段重写")**
+
+```
+ 8: invokeinterface SecureJar.getPackages()Ljava/util/Set;      // [.., set]
+13: new SetSupplier
+16: dup_x1                                                      // [.., helper, set, helper]
+17: invokespecial SetSupplier.<init>(Ljava/util/Set;)V          // [.., helper]
+20: new ArrayList; dup; invokespecial <init>()V                  // [.., helper, list]
+27: invokespecial SimpleJarMetadata.<init>(String,String,Supplier,List)V
+30: areturn
+```
+
+按 javap 打出来的序列,这正是我想要的字节码(`set` 在 `helper` 之下、`invokespecial` 取顶上的 helper 当
+objectref、参数是 `set`),可运行时 verifier 还是报:
+
+```
+Location: optifine/OptiFineJar.lambda$1(...) @17: invokespecial
+Reason:   Type uninitialized 13 (current frame, stack[6]) is not assignable to 'java/util/Set'
+```
+
+也就是说**问题不在指令本身,而在栈图**:写入器用 `COMPUTE_FRAMES` 重算时,对"不在平台类加载器里的
+`SetSupplier`"只能把公共父类判成 `java/lang/Object`(`SafeClassWriter` 的兜底),而 verifier 按帧判类型,
+于是这一处的帧与实际指令不符。继续在这种"从既有序列中间插指令"的场景里跟栈图较劲,收益很低。
+
+**决定:改成"整段重写这一个 lambda 体"**,而不是插入 —— 这条 lambda 是自包含的、没有副作用可丢,
+所以替换是安全的(与 `toFile` 那次不同,那次替换丢掉了静态字段赋值):
+
+```java
+private static JarMetadata lambda$1(SecureJar jar) {
+    return new SimpleJarMetadata("net.optifine", null, new SetSupplier(jar.getPackages()), new ArrayList<>());
+}
+```
+
+用 ASM 从头写这段(约 15 条指令),不再触碰既有栈;`COMPUTE_FRAMES` 在这种小型直线代码上不会遇到
+公共父类判定问题。这样 1.20.2 这一处就能过,且与"定点插入"的教训一致:**该整段重写时整段重写,该插入时才插入**。
