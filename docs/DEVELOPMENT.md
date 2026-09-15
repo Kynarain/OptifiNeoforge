@@ -1574,3 +1574,58 @@ resourcepacks` 去掉,恢复模型烘焙 —— 那正是 1.21.4 那条线验收
 也就是说**模型烘焙大体通了**,只剩 `minecraft:skull` 一个模型。**下一轮**:查它为什么失败(它与 OptiFine
 换装的 `SkullBlockRenderer`/`SkullModel` 有关),并确认 `BakedModel` 那 9 个 Forge 形状成员返回默认值是否
 正是原因 —— 那 9 个 stub 让调用"能过",但语义上未必对。
+
+## 2026-09-15(再续):skull 模型修好,而真正的拦路虎是 **FML 的 early window**
+
+### skull 的病因:OptiFine 的 `getChild` 按 id 找子节点,而 id 没人设
+
+    IllegalStateException: Failed to create model for minecraft:skull
+      at SkullBlockRenderer.createSkullRenderers:66
+    Caused by: NullPointerException: ... "this.head" is null
+      at net.minecraft.client.model.dragon.DragonHeadModel.<init>:21
+
+读字节码:`DragonHeadModel` 的构造函数是 `this.head = root.getChild("head"); this.jaw = this.head.getChild("jaw")`,
+而 **OptiFine 那版 `ModelPart.getChild(String)` 不是 `children.get(name)`** —— 它遍历 `children.keySet()`,
+用 `name.equals(child.getId())` 匹配!`getId()` 读的是 OptiFine 新加的一个 `id` 字段,只有**它自己那套烘焙
+代码**才会 `setId`;而**OptiFine 根本没有 patch `PartDefinition`**(查过,`patch/srg` 里没有它)。
+于是在这条线上:运行时烘的模型 → 没人设 id → 每次 `getChild` 都返回 null → 第一个要取子模型的
+`minecraft:skull` 就炸了。Forge 上这对是配套的,这里不是。
+
+修法是把"**保留游戏自己的实现**"做成机制(与 stub 列表正好互为镜像):`keep-runtime.txt` 列出
+`owner/name/desc`,loader 在换装后把这些成员的身体换回运行时那版。
+
+    3c/5  keep-runtime: 1 members keep the game's body
+    load  Members keeping the game's body: 1
+    → 'Caught error': 0(资源包不再被移除,skull 建得出来)
+
+### 然后真正的拦路虎浮出来:FML 的 early display 重入
+
+模型一修好,游戏就走到更后面,撞上:
+
+    IllegalStateException: Already building.
+      at fml_earlydisplay/SimpleBufferBuilder.begin
+      at ...DisplayWindow.paintFramebuffer → DisplayWindow.render
+      at neoforge/NeoForgeLoadingOverlay.render(NeoForgeLoadingOverlay.java:84)
+
+**这一串帧里没有一行 OptiFine 代码** —— 全是 FML/NeoForge 自己的。查 rig 的启动脚本发现它**早就想关掉
+这个窗口**,但关错了开关:
+
+    -Dfml.earlyprogresswindow=false        ← 这是 Forge 时代的属性,FML 2.0.17 不认
+
+FML 2.0.17 把它做成了**配置文件**:`config/fml.toml` 里的 `earlyWindowProvider`(默认 `"fmlearlywindow"`)。
+改成 `"none"` 之后:
+
+    VERDICT: STARTED (40s, marker: Sound engine started)     ← 截图这次 1.2 MB
+    swapped: 313 个类   'Caught error': 0   崩溃报告:无(比 22:10 更晚的一份都没有)
+    Sound engine started 1 / Setting user 1 / Created: 13 / Shaders 14 行 / Connected textures 3 行
+    early-display 帧:0
+
+也就是说 1.20.4 现在**进到标题画面、OptiFine 的着色器与连接材质在跑、没有任何崩溃**。这也解释了前面几轮
+那些"位置不定的 overlay 崩溃":那扇窗一直是开着的,只是每次撞上去的时机不同。
+
+**这条线的运行要求写进 `docs/MATRIX.md`**:1.20.2/1.20.4 需要 `config/fml.toml` 里
+`earlyWindowProvider = "none"`(FML 的 early window 与 OptiFine 换装的渲染类在同一帧里互相重入)。
+这不是我们能在 mod 里设的 —— FMLConfig 在 mod 之前就读完了。
+
+**顺带一个反复踩到的坑**:PowerShell 的 `Set-Content -Encoding UTF8` 会写 BOM,而 TOML 解析器直接报
+`Invalid bare key: \ufeffEarly`。改配置/源码一律用 `[System.IO.File]::WriteAllText(..., UTF8Encoding($false))`。
