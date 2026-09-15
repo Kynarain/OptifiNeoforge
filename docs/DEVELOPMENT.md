@@ -1230,3 +1230,31 @@ OptiFine 的类实现了游戏里的接口,而两者分属**不同模块**:我�
 ②想办法让 FML 把我们的 jar 当成 mod 模块(FML 会给 mod 模块导出游戏包),需要看 FML 2.0.17 到底按什么
 条件导出;③确认 FML 是否只给 GAME 层的模块导出,而 transformer jar 落在 PLUGIN 层 —— 若是,则应把
 成品类的宿主换到 mod 层。**这一轮没有落地修复,只把范围收窄到这三条。**
+
+### 紧接一轮:三条候选里两条被否掉,并且找到了关键的不对称
+
+- **①反射 layer 的 controller:不可能。** `javap -p java.lang.ModuleLayer`(JDK 17)显示它的字段只有
+  `cf / parents / nameToModule / allLayers / modules / servicesCatalog / CLV` —— **根本没有
+  `controller` 字段**。Controller 只在 `ModuleLayer.defineModules*` 返回时存在,之后无处可取,这是
+  JDK 的设计。`Module.addExports` 又是 `java.lang` 包私有,没有 `--add-opens java.base/java.lang`
+  就到不了。①作废。
+- **②让 FML 把我们当 mod:加元数据不够。** 往 jar 里补了一份 `META-INF/neoforge.mods.toml`
+  (与 `mods.toml` 同内容)后照旧启动,`Found mod file` 仍然只有那 3 条,报错一字不变。所以"没被当成
+  mod"不是某个元数据文件名的问题。
+- **FML 2.0.17 自己从不调用 `addExports`。** 把 `loader-2.0.17.jar` 里**每一个** class 的字节扫一遍找
+  `addExports`:命中 **0** 个。也就是说这条线的 FML 根本没有"给谁导出游戏包"这一步。
+
+**关键的不对称(下一轮的抓手)**:1.21.4 那条**已验证**的线上,OptiFine 的补丁是生效的
+(`Targets: 474`),而它的 `OptionInstance` 补丁**同样引用了** `SliderableValueSetInt`:
+
+    [1.21.4-patched] srg/net/minecraft/client/OptionInstance.class: references SliderableValueSetInt = True
+    [1.20.4-patched] srg/net/minecraft/client/OptionInstance.class: references SliderableValueSetInt = True
+
+而 1.21.4 的日志里 `IllegalAccessError`=0。**同一段 OptiFine 代码在 21.4 上能过模块检查、在 2.0.17 上
+不能**,所以这不是"OptiFine 的写法有问题",而是**两个 FML 版本给的模块访问不同** —— 21.x 给了,2.0.17 没给,
+而且给的地方不在 `loader-2.0.17.jar` 里(下一个要扫的是 `securejarhandler` 与 `neoforge` 那两个 jar)。
+
+**下一轮的第一步(测量,不是猜)**:在 loader 里加一个探针(照 `ReloadProbe` 那套,用系统属性开关),
+把**运行时真实的模块图**打出来:游戏模块的包列表、`gameModule.isExported(pkg, ourModule)` 的结果、
+`ourModule.canRead(gameModule)`、以及我们模块的名字与所在层。现在缺的正是这个 —— 前面全是"从错误消息
+反推"。有了它,才知道该补 export 还是该补 read,还是该换个层放成品类。
