@@ -1258,3 +1258,39 @@ OptiFine 的类实现了游戏里的接口,而两者分属**不同模块**:我�
 把**运行时真实的模块图**打出来:游戏模块的包列表、`gameModule.isExported(pkg, ourModule)` 的结果、
 `ourModule.canRead(gameModule)`、以及我们模块的名字与所在层。现在缺的正是这个 —— 前面全是"从错误消息
 反推"。有了它,才知道该补 export 还是该补 read,还是该换个层放成品类。
+
+### 再一轮:接口的可见性不是问题,问题回到"谁给我们 export",并找到一条可做的路
+
+继续量了三件事:
+
+1. **`OptionInstance$SliderableValueSet` 在原版运行时里是包私有的**
+   (`interface net.minecraft.client.OptionInstance$SliderableValueSet<T>`,没有 `public`),
+   1.20.4 与 1.21.4 都一样。
+2. **OptiFine 的补丁把它改成了 `public`**,而且我们的成品类确实换上了它:
+
+       1.20.4-patched(raw)  : public interface net.minecraft.client.OptionInstance$SliderableValueSet<T>
+       1.20.4-shipped       : public interface net.minecraft.client.OptionInstance$SliderableValueSet<T>
+       1.21.4-patched       : public interface net.minecraft.client.OptionInstance$SliderableValueSet<T>
+       index 里 OptionInstance 相关条目:... OptionInstance$SliderableValueSet, ...
+
+   所以**不是可见性问题**;实现一个 public 接口,卡住的只能是包导出。
+3. **这条线上没有任何组件调用 `addExports`**:`loader-2.0.17.jar` 里 0 命中,`securejarhandler`、
+   `neoforge`、`coremods`、`JarJarFileSystems`、`accesstransformers` 里也是 0 命中,只有 ModLauncher 的
+   **TestingLaunchHandlerService** 提到过它。也就是说游戏模块的导出**不是靠调用 API 加的**。
+
+**由此得到的(还待验证的)结论与做法**:FML 2.0.17 大概率是在**构造游戏模块的 ModuleDescriptor 时**
+把各个包 `exports` 给"它认识的 mod 模块"(所以代码里看不到 `addExports`)。我们的 jar 因为在
+`META-INF/services/cpw.mods.modlauncher.api.ITransformationService` 里声明了服务,被 ModLauncher 当作
+**transformer jar** 收走,FML 于是从不把它当 mod 看 —— 这也解释了为什么往 jar 里补
+`neoforge.mods.toml` 毫无作用:**不是文件名的问题,是这个 jar 根本不在 mod 扫描的结果里**。
+
+**下一轮要做的实验(拆成两个 jar)**:
+
+- **载荷 mod jar**:OptiFine 自己的类放在**自然路径**(`net/optifine/**`,不要 `srg/` 联合根)、带
+  `META-INF/mods.toml`、**不放任何服务文件** —— 这样它是一个纯粹的 mod,FML 会把它当 mod 模块并给它
+  导出游戏包,`net.optifine.config.SliderableValueSetInt` 实现 `net.minecraft.client` 的接口便合法;
+- **transformer jar**:只放我们的 loader 类与 `optifineoforge/patched/**`(这些类只被当**字节**读,
+  从不作为类从那里加载)+ 服务文件。
+
+这个实验能一次说清"导出是不是按 mod 模块给的":如果错误消失,结论成立且问题一起解决;如果错误变成别
+的样子,那也能立刻排除这条线。
