@@ -71,9 +71,21 @@ public final class OptifineJarFixer {
 		boolean patched = false;
 		for(MethodNode method : node.methods) {
 			if(TO_FILE.equals(method.name) && TO_FILE_DESC.equals(method.desc)) {
-				method.instructions = stripSuffixesThenFile();
-				method.tryCatchBlocks = new java.util.ArrayList<>();
-				method.localVariables = null;
+				// Two shapes of this method exist, and they need opposite treatment. In the flavour
+				// whose non-union branch builds the file from the URI itself - 1.20.1 - the body is
+				// already right for plain files and the union path only needs the trailing "!" cut;
+				// replacing that body deletes the static ofZipFileUrl assignment its own
+				// getResourceUrl depends on, and the launch then dies much later, far from here,
+				// reading a class through a union path:
+				//   FileSystemNotFoundException ... Jar$JarModuleDataProvider.open
+				// In the flavour that builds it from uri.getPath() - 1.20.4, 1.21.4 - the "#<index>!"
+				// stays in the string and the whole method is replaced, which is what fixed
+				// "NoSuchFileException: ...jar#177" there.
+				if(!insertBangStrip(method)) {
+					method.instructions = stripSuffixesThenFile();
+					method.tryCatchBlocks = new java.util.ArrayList<>();
+					method.localVariables = null;
+				}
 				patched = true;
 			}
 		}
@@ -119,6 +131,82 @@ public final class OptifineJarFixer {
 				return "java/lang/Object";
 			}
 		}
+	}
+
+	/**
+	 * Cuts the union filesystem's trailing {@code !} off the path OptiFine already computed, by adding
+	 * instructions after the {@code #}-strip the original performs and leaving everything else alone.
+	 *
+	 * <p>Found rather than assumed: the {@code #}-strip is the {@code substring} call that follows the
+	 * {@code "#"} constant, and the value it stores is the local the rest of the method reads. The
+	 * temporary slot is taken past {@code maxLocals}, so nothing the original uses can be clobbered.</p>
+	 *
+	 * @return whether the strip was inserted, i.e. whether this OptiFine handles the union scheme itself
+	 */
+	private static boolean insertBangStrip(MethodNode method) {
+		// The gate is which shape this is, and it is visible in the method: this flavour's non-union
+		// branch builds the file from the URI itself - new File(URI) - so that branch is already
+		// correct and only the union path needs the extra cut. The other flavour builds it from
+		// uri.getPath(), which leaves "#<index>!" inside the string when the scheme is not "union" -
+		// that is the "NoSuchFileException: ...jar#177" this fixer was written for - and there the
+		// whole method has to be replaced. Measured on both jars rather than assumed from sizes.
+		boolean buildsFileFromUri = false;
+		for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if(insn instanceof MethodInsnNode call && "java/io/File".equals(call.owner)
+					&& "<init>".equals(call.name) && "(Ljava/net/URI;)V".equals(call.desc)) {
+				buildsFileFromUri = true;
+				break;
+			}
+		}
+		if(!buildsFileFromUri) {
+			return false;
+		}
+
+		AbstractInsnNode hashStripEnd = null;
+		for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if(!(insn instanceof LdcInsnNode ldc) || !"#".equals(ldc.cst)) {
+				continue;
+			}
+			// "#" ... substring(II)String ... astore <path local>
+			AbstractInsnNode cursor = insn;
+			VarInsnNode stored = null;
+			for(int step = 0; step < 6 && cursor != null; step++) {
+				cursor = cursor.getNext();
+				if(cursor instanceof MethodInsnNode call && "substring".equals(call.name)) {
+					AbstractInsnNode after = cursor.getNext();
+					if(after instanceof VarInsnNode var && var.getOpcode() == Opcodes.ASTORE) {
+						stored = var;
+					}
+				}
+			}
+			if(stored != null) {
+				hashStripEnd = stored;
+				break;
+			}
+		}
+		if(hashStripEnd == null) {
+			return false;
+		}
+		int slot = Math.max(method.maxLocals, 1);
+		method.maxLocals = slot + 1;
+		int pathLocal = ((VarInsnNode) hashStripEnd).var;
+		LabelNode afterBang = new LabelNode();
+
+		InsnList list = new InsnList();
+		list.add(new VarInsnNode(Opcodes.ALOAD, pathLocal));
+		list.add(new LdcInsnNode("!"));
+		list.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(Ljava/lang/String;)I", false));
+		list.add(new VarInsnNode(Opcodes.ISTORE, slot));
+		list.add(new VarInsnNode(Opcodes.ILOAD, slot));
+		list.add(new JumpInsnNode(Opcodes.IFLT, afterBang));
+		list.add(new VarInsnNode(Opcodes.ALOAD, pathLocal));
+		list.add(new InsnNode(Opcodes.ICONST_0));
+		list.add(new VarInsnNode(Opcodes.ILOAD, slot));
+		list.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;", false));
+		list.add(new VarInsnNode(Opcodes.ASTORE, pathLocal));
+		list.add(afterBang);
+		method.instructions.insert(hashStripEnd, list);
+		return true;
 	}
 
 	/**
@@ -189,11 +277,14 @@ public final class OptifineJarFixer {
 		return list;
 	}
 
-	/** Development aid: report what the fixer would do to a class file. */
+	/** Development aid: report what the fixer would do to a class file, and write the result beside it. */
 	public static void main(String[] args) throws Exception {
 		byte[] before = java.nio.file.Files.readAllBytes(java.nio.file.Path.of(args[0]));
 		byte[] after = fixServicePath(before);
 		System.out.println("before " + before.length + " bytes, after " + after.length + " bytes, changed=" + (before.length != after.length || !java.util.Arrays.equals(before, after)));
+		java.nio.file.Path written = java.nio.file.Path.of(args[0] + ".patched");
+		java.nio.file.Files.write(written, after);
+		System.out.println("wrote " + written);
 		ClassNode node = new ClassNode();
 		new ClassReader(after).accept(node, 0);
 		for(MethodNode method : node.methods) {
