@@ -2153,6 +2153,53 @@ return null;
    `processClass` 才决定安装;日志里只有 `handlesClass` 没有别的,`[OptiFine]` 一行都没有 ⇒
    需要读 `OptiFineClassProcessor.processClass` 的返回(`ComputeFlags`)与安装条件。
 
+### 三次实测把这条路走完了:26.1.2 不能靠"运行期补丁",要走离线
+
+`OptiFineClassProcessor` 的方法体把契约写死了(反编译到方法级):
+
+```java
+public boolean handlesClass(SelectionContext context) {          // line 66-72
+    LOGGER.info("OptiFine: handlesClass: " + context.type().getClassName());
+    String classPath = this.transformer.getSrgClassPath(name);    // "srg/<name>.class"
+    return this.transformer.getOptiFineResourceStream(classPath) != null;
+}
+```
+
+也就是说:**能不能处理 = 能不能从 OptiFine 自己的 zip 里取到这个类的成品**;取不到就走"现场打补丁",
+而现场打补丁要按上面那条规则去系统 classpath 找基础类。三次启动把这条路的三个结局都量出来了:
+
+| 试验 | classpath 里放了什么 | `Forge JAR URL` | stderr `Base resource not found` | `processClass` | 结果 |
+|---|---|---|---|---|---|
+| ① 什么都不放 | — | `Forge JAR not available` | **6917** | 0 | 进标题画面,OptiFine 未生效 |
+| ② 加原版 jar | `26.1.2.jar` | `file:/.../versions/26.1.2/26.1.2.jar` | **373** | 0 | 进标题画面,OptiFine 仍未生效 |
+| ③ 加补丁后 jar(放最前) | `minecraft-client-patched-…jar` | `file:/.../minecraft-client-patched-…jar`(**正确**) | 未及统计 | — | **FML 11 拒绝启动**:`NeoForge dev environment Minecraft jar does not have a Minecraft-Dists attribute` / `The patched Minecraft jar is missing` |
+
+②里那 373 个名字**不是**"jar 里没有":373 个全部同时存在于原版 jar 与补丁 jar,而且**每一个都有对应的
+`srg/...class.xdelta` 补丁**(用哈希表逐个查过)。所以现象是"扫描到的 URL 被跳过或打开失败":
+`getResourceStream` 里那条 `url.getPath().startsWith(forgeJarUrlStr)` 在②里第一次真正生效,而它跳过的
+正是**装着基础类的那个 jar**(因为 `Minecraft.class` 现在从它解析出来)。剩下 6538 个类不抛异常也不等于
+成功 —— `handlesClass` 依然返回 false、`processClass` 一次都没被调用(`processClass` 的字符串在常量池里,
+日志里 0 次)。
+
+③本可以给出正确的 `forgeJarUrlStr`,但 FML 11 不允许把补丁后的游戏 jar 放在**原始 classpath** 上:
+它会把那个 jar 当成 mod file / dev 环境实例来校验,直接以 `Minecraft-Dists` 缺失收场。
+
+**结论(下一轮的做法)**:26.x 不能沿用"让 OptiFine 自己在运行期补"的路子,要走**与本项目其它线完全一致的
+离线路子**——rig 里用 OptiFine 的 xdelta 打**原版** jar,产出 `srg/net/minecraft/**` 的成品类,再按运行期名字
+重映射、连同成员回填一起装进载荷。这样 `getOptiFineResourceStream` 直接命中成品,
+`getOptiFineResourceStreamPatched` 与"基础类在哪"这条整链都不再参与——这也正是 1.20.x/1.21.x 各线能跑通的
+原因(它们的 OptiFine jar 本来就带 `srg/` 成品,rig 的 3c 步"成品入、补丁数据出"就是干这个的)。
+
+具体三步:
+
+1. `OptifinePipeline` 用**原版 26.1.2 jar** 作基础,把 `patch/srg/**` 的 xdelta 全部应用,得到成品类;
+2. 以 `~libraries/net/neoforged/minecraft-client-patched/26.1.2.109/minecraft-client-patched-26.1.2.109.jar`
+   为"运行时那一侧"做名字对齐(需要 26.1.2 的合并映射表,先确认 `neoform-26.1.2-*` 里有没有);
+3. 成品类放进重打包后的 jar(`patch/**` 丢掉),保留 OptiFine 自己的 processor 与两个 service 文件来"装",
+   我们的 `MemberRestorePlan` 先量一遍 26.1.2 到底缺多少成员 —— OptiFine 这一版是**直接对着 NeoForge 26.1.2
+   编译**的(它的 `OptiFineBaseTransformer` 构造器里就引用了 `net.neoforged.neoforge.client.extensions.IMinecraftExtension`),
+   所以回填量可能远小于 1.21.x 的各线。
+
 
 
 
