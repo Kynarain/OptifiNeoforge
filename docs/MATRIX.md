@@ -2103,6 +2103,56 @@ java.io.IOException: Base resource not found: net/minecraft/resources/Identifier
   (`GuiRenderState.lambda$forEachText$0`,26.x 新的渲染状态体系),与 OptiFine 的 Font 补丁有关,
   等补丁真的生效之后再判它。
 
+### 门三的下一步已经定位:OptiFine 的补丁**从系统 classpath 读基础类**
+
+把 `OptiFineBaseTransformer` 反编译到方法级,`Patcher.applyPatch` 的局部变量表把因果讲得很清楚:
+
+```
+line 140: baseName = getPatchBase(name, patterns, cfgMap)
+line 146: baseIn   = resourceProvider.getResourceStream(baseName)   // ← 基础类字节
+line 154: patchStream = new ByteArrayInputStream(bytesDiff)         // ← xdelta 数据(调用方从 zip 里取)
+line 157: gdp = new GDiffPatcher(baseBytes, patchStream, outputStream)
+```
+
+而 `OptiFineBaseTransformer.getResourceStream(name)` 的实现是:
+
+```java
+name = Utils.removePrefix(name, "/");
+Enumeration<URL> urls = ClassLoader.getSystemClassLoader().getResources(name);   // ← 系统 classpath
+while(urls.hasMoreElements()) { URL url = ...; if(forgeJarUrlStr != null && url.getPath().startsWith(forgeJarUrlStr)) continue; return url.openStream(); }
+return null;
+```
+
+也就是说:**OptiFine 期望"基础游戏类"出现在 JVM 的系统 classpath 上**(`forgeJarUrlStr` 只是用来在扫描时
+跳过它自己识别出的那个 jar)。`forgeJarUrlStr` 来自构造函数里的
+`Class.forName("net.minecraft.client.Minecraft").getProtectionDomain().getCodeSource().getLocation()`,
+拿不到就打 `Forge JAR not available`。
+
+**26.x 的门就在 rig 的启动器上**:NeoForge profile 自己没有 jar(`versions/<profile>/<profile>.jar` 不存在),
+而真实启动器会把 `inheritsFrom` 那一版的原版 jar 放进 classpath;rig 的 `launch-neoforge.ps1` 之前只
+"报告缺失然后跳过",所以 `Minecraft.class` 的来源拿不到、基础类也扫不到。改成"自身 jar 缺失时退回
+`inheritsFrom` 的 jar"之后:
+
+| 观测 | 改之前 | 改之后 |
+|---|---|---|
+| `OptiFineBaseTransformer` | `Forge JAR not available` | **`Forge JAR URL: file:/.../versions/26.1.2/26.1.2.jar`** |
+| stderr 的 `Base resource not found` | **6917** 次 | **373** 次(373 个不同的类名) |
+| 客户端 | 标题画面(`Sound engine started`) | 标题画面(`Sound engine started`) |
+| `[OptiFine]` 行数 | 0 | 0 |
+
+⇒ 大部分类的"基础字节"已经能取到了(6917 → 373),但 **OptiFine 依然没有真正生效**(`[OptiFine]` 0 行),
+而剩下的 373 个类名里第一个就是 `net/minecraft/resources/Identifier.class`(最早由 NeoForge 的
+`ClientHooks.<clinit>` 触发)。下一轮就从这两个问题进去:
+
+1. **那 373 个名字为什么取不到基础字节**:它们确实都在原版 jar 里(抽查
+   `BossHealthOverlay` / `ModelPart` / `SingleVariant$Unbaked` / `GlDevice$ShaderCompilationKey` /
+   `Identifier` 五个,原版与 `minecraft-client-patched` 两个 jar 里都有),所以不是"文件不存在",
+   更像是**扫描到的 URL 被跳过或打开失败**(前一版里 `skip` 判据用的是 `url.getPath().startsWith(forgeJarUrlStr)`,
+   现在 `forgeJarUrlStr` 非空,这条判据第一次真正生效)。
+2. **`OptiFineClassProcessor` 到底装没装类**:`handlesClass` 会真的做一次补丁来判"我能不能处理",
+   `processClass` 才决定安装;日志里只有 `handlesClass` 没有别的,`[OptiFine]` 一行都没有 ⇒
+   需要读 `OptiFineClassProcessor.processClass` 的返回(`ComputeFlags`)与安装条件。
+
 
 
 
