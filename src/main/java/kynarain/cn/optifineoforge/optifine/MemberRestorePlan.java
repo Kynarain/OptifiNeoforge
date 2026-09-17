@@ -33,6 +33,7 @@ import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.IntInsnNode;
+import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.LdcInsnNode;
@@ -148,7 +149,8 @@ public final class MemberRestorePlan {
 				lines.add("M " + internalName + " " + method.name + " " + method.desc);
 			}
 			if(donorDir != null && !(classFields.isEmpty() && classMethods.isEmpty())) {
-				writeDonor(donorDir, internalName, replacements.get(internalName), entry.getValue(), classFields, classMethods);
+				writeDonor(donorDir, internalName, replacements.get(internalName), entry.getValue(), classFields,
+						classMethods, runtimeJar);
 			}
 		}
 
@@ -300,8 +302,17 @@ public final class MemberRestorePlan {
 		return missing;
 	}
 
-	private static List<MethodNode> missingMethods(ClassNode mine, ClassNode theirs) {
-		Map<String, MethodNode> present = new TreeMap<>();
+	/** Whether a class declares any member at all with this name, whatever its descriptor. */
+	private static boolean hasMemberNamed(ClassNode node, String name) {
+		for(MethodNode method : node.methods) {
+			if(method.name.equals(name)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static List<MethodNode> missingMethods(ClassNode mine, ClassNode theirs) {		Map<String, MethodNode> present = new TreeMap<>();
 		for(MethodNode method : mine.methods) {
 			present.put(method.name + " " + method.desc, method);
 		}
@@ -311,7 +322,21 @@ public final class MemberRestorePlan {
 				continue; // a class initialiser cannot be copied without the class it initialises
 			}
 			if(method.name.startsWith("lambda$") || method.name.startsWith("access$")) {
-				continue; // synthetic
+				// Synthetics are skipped because the two artefacts number their lambdas independently:
+				// the same name can be two different methods, and then the payload's body is the right
+				// one to keep. That is a risk only while the name exists at all, and insisting on it
+				// outright was wrong in the other direction. Measured on 1.21.8: NeoForge's
+				// RenderPipelines.registerCustomPipelines is restored - the payload is compiled against
+				// vanilla, which has no such method - and its body calls
+				// lambda$registerCustomPipelines$0, which the payload has nowhere. The class was then
+				// installed with a restored method whose callee was missing, and the launch died with
+				//
+				//   NoSuchMethodError: 'void RenderPipelines.lambda$registerCustomPipelines$0(RenderPipeline)'
+				//
+				// So a synthetic is restored exactly when its name appears nowhere in the payload.
+				if(hasMemberNamed(mine, method.name)) {
+					continue;
+				}
 			}
 			String key = method.name + " " + method.desc;
 			if(!present.containsKey(key)) {
@@ -326,8 +351,20 @@ public final class MemberRestorePlan {
 
 	/** A class file carrying only the dropped members, bodies included. */
 	private static void writeDonor(Path donorDir, String internalName, ClassNode replacement, ClassNode runtime,
-			List<FieldNode> fields, List<MethodNode> methods) throws IOException {
-		ClassNode donor = new ClassNode();
+			List<FieldNode> fields, List<MethodNode> methods, Path runtimeJar) throws IOException {
+		// The initialiser extraction reads the class again from the jar rather than trusting the node in
+		// hand, and it has to: measured on 1.21.6, the runtime's RenderSystem as held by this pass has a
+		// static initialiser with twenty assignments where the class in the jar has twenty-one - the one
+		// building PIPELINE_MODIFIERS is not among them - so the value that NeoForge's own class gives
+		// that field was refused as unextractable while the identical shape on 1.21.8 was accepted. A
+		// fresh read is the same class the game loads, and that is what the value has to come from.
+		ClassNode fresh = null;
+		try {
+			fresh = readFrom(runtimeJar, internalName);
+		} catch(IOException e) {
+			System.out.println("  could not re-read " + internalName + " for its static initialisers: " + e);
+		}
+		ClassNode forValues = fresh == null ? runtime : fresh;		ClassNode donor = new ClassNode();
 		donor.version = runtime.version;
 		donor.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_SUPER;
 		donor.name = internalName;
@@ -345,6 +382,59 @@ public final class MemberRestorePlan {
 					donor.methods.add(initialiser);
 				} else {
 					System.out.println("  no safe initialiser for field " + internalName + "." + field.name);
+				}
+			} else {
+				// A restored static field needs its value as much as an instance field does, and its
+				// assignment lives in the class's static initialiser - the one part of the runtime's
+				// class a swap always replaces. Measured on 1.21.8, where leaving it out produced
+				//
+				//   NullPointerException: Cannot invoke "PipelineModifierStack.apply(RenderPipeline)"
+				//     because "com.mojang.blaze3d.systems.RenderSystem.PIPELINE_MODIFIERS" is null
+				//
+				// while RenderSystem was drawing its first frame. The field is NeoForge's, the payload's
+				// class initialiser knows nothing about it, and the plan had restored the declaration
+				// without the value.
+				MethodNode initialiser = staticInitialiser(forValues, internalName, field);
+				if(initialiser != null) {
+					donor.methods.add(initialiser);
+				} else if(!"I".equals(field.desc) && !"Z".equals(field.desc) && !"F".equals(field.desc)
+						&& !"J".equals(field.desc) && !"D".equals(field.desc)) {
+					// Primitives are the case that is fine without one: a primitive field restored as
+					// zero is what the payload's own code expects when it never reads NeoForge's use of
+					// it, and a reference field restored as null is not worth reporting either - but an
+					// object field that NeoForge's code then dereferences is, so it is said out loud.
+					System.out.println("  no safe static initialiser for field " + internalName + "." + field.name);
+				}
+			}
+		}
+		// The mirror image of a restored field, and the one that cost a launch on 1.21.6: a field
+		// OptiFine's own compilation declares and the runtime has never heard of is initialised by the
+		// payload's own constructors, and a constructor restored *from the runtime* was compiled against
+		// a class that has no such field - so it leaves it at its default. Measured there on
+		// com/mojang/blaze3d/pipeline/RenderTarget:
+		//
+		//   payload <init>(String,Z)   : this.enabled = true
+		//   payload resize(II)         : if(!this.enabled) { set sizes; return; }  // no buffers at all
+		//   runtime <init>(String,ZZ)  : restored, sets label/useDepth/useStencil, never 'enabled'
+		//
+		// NeoForge's TextureTarget calls the three-argument constructor, so every render target the
+		// frame graph allocated had enabled=false, resize() returned before createBuffers(), and the
+		// blur pass died on the first frame with
+		//
+		//   NullPointerException: Cannot invoke "GpuTexture.getFormat()" because "textureIn" is null
+		//     at GlCommandEncoder.verifyColorTexture, from RenderTargetDescriptor.prepare
+		//
+		// Only reached for a class the plan hands a constructor to, which is what keeps it narrow: the
+		// initialiser is called from the constructors that do not assign the field themselves, and
+		// every constructor OptiFine compiled does.
+		if(methods.stream().anyMatch(method -> "<init>".equals(method.name))) {
+			for(FieldNode own : replacement.fields) {
+				if((own.access & Opcodes.ACC_STATIC) != 0 || hasMember(runtime, own.name, own.desc)) {
+					continue;
+				}
+				MethodNode initialiser = initialiser(replacement, internalName, own);
+				if(initialiser != null) {
+					donor.methods.add(initialiser);
 				}
 			}
 		}
@@ -451,6 +541,11 @@ public final class MemberRestorePlan {
 		return dropped;
 	}
 
+	/** Whether one instruction is the {@code aload_0} a field store pushes its receiver with. */
+	private static boolean isReceiverPush(AbstractInsnNode insn) {
+		return insn instanceof VarInsnNode load && load.getOpcode() == Opcodes.ALOAD && load.var == 0;
+	}
+
 	/** The body a stub gets: return the default value for the return type. */
 	private static InsnList stubBody(String descriptor) {
 		InsnList body = new InsnList();
@@ -519,7 +614,28 @@ public final class MemberRestorePlan {
 					continue;
 				}
 
-				// Walk back to the start of the straight-line run that produced the value.
+				// The value itself: counted, exactly as for a static field, and it has to be counted
+				// rather than walked to the previous label. A {@code putfield} consumes two values -
+				// the receiver and the value - and the label-walk this used to do ran straight past
+				// the value into the receiver's own {@code aload_0}, which the wrapper pushes again:
+				//
+				//   aload_0            <- the wrapper's own push
+				//   aload_0; iconst_1  <- the slice, receiver and value
+				//   putfield enabled
+				//
+				// That leaves a live reference on the stack at {@code return} and would not verify.
+				// Counting stops after the one value the field is given, so the receiver is never
+				// part of the slice. Measured on 1.21.6's RenderTarget, where the payload's own
+				// constructor writes {@code this.enabled = true} on the first line and therefore has
+				// no label between the two.
+				List<AbstractInsnNode> counted = valueRun(insn);
+				if(counted != null) {
+					return initialiserFrom(internalName, field, counted);
+				}
+
+				// Walk back to the start of the straight-line run that produced the value, for the
+				// shapes the counting walk refuses - an expression that reads {@code this}, whose
+				// {@code aload_0} is then the start of the value and not the receiver.
 				List<AbstractInsnNode> slice = new ArrayList<>();
 				boolean safe = true;
 				for(AbstractInsnNode back = insn.getPrevious(); back != null; back = back.getPrevious()) {
@@ -533,7 +649,7 @@ public final class MemberRestorePlan {
 					}
 					slice.add(0, back);
 				}
-				if(safe && !slice.isEmpty()) {
+				if(safe && !slice.isEmpty() && !isReceiverPush(slice.get(0))) {
 					return initialiserFrom(internalName, field, slice);
 				}
 			}
@@ -553,6 +669,194 @@ public final class MemberRestorePlan {
 		initialiser.instructions.add(new InsnNode(Opcodes.RETURN));
 		initialiser.maxStack = 8;
 		initialiser.maxLocals = 1;
+		return initialiser;
+	}
+
+	/**
+	 * The static counterpart: the value the runtime's {@code <clinit>} gives a static field.
+	 *
+	 * <p>Only a straight-line run with no local variable reads is taken, exactly as for an instance
+	 * field, and the wrapper has no arguments because a static field is assigned from nothing but the
+	 * expression itself. The transformer calls it from the target class's static initialiser - after the
+	 * payload's own code, so that what OptiFine's initialiser sets is not overwritten by it.</p>
+	 *
+	 * @return a static method taking no arguments, or {@code null} when no safe assignment was found
+	 */
+	private static MethodNode staticInitialiser(ClassNode runtime, String internalName, FieldNode field) {
+		// Every method of the class is searched, not only its static initialiser, because the value may be
+		// built anywhere the initialiser calls into - a lambda body, a static helper. Measured on 1.21.6,
+		// where RenderSystem's PIPELINE_MODIFIERS is assigned in a synthetic method rather than in
+		// <clinit>, and searching only <clinit> left the field without a value and the client dead on its
+		// first frame with "PIPELINE_MODIFIERS is null".
+		for(MethodNode method : runtime.methods) {
+			if(method.instructions == null) {
+				continue;
+			}
+			for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+				if(!(insn instanceof FieldInsnNode store) || store.getOpcode() != Opcodes.PUTSTATIC) {
+					continue;
+				}
+				if(!internalName.equals(store.owner) || !field.name.equals(store.name)
+						|| !field.desc.equals(store.desc)) {
+					continue;
+				}
+				List<AbstractInsnNode> value = valueRun(insn);
+				if(value != null) {
+					return staticInitialiserFrom(internalName, field, value);
+				}
+			}
+		}
+		return null;
+	}
+
+	/** One class out of a jar, for a value that has to come from the class the game will load. */
+	private static ClassNode readFrom(Path jar, String internalName) throws IOException {
+		try(ZipFile zip = new ZipFile(jar.toFile())) {
+			ZipEntry entry = zip.getEntry(internalName + ".class");
+			if(entry == null) {
+				return null;
+			}
+			return read(zip.getInputStream(entry));
+		}
+	}
+
+	/**
+	 * The instructions that produce the one value a store consumes, or null when that cannot be said.
+	 *
+	 * <p>The walk goes backwards from the store and stops as soon as the run has produced exactly one
+	 * value, which is a rule about the code rather than about where statements happen to be. The earlier
+	 * version walked back to the previous label and refused the run if it crossed a local variable read,
+	 * and a static initialiser with no label between two statements then swallowed the previous one's
+	 * instructions - so on 1.21.6 the assignment that builds NeoForge's pipeline modifier stack was
+	 * refused while the identical shape on 1.21.8 was accepted:</p>
+	 *
+	 * <pre>192: new        PipelineModifierStack
+	 * 195: dup
+	 * 196: invokespecial PipelineModifierStack.&lt;init&gt;()V
+	 * 199: putstatic  RenderSystem.PIPELINE_MODIFIERS</pre>
+	 *
+	 * <p>Counting values instead stops after {@code new} - +1 for the new, +1 for the dup, -1 for the
+	 * constructor - and leaves exactly the three instructions that make the expression. Anything whose
+	 * effect is not known here ends the walk: a local read still means the value depends on code outside
+	 * the run, which is what the instance path refuses as well.</p>
+	 */
+	private static List<AbstractInsnNode> valueRun(AbstractInsnNode store) {
+		List<AbstractInsnNode> slice = new ArrayList<>();
+		int produced = 0;
+		for(AbstractInsnNode back = store.getPrevious(); back != null; back = back.getPrevious()) {
+			if(back instanceof LabelNode || back instanceof JumpInsnNode || back instanceof TableSwitchInsnNode
+					|| back instanceof LookupSwitchInsnNode || back instanceof LineNumberNode
+					|| back instanceof FrameNode) {
+				break;
+			}
+			Integer delta = stackDelta(back);
+			if(delta == null) {
+				return null;
+			}
+			slice.add(0, back);
+			produced += delta;
+			if(produced == 1) {
+				return slice;
+			}
+			if(produced > 1) {
+				return null; // more than the store consumes: this run is not one expression
+			}
+		}
+		return null;
+	}
+
+	/** The opcodes immediately before a store, as text, for a refusal to be readable. */
+	/** How many values an instruction leaves behind, or null when that is not known here. */
+	private static Integer stackDelta(AbstractInsnNode insn) {
+		switch(insn.getOpcode()) {
+			case Opcodes.ACONST_NULL:
+			case Opcodes.ICONST_M1:
+			case Opcodes.ICONST_0:
+			case Opcodes.ICONST_1:
+			case Opcodes.ICONST_2:
+			case Opcodes.ICONST_3:
+			case Opcodes.ICONST_4:
+			case Opcodes.ICONST_5:
+			case Opcodes.LCONST_0:
+			case Opcodes.LCONST_1:
+			case Opcodes.FCONST_0:
+			case Opcodes.FCONST_1:
+			case Opcodes.FCONST_2:
+			case Opcodes.DCONST_0:
+			case Opcodes.DCONST_1:
+			case Opcodes.BIPUSH:
+			case Opcodes.SIPUSH:
+			case Opcodes.LDC:
+			case Opcodes.NEW:
+			case Opcodes.GETSTATIC:
+			case Opcodes.DUP:
+				return 1;
+			case Opcodes.CHECKCAST:
+			case Opcodes.INSTANCEOF:
+				return 0;
+			case Opcodes.INVOKESPECIAL:
+			case Opcodes.INVOKEVIRTUAL:
+			case Opcodes.INVOKESTATIC:
+			case Opcodes.INVOKEINTERFACE:
+			case Opcodes.INVOKEDYNAMIC:
+				return invoke(insn);
+			default:
+				return null;
+		}
+	}
+
+	/** The net values an invocation leaves: its result minus its arguments and receiver. */
+	private static Integer invoke(AbstractInsnNode insn) {
+		if(insn instanceof InvokeDynamicInsnNode call) {
+			// An invokedynamic has no receiver - the bootstrap method supplies the target - so its own
+			// arguments are the descriptor's and nothing else is consumed. Refusing it cost a real
+			// value: on 1.21.8 the run that builds
+			//
+			//   SingleVariant$Unbaked.MAP_CODEC = Variant.MAP_CODEC.xmap(lambda, lambda)
+			//
+			// is two invokedynamics around one call, the counting walk stopped at the first of them as
+			// an unknown instruction, and the field was restored as a declaration with no value. The
+			// client then failed every blockstate in the game with
+			//
+			//   NullPointerException: Cannot invoke "MapCodec.decode(...)" because
+			//     "this.val$fallbackCodec" is null
+			//       at NeoForgeExtraCodecs$1.decode
+			//
+			// because NeoForge's BlockStateModel$Unbaked.CODEC falls back to exactly that field, and
+			// NeoForge's anonymous codec had captured the null at construction time. Inlining the run
+			// is safe here: the bootstrap methods it names are SingleVariant$Unbaked's own constructor
+			// and accessor, which OptiFine's copy of the class has as well.
+			int dynamic = -Type.getArgumentTypes(call.desc).length;
+			if(Type.getReturnType(call.desc).getSort() != Type.VOID) {
+				dynamic++;
+			}
+			return dynamic;
+		}
+		if(!(insn instanceof MethodInsnNode call)) {
+			return null;
+		}
+		int delta = -Type.getArgumentTypes(call.desc).length;
+		if(call.getOpcode() != Opcodes.INVOKESTATIC) {
+			delta--; // the receiver
+		}
+		if(Type.getReturnType(call.desc).getSort() != Type.VOID) {
+			delta++;
+		}
+		return delta;
+	}
+
+	/** Wraps a value-producing run into the static assignment helper the transformer calls. */
+	private static MethodNode staticInitialiserFrom(String internalName, FieldNode field,
+			List<AbstractInsnNode> value) {
+		MethodNode initialiser = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+				INITIALISER_PREFIX + field.name, "()V", null, null);
+		for(AbstractInsnNode step : value) {
+			initialiser.instructions.add(step);
+		}
+		initialiser.instructions.add(new FieldInsnNode(Opcodes.PUTSTATIC, internalName, field.name, field.desc));
+		initialiser.instructions.add(new InsnNode(Opcodes.RETURN));
+		initialiser.maxStack = 8;
+		initialiser.maxLocals = 0;
 		return initialiser;
 	}
 
