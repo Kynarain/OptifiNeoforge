@@ -202,7 +202,7 @@ public final class OptifineJar {
 	 * @return the number of installer entries removed
 	 */
 	public static int prepareForLoader(Path in, Path out, String metadataName, String metadataText) throws IOException {
-		return rewrite(in, out, metadataName, metadataText, true, true);
+		return rewrite(in, out, metadataName, metadataText, true, true, true);
 	}
 
 	/**
@@ -210,10 +210,28 @@ public final class OptifineJar {
 	 * on that route, so the jar they come out of never needs to satisfy a signature scan.
 	 */
 	public static int prepareForLoader(Path in, Path out, String metadataName, String metadataText, boolean addForgeStubs) throws IOException {
-		return rewrite(in, out, metadataName, metadataText, true, addForgeStubs);
+		return rewrite(in, out, metadataName, metadataText, true, addForgeStubs, true);
+	}
+
+	/**
+	 * The same, with the {@code SimpleJarMetadata} repair under the caller's control.
+	 *
+	 * <p>That repair exists for the runtimes whose SecureJarHandler takes a {@code Supplier} where
+	 * OptiFine's class passes a {@code Set} - 20.2.88, 20.4.251, 20.6.141 - and it is wrong on 1.20.1,
+	 * whose Forge profile still pins {@code securejarhandler 2.1.10}. See
+	 * {@link OptifineJarFixer#fix(String, byte[], boolean)}.</p>
+	 */
+	public static int prepareForLoader(Path in, Path out, String metadataName, String metadataText,
+			boolean addForgeStubs, boolean repairJarMetadata) throws IOException {
+		return rewrite(in, out, metadataName, metadataText, true, addForgeStubs, repairJarMetadata);
 	}
 
 	private static int rewrite(Path in, Path out, String metadataName, String metadataText, boolean stripInstaller, boolean addForgeStubs) throws IOException {
+		return rewrite(in, out, metadataName, metadataText, stripInstaller, addForgeStubs, true);
+	}
+
+	private static int rewrite(Path in, Path out, String metadataName, String metadataText, boolean stripInstaller,
+			boolean addForgeStubs, boolean repairJarMetadata) throws IOException {
 		Path parent = out.toAbsolutePath().getParent();
 		if(parent != null) {
 			Files.createDirectories(parent);
@@ -249,8 +267,9 @@ public final class OptifineJar {
 							if(OptifineJarFixer.handles(name)) {
 								// Its own path handling assumes a plain jar on disk; under a union
 								// filesystem it has to be repaired or the whole launch aborts. Which
-								// repair depends on the class, so the name goes with the bytes.
-								target.write(OptifineJarFixer.fix(name, stream.readAllBytes()));
+								// repair depends on the class, so the name goes with the bytes - and one
+								// of the two depends on the runtime as well, so that goes with them too.
+								target.write(OptifineJarFixer.fix(name, stream.readAllBytes(), repairJarMetadata));
 							} else {
 								stream.transferTo(target);
 							}
@@ -328,7 +347,8 @@ public final class OptifineJar {
 	 * Development aid: {@code OptifineJar <jar>} prints the layout, and
 	 * {@code OptifineJar <in> <out> <metadata file>} writes the rewritten copy with the metadata
 	 * read from standard input... which is awkward from a shell, so the second form instead reads
-	 * a template file: {@code OptifineJar <in> <out> <metadata file> <template file> [--no-forge-stubs]}.
+	 * a template file: {@code OptifineJar <in> <out> <metadata file> <template file> [--no-forge-stubs]
+	 * [--old-securejarhandler]}.
 	 */
 	public static void main(String[] args) throws IOException {
 		if(args.length == 1) {
@@ -337,7 +357,7 @@ public final class OptifineJar {
 			OptifineConfig.describe(jar).forEach(line -> System.out.println(line));
 			return;
 		}
-		if(args.length == 4 || args.length == 5) {
+		if(args.length >= 4) {
 			Path in = Path.of(args[0]);
 			Path out = Path.of(args[1]);
 			String metadataName = args[2];
@@ -346,15 +366,21 @@ public final class OptifineJar {
 			// The command line prepares a jar for the loader, so it does the whole job: metadata,
 			// installer entries and the obfuscated-namespace variant, plus the Forge API stubs.
 			// The Forge API stubs fill gaps on lines where NeoForge removed the Forge API; on 1.20.x that API is present, and a shell of the same name would shadow the real class.
-			boolean addForgeStubs = args.length < 5 || !"--no-forge-stubs".equals(args[4]);
-			prepareForLoader(in, out, metadataName, template, addForgeStubs);
+			boolean addForgeStubs = !java.util.Arrays.asList(args).contains("--no-forge-stubs");
+			// Which SimpleJarMetadata shape the runtime has is a property of the line, not of this jar:
+			// 1.20.1's Forge profile still pins securejarhandler 2.1.10 and takes the Set OptiFine
+			// passes, while 20.2.88 and later take a Supplier. Named for what the *runtime* has, so the
+			// default - repair - stays what every line but 1.20.1 needs.
+			boolean repairJarMetadata = !java.util.Arrays.asList(args).contains("--old-securejarhandler");
+			prepareForLoader(in, out, metadataName, template, addForgeStubs, repairJarMetadata);
 			System.out.println("wrote " + out + " (" + Files.size(out) + " bytes)");
 			System.out.println("was : " + (layout.metadataName() == null ? "(no metadata)" : layout.metadataName()));
 			System.out.println("now : " + inspect(out).metadataName());
 			return;
 		}
 		System.err.println("usage: OptifineJar <jar>");
-		System.err.println("       OptifineJar <in> <out> <metadata file> <template file> [--no-forge-stubs]");
+		System.err.println("       OptifineJar <in> <out> <metadata file> <template file> [--no-forge-stubs]"
+				+ " [--old-securejarhandler]");
 		System.exit(2);
 	}
 }

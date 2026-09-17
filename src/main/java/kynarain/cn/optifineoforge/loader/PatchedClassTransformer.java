@@ -469,6 +469,30 @@ public final class PatchedClassTransformer implements NodeTransformer {
 			}
 		}
 
+		// An interface that the runtime adds members to is left as the runtime has it, and this is a
+		// measured rule rather than caution. An interface carries no constructor, so the only place a
+		// static field of it can be assigned is its static initialiser - and installing OptiFine's copy
+		// replaces that initialiser with one that knows nothing about NeoForge's fields. The plan
+		// restores the declarations so that the members exist, but the donor of an interface carries no
+		// initialiser to restore the values with (the transformer refuses to call one in an interface),
+		// and what is left is a field the runtime would have filled and that nothing fills here.
+		//
+		// There is also a blunt form of the same failure, which is how this was found on the 1.21.x line
+		// rather than predicted: the donors are written as plain classes, so a restored interface field
+		// arrives with the class's modifiers -
+		//
+		//   java.lang.ClassFormatError: Illegal field modifiers in class BlockStateModel$Unbaked: 0x9
+		//
+		// 0x9 being public static with no final, which no interface field may be. Normalising the
+		// modifiers would have made the class loadable and left it broken in the way described above, so
+		// the class is not installed at all.
+		if((patched.access & Opcodes.ACC_INTERFACE) != 0 && RESTORED_CLASSES.contains(patched.name)) {
+			LOGGER.info("Left " + patched.name.replace('/', '.') + " alone: the runtime adds members to that "
+					+ "interface, and installing OptiFine's copy would replace the static initialiser that "
+					+ "fills them");
+			return input;
+		}
+
 		// Content in place rather than returning OptiFine's node: the transformers after this one in
 		// the chain, ours included, are handed the same node and expect the class they were told about.
 		input.superName = patched.superName;
@@ -486,29 +510,39 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		//   runtime ModelBaker extends net.neoforged.neoforge.client.extensions.IModelBakerExtension
 		//   OptiFine ModelBaker extends net.minecraftforge.client.extensions.IForgeModelBaker
 		//   NoSuchMethodError: 'BakedModel ModelBaker.bake(ResourceLocation, ModelState, Function)'
-		// Keeping both lets either route resolve. Interfaces only: on this branch the same union applied
-		// to classes was measured to break the verified lines. 1.20.4 reached the title screen and then
-		// failed to load net.minecraft.world.level.block.state.BlockState and
-		// net.minecraft.world.item.ItemStack,
+		// Keeping both lets either route resolve.
 		//
-		//   NoClassDefFoundError: BlockState
-		//     Caused by: java.lang.ClassNotFoundException: net.minecraft.world.level.block.state.BlockState
-		//     at cpw.mods.cl.ModuleClassLoader.loadClass(ModuleClassLoader.java:193)
-		//     at net.optifine.reflect.ReflectorMethod.getMethod(ReflectorMethod.java:238)
+		// The same holds for a class, and there the runtime's interfaces are not a detail: NeoForge
+		// patches a game class to implement its extension interface and its own code then casts to it,
+		// so a swapped class that drops the interface dies at the first cast instead:
+		//   runtime BlockEntity implements net.neoforged.neoforge.common.extensions.IBlockEntityExtension
+		//   payload BlockEntity implements net.minecraftforge.common.extensions.IForgeBlockEntity
+		//   ClassCastException: BlockEntity cannot be cast to IBlockEntityExtension
+		// An interface added this way obliges the class to implement its abstract methods, and that is
+		// why the addition is safe: an abstract method of an injected interface is implemented by the
+		// runtime class OptiFine compiled instead of, so it is a member of the runtime class that the
+		// payload lacks - exactly what MemberRestorePlan restores from the donor classes.
 		//
-		// and 1.20.2 stopped starting at all (EXITED after 10s). The 1.21.x line runs with the union on
-		// classes, so the difference is a property of these runtimes and not of the rule; until it is
-		// understood, this branch keeps the shape its verification was done with.
-		if((patched.access & Opcodes.ACC_INTERFACE) != 0) {
-			List<String> merged = new ArrayList<>(patched.interfaces == null ? List.<String>of() : patched.interfaces);
-			for(String name : input.interfaces) {
-				if(!merged.contains(name)) {
-					merged.add(name);
-				}
+		// This branch kept the union to interfaces only, on evidence that a class-level union broke its
+		// verified lines: 1.20.4 reached the title screen and then failed to load BlockState and
+		// ItemStack, and 1.20.2 stopped starting. That evidence was re-measured later and is confounded -
+		// the BlockState/ItemStack NoClassDefFoundError is this family's known OptiFine-build Reflector
+		// defect and is present in the *baseline* run of both lines, byte for byte (14,481 / 14,631
+		// bytes, same three heads). So the rule is ported here from the 1.21.x line and measured again on
+		// all four 1.20.x lines; the measurement decides, and docs/MATRIX.md records it.
+		List<String> kept = new ArrayList<>(patched.interfaces == null ? List.<String>of() : patched.interfaces);
+		int injected = 0;
+		for(String name : input.interfaces) {
+			if(!kept.contains(name)) {
+				kept.add(name);
+				injected++;
 			}
-			input.interfaces = merged;
-		} else {
-			input.interfaces = patched.interfaces == null ? new ArrayList<>() : new ArrayList<>(patched.interfaces);
+		}
+		input.interfaces = kept;
+		if((patched.access & Opcodes.ACC_INTERFACE) == 0 && injected > 0) {
+			LOGGER.info("Kept the runtime's " + injected + " interface(s) on " + input.name.replace('/', '.')
+					+ ": " + (patched.interfaces == null ? 0 : patched.interfaces.size()) + " from the payload, "
+					+ kept.size() + " in place");
 		}
 		input.signature = patched.signature;
 		// Members are not the same story as the class. Taking OptiFine's word for the class flags is
@@ -562,6 +596,33 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		LOGGER.info("Replaced " + input.name.replace('/', '.') + " with OptiFine's patched version ("
 				+ fields.size() + " fields, " + methods.size() + " methods)");
 		return input;
+	}
+
+	/**
+	 * The classes the member restore plan has something to put back into, read from the same file the
+	 * transformer that does the restoring reads. Only the owner of each line matters here.
+	 */
+	private static final String MEMBER_RESTORES = "/optifineoforge/member-restores.txt";
+
+	private static final Set<String> RESTORED_CLASSES = loadRestoredClasses();
+
+	private static Set<String> loadRestoredClasses() {
+		Set<String> result = new HashSet<>();
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(MEMBER_RESTORES)) {
+			if(stream == null) {
+				return Set.of();
+			}
+			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+				String[] parts = line.trim().split(" ", 4);
+				if(parts.length >= 4) {
+					result.add(parts[1]);
+				}
+			}
+		} catch(IOException e) {
+			LOGGER.warn("could not read " + MEMBER_RESTORES + ": " + e);
+		}
+		LOGGER.info("Classes with members to restore: " + result.size());
+		return Set.copyOf(result);
 	}
 
 	private static boolean loggedModules;

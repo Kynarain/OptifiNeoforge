@@ -71,12 +71,35 @@ public final class OptifineJarFixer {
 
 	/** The repair this entry needs, which is none for anything else in the jar. */
 	public static byte[] fix(String entryName, byte[] classBytes) {
+		return fix(entryName, classBytes, true);
+	}
+
+	/**
+	 * The same, and the metadata repair can be left out.
+	 *
+	 * <p>Which of the two constructor shapes is right is a property of the <em>runtime</em>, not of this
+	 * jar, and it is the one thing here that must not be decided unconditionally. Measured off the
+	 * profile JSONs: 1.20.1's Forge profile pins {@code securejarhandler 2.1.10} - which has only the
+	 * {@code Set} constructor - while 20.2.88 and 20.4.251 pin {@code 2.1.24} and 20.6.141 pins
+	 * {@code 3.0.8}, which have the {@code Supplier} one. OptiFine's own class calls the {@code Set}
+	 * form, so rewriting it unconditionally is right on three of the four 1.20.x lines and wrong on
+	 * 1.20.1, where it produced</p>
+	 *
+	 * <pre>NoSuchMethodError: 'void SimpleJarMetadata.&lt;init&gt;(String, String, Supplier, List)'
+	 *   at optifine.OptiFineJar.lambda$1(OptiFineJar.java)</pre>
+	 *
+	 * <p>That repair was added for 1.20.2 on 2026-09-16 00:01, after 1.20.1's last verified run, and the
+	 * line was never re-measured - so the flag exists and the rig passes it per line.</p>
+	 *
+	 * @param repairJarMetadata whether the runtime's {@code SimpleJarMetadata} takes the newer shape
+	 */
+	public static byte[] fix(String entryName, byte[] classBytes, boolean repairJarMetadata) {
 		String name = entryName.endsWith(".class") ? entryName.substring(0, entryName.length() - ".class".length()) : entryName;
 		if(SERVICE.equals(name)) {
 			return fixServicePath(classBytes);
 		}
 		if(JAR_CLASS.equals(name)) {
-			return fixJarMetadataCall(classBytes);
+			return repairJarMetadata ? fixJarMetadataCall(classBytes) : classBytes;
 		}
 		return classBytes;
 	}

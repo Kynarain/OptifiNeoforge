@@ -2471,6 +2471,231 @@ maven.neoforged.net 的 TLS 握手被断开(`Remote host terminated the handshak
 | 26.x | 26.1.2 | 26.1.2.109(FML 11 + JDK 25) | **已验证**(12/15 条) |
 | 1.21.x | 1.21.9 / 1.21.10 / 1.21.11 | 21.9.16-beta / 21.10.64 / 21.11.45 | 需要我们自己写 `ClassProcessor`(OptiFine 1.21.11 J9 不含) |
 
+---
+
+## 1.20.x 补上 26.x / 1.21.x 的工具与 loader 工作,四条线重新量过(2026-09-18)
+
+这一轮修的是那条"诚实的缺口":1.20.x 分支从来没有拿到后面两轮在这个项目里长出来的规则。搬的是**规则**,
+不是文件 —— 每一条都落在 1.20.x 真的会走到的地方,搬不动的都写清原因,而不是留下跑不到的代码。
+
+### 搬过去的(各自对应哪一处)
+
+| 来源 | 规则 | 落在 1.20.x 的哪里 |
+|---|---|---|
+| 1.21.x | 静态字段初值(`staticInitialiser` / `staticInitialiserFrom` / `readFrom`)、`valueRun` 数栈游走、`INVOKEDYNAMIC` 的认识与复制、`isReceiverPush` 兜底、`lambda$`/`access$` **只在载荷里没有同名成员时**回填、**载荷自有实例字段**的初值 | `MemberRestorePlan`(整文件按 26.x 替换,先核过差异是纯增量的:1.20.x→26.x 只有 8 处被改的行、0 处只删不补) |
+| 26.x | `reachedFrom`(先找 `<clinit>`,再只找它能到达的方法 —— 26.1.2 的 `MODDED_ENTRIES_REGISTERED` 是方法**设置**的标志,不是类初始值)、`populatedView`(赋值后又被填充的字段改从只读视图重建 —— 26.1.2 的 `PROFILES_MUTABLE` 被提升成空 map) | 同上 |
+| 1.21.x | 静态初值**内联进 `<clinit>`**、接口不调用初始化、`copy()` 认识 `InvokeDynamicInsnNode` | loader `MemberRestoreTransformer` |
+| 1.21.x | 接口并集**对类也生效**(kept-interfaces)、"运行时给这个接口加过成员就不换装"(读 `member-restores.txt` 的 `RESTORED_CLASSES` 守卫) | loader `PatchedClassTransformer` |
+
+### 明确**没**搬的(每条都有理由,不是遗漏)
+
+- **换类被拒时 `return input`**(1.21.x 的行为):1.20.x 的已验证行为是"记一行日志、照载荷自己的父类换进去",
+  1.20.2 正是靠它 `STARTED`(那一版的 `CapabilityProvider` 把 `serializeCaps()` 声明为 final)。
+- **`namesOldSuper` 加 `TypeInsnNode` 判据**:这条在 1.21.x 是收紧,在 1.20.x 会把 1.20.4 **正在生效**的
+  `BlockEntity → AttachmentHolder` 变成"拒绝换父类"。要改必须单独立一次测量。
+- **`repairSpriteCollection`(ModelManager 的精灵采集修复)**:它调用 `net.optifine.CustomItems.collectModelSprites`,
+  那是 1.21.8 那一版 OptiFine 才有的方法;1.20.x 的载荷里没有它,照搬就是 `NoSuchMethodError`。
+- **`ReparentPayload` / `RestoreMembers` / `ShimInheritedMembers`**:这三个是 26.x **离线路线**的工具,而 1.20.x
+  的路线没有对应的构建步骤(它的父类改写与接口并集在运行期 loader 里,shim 由 `ForgeApiShims` 生成)。
+  `ReparentPayload.unionInterfaces` 的规则以"接口并集"的形式落在 loader 上;`ShimInheritedMembers` 的
+  无名条目守卫只对那个工具自己的输入有意义 —— 而且已核对:**1.20.x 的 `ForgeApiShims` 与 26.x 逐字节相同**,
+  所以那一条在 1.20.x 无对应物。
+- **`SrgRemap` 的构造器原样不动**(测量过:无参构造器会改变重映射结果,1.21 那次的代价是载荷 +501 字节与
+  `AbstractMethodError`)。
+
+### 回归:四条线,每条对着自己记录的基线
+
+| 线 | VERDICT | `Setting user` | `[OptiFine]` | `Pre-stitch` | CTM | `Caught error` | stderr | 与基线比 |
+|---|---|---|---|---|---|---|---|---|
+| 1.20.1 / 47.1.106 | `STARTED (40s, Sound engine started)` | ✓ | **157** | 12 | 2 | 0 | **27 字节** | 与 `run-nf1201-rewrite` **逐项相同**(157 / 12 / 2 / 27 字节) |
+| 1.20.2 / 20.2.88 | `STARTED (40s, Sound engine started)` | ✓ | **239** | 13 | 2 | 0 | 14 625 字节 | `[OptiFine]` 239 = 基线;stderr 同形状(4 条 CNFE,类名在 `BlockState`/`ItemStack`/`PoseStack`… 之间取,本来就是变的) |
+| 1.20.4 / 20.4.251 | `STARTED (40s, Sound engine started)` | ✓ | **241** | 13 | 3 | 0 | **14 481 字节** | 与 `run-final1204` **逐项相同** |
+| 1.20.6 / 20.6.141 | `STARTED (40s, Sound engine started)` | ✓ | **222** | 14 | 3 | 0 | **0 字节** | 与 `run-nf1206-regcheck` **逐项相同** |
+
+四条本次都没有崩溃报告。**顺带得到一条新测量**:接口并集对**类**也生效这件事,在 1.20.4 上一共改到 9 个类、
+在 1.20.1 上 1 个、1.20.2 上 8 个,而四条线的判据**全部与基线一致** ⇒ 当初"类级并集弄坏了 1.20.x"的结论
+是被那条已知 Reflector 缺陷污染了的(1.20.4 的 `BlockState`/`ItemStack` 基线里本来就有,字节数完全相同)。
+
+### 回归里露出来的两个缺陷(都是本轮修掉的)
+
+**一、`NoSuchFieldError: cache`:计划给一个"不会装上"的类补了初值。**
+
+1.20.2 加上这些规则之后 `EXITED (10s)`:
+
+```
+Caused by: java.lang.NoSuchFieldError: cache
+  at net.minecraft.Util$9.optifineoforge$init$cache(Util.java)
+  at net.minecraft.Util$9.<init>(Util.java:663)
+```
+
+因果链是短的,而且**根因不在新规则本身**:`Util$9` 在 `member-restores.txt` 里(载荷的补丁产物有这个类,
+所以计划比到了它),但载荷**没有** `srg/net/minecraft/Util$9.class`(嵌套家族那一步把它丢掉了),
+于是真正被装上的类是运行时的那个,而它没有 `cache` 字段 —— 而"载荷自有实例字段"这条新规则恰好给
+`cache` 造了一个初始化方法,换装时被内联进构造器。旧代码同一条路只回填两个运行时方法(它们本来就在),
+所以一直是"碰巧无害"。
+
+修法落在 loader 而不是计划里,因为**只有 loader 知道哪个类真的在手上**:
+`MemberRestoreTransformer` 在收集初始化方法时先看它写的那个字段在目标类里在不在,不在就**不恢复、不调用**,
+并写明原因。实测它在四条线上各只触发一次,而且触发的正是 `Util$9`:
+
+```
+Not restoring optifineoforge$init$cache in net/minecraft/Util$9: it assigns
+net.minecraft.Util$9.cache Ljava/util/Map;, which this class does not have, so the payload's
+copy of the class is not the one in place
+```
+
+**二、`NoSuchMethodError: SimpleJarMetadata`:一个"按行才成立"的修复被无条件做了。**
+
+1.20.1 加完规则后 `EXITED (5s)`,而且死在 **OptiFine 自己的类**里:
+
+```
+NoSuchMethodError: 'void cpw.mods.jarhandling.impl.SimpleJarMetadata.<init>(String, String, Supplier, List)'
+  at optifine.OptiFineJar.lambda$1(OptiFineJar.java)
+```
+
+`OptifineJarFixer` 把 OptiFine 那个 `Set` 形状的调用改写成 `Supplier` 形状 —— 这个修复是 **2026-09-16 00:01
+为 1.20.2 加的**(`60ca008`/`a08e210`),而 1.20.1 的上一次实测是 **2026-09-15 23:45**,之后再没跑过。
+四条 profile 的 securejarhandler 版本是量出来的:
+
+| profile | securejarhandler | `SimpleJarMetadata` 第三个参数 |
+|---|---|---|
+| `1.20.1-forge-47.1.106` | **2.1.10** | `Set`(OptiFine 自己的调用形状,**不需要修**) |
+| `neoforge-20.2.88` / `neoforge-20.4.251` | 2.1.24 | `Supplier`(需要修) |
+| `neoforge-20.6.141` | 3.0.8 | `Supplier`(需要修) |
+
+所以修法是把这条修复变成**按行**的:`OptifineJar` 多一个 `--old-securejarhandler`,rig 多一个
+`OldSecureJarHandler` 开关,**只有 1.20.1** 的那条线打开;默认(不开)保持其它三条线已验证的形状。
+**规则(新增)**:凡是"改运行时 API 形状"的修复,都要问它是运行时的性质还是这个 jar 的性质;
+是运行时的,就必须按行给参数。1.20.1 修好后 stderr 回到 **27 字节、与基线逐字节相同**。
+
+## 1.21.11 的两问:一问答完,一问把因果链量到了底(2026-09-18)
+
+### (a) `crash-…-fml.txt` 是**我们的类**引起的,不是 21.11.45 自己的问题
+
+判据就是指定的对照跑:**同一个 profile、把两个 jar 拿掉**(`launch-neoforge.ps1 -NoMods`):
+
+```
+mods: (none)     VERDICT: STARTED (40s, marker: Sound engine started)
+--- no crash report from this run ---
+```
+
+⇒ 不带我们的 jar 时 21.11.45 干净启动。所以那份 `Mod loading failures` 是本 mod 装进去的类造成的。
+
+顺带把**哪一个字段是 null** 量出来了:崩在 `TagConventionLogWarning.<clinit>` 的数组字面量里,
+`LineNumberTable` 把源码行 201 映到偏移 **2942**,而那条语句(数组下标 149)的第三个参数正是
+`getstatic net/neoforged/neoforge/common/Tags$Items.DYES_BLACK`(行 52 起一行一条,52+149=201,
+两边吻合)。`Tags$Items` 自己的 `<clinit>` 里 128 个 TagKey 字段都有赋值,`tag(name)` 是
+`ItemTags.create(Identifier.fromNamespaceAndPath("c", name))` —— 而 `net.minecraft.resources.Identifier`
+**正是 391 个被换装类里的一个**。所以这是一条独立的、精确的下一问(**不是本轮的结论**):
+装上 OptiFine 编译的 `Identifier` 之后,`Tags$Items.DYES_BLACK` 为什么是 null 而它前面的 `DYES` 不是。
+
+### (b) `ClassNotFoundException: ValueOutput`:**是我们生成的 Forge shim 落在错误加载器上**
+
+探针(`OptifinePayloadClassProcessor`,一次一行的层图;现在挂在 `OPTIFINEOFORGE_DEBUG_LAYERS` 后面),
+实测出来的加载器图:
+
+```
+own     = URLClassLoader [optifine-payload.jar] [earlydisplay-10.0.36.jar] [loader-10.0.36.jar]
+          -> AppClassLoader -> PlatformClassLoader -> bootstrap
+          own 看不到 Reflector / ReflectorClass / ValueOutput / GameRenderer(全部 CNFE)
+system  = AppClassLoader,同样四个都看不到
+context = TransformingClassLoader
+          -> URLClassLoader [game2111/.cache/jij/<sha>/net.neoforged.neoforge-coremods-21.11.45.jar]
+          -> URLClassLoader [optifine-payload.jar] [earlydisplay-10.0.36.jar] [loader-10.0.36.jar]
+          -> AppClassLoader -> PlatformClassLoader -> bootstrap
+          context 看得到:Reflector -> module **optifineclasses**、ReflectorClass -> module optifineclasses、
+                          ValueOutput / GameRenderer -> module **minecraft**
+          (三者都由同一个 TransformingClassLoader 定义)
+```
+
+也就是说:**OptiFine 的类与游戏类住在同一个加载器上**,探针用它加载 `ValueOutput` 是成功的。
+失败的解析来自 URLClassLoader,而那两条 URL 类路径上**没有游戏类**(也没有 `optifine-classes.jar`)。
+再把静态证据接上去,整条链闭合:
+
+1. `net/optifine/reflect/Reflector.class` 里含字符串 **`IForgeBlockEntity`** ⇒ OptiFine 的 Reflector 表里有这一条;
+2. 我们的构建把这个接口作为 **Forge shim 生成**并放进 `optifine-payload.jar`,路径是**真包名**
+   `net/minecraftforge/common/extensions/IForgeBlockEntity.class`;
+3. 这个 shim 的成员签名里有游戏类型:`serializeCaps(net.minecraft.world.level.storage.ValueOutput)`;
+4. `optifine-payload.jar` 就在那个早期 `URLClassLoader` 的类路径上(上面 `own` 的 URL 里);
+5. `ReflectorClass.getTargetClass()` 是 **`Class.forName(name)`**(反编译看到,只有这一处、没有指定加载器),
+   该名字在游戏模块层里没有 ⇒ 落到父加载器(URLClassLoader)上,由它定义这个 shim;
+6. `ReflectorMethod.getMethods` → `getDeclaredMethods()` 在那个 shim 上做,参数类型 `ValueOutput`
+   用 shim 自己的加载器解析 ⇒ `URLClassLoader.findClass` ⇒ `ClassNotFoundException`。
+
+这就是 26.1.2 那个"早期服务层解析到另一份字节"的**同类问题的另一种表现**,而且给出了做法:
+**shim 不能以真包名待在会被早期 URL 类路径加载的地方** —— 它们要和游戏类一样经 `srg/` 这条无人认领的路径、
+由挂载点(ClassProcessor)装进游戏模块层,由**同一个**加载器定义。这是一条明确的下一步,
+判据仍是 `STARTED`、`Setting user`、stderr 0 字节、无本次崩溃报告。
+
+同一次运行的数字与 `run-diag2111e` 完全一致(`[OptiFine]` 182、装 391 个类、`Setting user` ✓、
+stderr 15 860 字节),说明探针本身没有扰动这条线。
+
+## 打包:1.20.x 的产物出来了(2026-09-18)
+
+上一轮 `gradlew build` 只败在网络。这一轮先重试了两次(仍是
+`maven.neoforged.net`:`Remote host terminated the handshake` / `ClosedChannelException`),第三次
+**越过了 `createMinecraftArtifacts`**,于是露出了第二个拦路虎 —— 与 1.21.x 同一个,但方向不同:
+
+```
+:compileJava FAILED
+  SrgRemap.java:181: 错误: 无法将类 Remapper 中的构造器 Remapper 应用到给定类型;
+    需要: 没有参数   找到: int
+```
+
+这条线的 `gradle.properties` 把 `asm_version` 写成 9.8,而本线 NeoForge(20.4.251)的
+`modDevApiElements` 钉的就是那一版,9.8 的 `Remapper` 没有 API 版构造器。**不能**改成无参构造器
+(测量过:那会改变重映射结果)。而 rig 编译同一批工具用的是 `libraries/` 里最新的 ASM = **9.10.1**,
+所以照 1.21.x 的做法:把 `asm_version` 定为 **9.10.1**,并在 `build.gradle` 里用
+`resolutionStrategy.eachDependency` 只对本项目自己的 `compileOnly` 依赖统一到这一版。修完:
+
+```
+BUILD SUCCESSFUL in 1m 15s     (Minecraft 1.20.4, NeoForge 20.4.251, Java 17)
+build/libs/OptifiNeoforge-0.2.0+mc1.20.4.jar   159 588 字节
+```
+
+`release/version.ps1 show` 给的产物名与之一致。**没有**打标签、**没有**建 Release(用户未授权发布)。
+
+## 共享 rig 改过之后的回归(规矩要求的那一次)
+
+这一轮改了 `build-line.ps1` 与 `build-rig-jar.ps1`(加 `OldSecureJarHandler` 与
+`--old-securejarhandler` 的传递)。按规矩重跑一条已验证线:
+
+| 线 | VERDICT | `Setting user` | `[OptiFine]` | CTM | 换装 | stderr | 行数 |
+|---|---|---|---|---|---|---|---|
+| 1.21.8 / 21.8.54 | `STARTED (40s, Sound engine started)` | ✓ | **337**(= 基线) | 3 | 380 | **0 字节** | 919 |
+
+与记录的基线(`optifine=337 settingUser=1 sound=1 CTM=38 stderr=0`)**逐项一致**,并且
+`no crash report from this run` ⇒ 共享 rig 的改动没有碰到已验证的线(默认不开新开关时,命令行与改前完全相同)。
+
+## 1.21.9 / 1.21.10:前置只走了一半(网络卡在 NeoForge)
+
+OptiFine 那一半**完成**(镜像的元数据与文件名都核过):
+
+| 版本 | 镜像列出的构建 | 已取 |
+|---|---|---|
+| 1.21.9 | `J7_pre1`、`J7_pre2` | `preview_OptiFine_1.21.9_HD_U_J7_pre2.jar`(7 664 893 字节) |
+| 1.21.10 | `J7_pre2` … `J7_pre11`(10 条) | `preview_OptiFine_1.21.10_HD_U_J7_pre11.jar`(7 805 444 字节) |
+
+NeoForge 那一半**卡住**:21.9.16-beta / 21.10.64 不在本机,而 `prepare-line.ps1` 取安装器与版本
+元数据都要 `https://maven.neoforged.net/releases/...`,本轮该主机连不上(HEAD 请求超时;
+github.com 正常)。1.21.9 / 1.21.10 的原版 jar 也不在本机,那是 `prepare-line.ps1` 里能先走完的一步。
+**下一问**是纯网络的:`prepare-line.ps1 -McVersion 1.21.9 -NfPrefix 21.9` 跑到
+"NeoForge 21.9.x" 那一步为止,拿到安装器之后 1.21.10 照做,挂载点直接复用 1.21.11 的
+`OptifinePayloadClassProcessor`(同代 FML 10.0.36)。
+
+### 当前修订(2026-09-18,本轮之后)
+
+| 线 | 版本 | NeoForge | 状态 |
+|---|---|---|---|
+| 1.20.x | 1.20.1 / 1.20.2 / 1.20.4 / 1.20.6 | 47.1.106 / 20.2.88 / 20.4.251 / 20.6.141 | **已验证**(四条,本轮拿到 26.x/1.21.x 的全部规则后重新量过;1.20.2/1.20.4 带已知 Reflector 缺陷) |
+| 1.21.x | 1.21 / 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8 | 21.0.167 / 21.1.250 / 21.3.97 / 21.4.149 / 21.6.20-beta / 21.7.25-beta / 21.8.54 | **已验证**(七条;1.21 带已知 Reflector 缺陷;1.21.8 本轮回归一致) |
+| 26.x | 26.1.2 | 26.1.2.109(FML 11 + JDK 25) | **已验证**(12/15 条) |
+| 1.21.x | 1.21.11 | 21.11.45 | 挂载点已装 391 个类、`[OptiFine]` 182 行;两问都已量清(见上),**未通过** |
+| 1.21.x | 1.21.9 / 1.21.10 | 21.9.16-beta / 21.10.64 | OptiFine 已取;NeoForge 卡在 maven 不可达 |
+
+**打包**:`1.20.x` 的 `build/libs/OptifiNeoforge-0.2.0+mc1.20.4.jar` 已产出(159 588 字节);
+`1.21.x` 与 `26.x` 上一轮的产物不变;**未发布**(无标签、无 Release)。
+
 
 
 
