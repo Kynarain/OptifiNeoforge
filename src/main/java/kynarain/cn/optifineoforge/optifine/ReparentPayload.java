@@ -106,20 +106,33 @@ public final class ReparentPayload {
 					String internal = name.substring(PATCHED_ROOT.length(), name.length() - ".class".length());
 					String[] planned = plan.get(internal);
 					bytes = readAll(zip.getInputStream(entry));
-					if(planned != null) {
+					ClassNode runtimeNode = runtime.get(internal);
+					if(planned != null || runtimeNode != null) {
 						ClassNode node = new ClassNode();
 						new ClassReader(bytes).accept(node, 0);
-						String problem = apply(node, planned, runtime.get(internal));
-						if(problem == null) {
+						boolean changed = false;
+						if(planned != null) {
+							String problem = apply(node, planned, runtimeNode);
+							if(problem == null) {
+								changed = true;
+								rewritten++;
+								report.add("  reparented " + internal.replace('/', '.') + " onto " + planned[0]
+										+ " (super(" + planned[1] + "))");
+							} else {
+								refused++;
+								report.add("  NOT reparented " + internal.replace('/', '.') + ": " + problem);
+							}
+						}
+						List<String> kept = unionInterfaces(node, runtimeNode, runtime);
+						if(!kept.isEmpty()) {
+							changed = true;
+							report.add("  kept the runtime's interface(s) on " + internal.replace('/', '.')
+									+ ": " + String.join(", ", kept));
+						}
+						if(changed) {
 							ClassWriter writer = new ClassWriter(0);
 							node.accept(writer);
 							bytes = writer.toByteArray();
-							rewritten++;
-							report.add("  reparented " + internal.replace('/', '.') + " onto " + planned[0]
-									+ " (super(" + planned[1] + "))");
-						} else {
-							refused++;
-							report.add("  NOT reparented " + internal.replace('/', '.') + ": " + problem);
 						}
 					}
 				} else {
@@ -203,6 +216,83 @@ public final class ReparentPayload {
 		return null;
 	}
 
+	/**
+	 * Adds the interfaces the runtime's copy implements and the payload's does not.
+	 *
+	 * <p>Measured on 26.1.2, where NeoForge's own {@code ExtendedButton} died with
+	 * {@code NoSuchMethodError: Font.ellipsize(FormattedText, int)}. Neither copy declares that method:
+	 * the runtime's {@code Font implements net.neoforged.neoforge.client.extensions.IFontExtension}, whose
+	 * default methods are the only place it exists, while OptiFine's copy implements
+	 * {@code net.minecraftforge.client.extensions.IForgeFont} - the Forge interface, which this build
+	 * answers with an empty shim. Installing OptiFine's copy therefore threw away the interface that
+	 * carries the method NeoForge calls. The ModLauncher lines solved the same problem inside the
+	 * transformer ("kept the runtime's 1 interface(s) on ..."); offline it belongs here, where both
+	 * copies are at hand.</p>
+	 *
+	 * <p>Only interfaces whose abstract methods the payload already declares are added: adding one whose
+	 * methods are missing would turn a clear NoSuchMethodError into an AbstractMethodError later. What
+	 * that refuses is reported rather than dropped.</p>
+	 *
+	 * @return the interfaces added, for the build log
+	 */
+	static List<String> unionInterfaces(ClassNode node, ClassNode runtimeNode, Map<String, ClassNode> runtime) {
+		List<String> added = new java.util.ArrayList<>();
+		if(runtimeNode == null || runtimeNode.interfaces == null) {
+			return added;
+		}
+		for(String name : runtimeNode.interfaces) {
+			if(node.interfaces.contains(name)) {
+				continue;
+			}
+			ClassNode itf = runtime.get(name);
+			if(itf == null) {
+				continue;
+			}
+			String missing = missingAbstract(node, itf, runtime, new java.util.LinkedHashSet<>());
+			if(missing != null) {
+				continue;
+			}
+			node.interfaces.add(name);
+			added.add(name.replace('/', '.'));
+		}
+		return added;
+	}
+
+	/** The first abstract method of an interface (or its parents) the class does not declare. */
+	private static String missingAbstract(ClassNode node, ClassNode itf, Map<String, ClassNode> runtime,
+			Set<String> visited) {
+		if(!visited.add(itf.name)) {
+			return null;
+		}
+		for(MethodNode method : itf.methods) {
+			if((method.access & Opcodes.ACC_ABSTRACT) == 0 || "<clinit>".equals(method.name)) {
+				continue; // a default or static method is carried by the interface itself
+			}
+			if(findMethod(node, method.name, method.desc) == null) {
+				return method.name + method.desc;
+			}
+		}
+		for(String parent : itf.interfaces) {
+			ClassNode parentNode = runtime.get(parent);
+			if(parentNode != null) {
+				String missing = missingAbstract(node, parentNode, runtime, visited);
+				if(missing != null) {
+					return missing;
+				}
+			}
+		}
+		return null;
+	}
+
+	private static MethodNode findMethod(ClassNode node, String name, String desc) {
+		for(MethodNode method : node.methods) {
+			if(method.name.equals(name) && method.desc.equals(desc)) {
+				return method;
+			}
+		}
+		return null;
+	}
+
 	/** The first place a class still names the old superclass, or null when it names it nowhere. */
 	private static String namesOldSuper(ClassNode node, String internalName) {
 		String fieldType = "L" + internalName + ";";
@@ -222,7 +312,7 @@ public final class ReparentPayload {
 	}
 
 	/** The runtime classes, by internal name, from the jars the build compares against. */
-	private static Map<String, ClassNode> readRuntime(List<Path> jars) throws IOException {
+	static Map<String, ClassNode> readRuntime(List<Path> jars) throws IOException {
 		Map<String, ClassNode> result = new TreeMap<>();
 		Set<String> seen = new LinkedHashSet<>();
 		for(Path jar : jars) {

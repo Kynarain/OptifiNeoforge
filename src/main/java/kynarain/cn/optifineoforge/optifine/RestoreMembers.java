@@ -87,7 +87,14 @@ public final class RestoreMembers {
 	 *
 	 * @return one line per class, for the build log
 	 */
-	public static List<String> restore(Path payload, Path planFile, Path donorsDir, Path out) throws IOException {
+	public static List<String> restore(Path payload, Path planFile, Path donorsDir, Path out, List<Path> runtimeJars)
+			throws IOException {
+		// The union of interfaces belongs here rather than in the re-parenting pass, and 26.1.2 is where
+		// that showed: the runtime's Font implements IFontExtension, whose abstract self() the payload only
+		// gains from the restore below. Checking the interface before the members are back refused it, and
+		// the class then kept a shim interface with no ellipsize() while NeoForge's ExtendedButton called
+		// exactly that. After this pass the class is final, so the check answers for what actually ships.
+		Map<String, ClassNode> runtime = runtimeJars.isEmpty() ? Map.of() : ReparentPayload.readRuntime(runtimeJars);
 		Set<String> targets = new LinkedHashSet<>();
 		int planned = 0;
 		for(String line : Files.readString(planFile, StandardCharsets.UTF_8).split("\\R")) {
@@ -118,7 +125,8 @@ public final class RestoreMembers {
 				if(!entry.isDirectory() && name.startsWith(PATCHED_ROOT) && name.endsWith(".class")) {
 					String internal = name.substring(PATCHED_ROOT.length(), name.length() - ".class".length());
 					boolean wanted = targets.contains(internal)
-							|| ReloadableResourceManagerFix.RESOURCE_MANAGER.equals(internal);
+							|| ReloadableResourceManagerFix.RESOURCE_MANAGER.equals(internal)
+							|| runtime.containsKey(internal);
 					if(wanted) {
 						ClassNode node = new ClassNode();
 						new ClassReader(bytes).accept(node, 0);
@@ -135,6 +143,12 @@ public final class RestoreMembers {
 						}
 						if(ReloadableResourceManagerFix.RESOURCE_MANAGER.equals(internal)) {
 							restored += ReloadableResourceManagerFix.apply(node);
+						}
+						List<String> kept = ReparentPayload.unionInterfaces(node, runtime.get(internal), runtime);
+						if(!kept.isEmpty()) {
+							restored++;
+							report.add("  kept the runtime's interface(s) on " + internal.replace('/', '.')
+									+ ": " + String.join(", ", kept));
 						}
 						if(restored > 0) {
 							ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
@@ -445,11 +459,15 @@ public final class RestoreMembers {
 	}
 
 	public static void main(String[] args) throws IOException {
-		if(args.length != 4) {
-			System.err.println("usage: RestoreMembers <payload jar> <plan> <donors dir> <out jar>");
+		if(args.length < 4) {
+			System.err.println("usage: RestoreMembers <payload jar> <plan> <donors dir> <out jar> [runtime jar...]");
 			System.exit(2);
 		}
-		restore(Path.of(args[0]), Path.of(args[1]), Path.of(args[2]), Path.of(args[3]))
+		List<Path> runtime = new ArrayList<>();
+		for(int index = 4; index < args.length; index++) {
+			runtime.add(Path.of(args[index]));
+		}
+		restore(Path.of(args[0]), Path.of(args[1]), Path.of(args[2]), Path.of(args[3]), runtime)
 				.forEach(System.out::println);
 	}
 }

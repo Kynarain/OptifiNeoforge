@@ -394,7 +394,7 @@ public final class MemberRestorePlan {
 				// while RenderSystem was drawing its first frame. The field is NeoForge's, the payload's
 				// class initialiser knows nothing about it, and the plan had restored the declaration
 				// without the value.
-				MethodNode initialiser = staticInitialiser(forValues, internalName, field);
+				MethodNode initialiser = staticInitialiser(forValues, replacement, internalName, field);
 				if(initialiser != null) {
 					donor.methods.add(initialiser);
 				} else if(!"I".equals(field.desc) && !"Z".equals(field.desc) && !"F".equals(field.desc)
@@ -682,7 +682,7 @@ public final class MemberRestorePlan {
 	 *
 	 * @return a static method taking no arguments, or {@code null} when no safe assignment was found
 	 */
-	private static MethodNode staticInitialiser(ClassNode runtime, String internalName, FieldNode field) {
+	private static MethodNode staticInitialiser(ClassNode runtime, ClassNode payload, String internalName, FieldNode field) {
 		// The static initialiser first, then only the methods it reaches. Both halves are measured.
 		//
 		// The second half is 1.21.6: RenderSystem.PIPELINE_MODIFIERS is assigned in a static helper
@@ -716,9 +716,90 @@ public final class MemberRestorePlan {
 				}
 				List<AbstractInsnNode> value = valueRun(insn);
 				if(value != null) {
+					if(clinit != null && method == clinit && isReadLater(clinit, insn, internalName, field)) {
+						// The runtime assigns this field and then *fills* it, so the assignment alone is
+						// the wrong value to ship: it is the empty container, not the populated one.
+						List<AbstractInsnNode> derived = populatedView(payload, clinit, internalName, field);
+						if(derived != null) {
+							return staticInitialiserFrom(internalName, field, derived);
+						}
+						System.out.println("  field " + internalName + "." + field.name
+								+ " is written again after its assignment and that fill cannot be lifted; it"
+								+ " ships at its constructed value only");
+					}
 					return staticInitialiserFrom(internalName, field, value);
 				}
 			}
+		}
+		return null;
+	}
+
+	/** Whether the same field is read again later in the same method it was assigned in. */
+	private static boolean isReadLater(MethodNode method, AbstractInsnNode store, String internalName, FieldNode field) {
+		for(AbstractInsnNode insn = store.getNext(); insn != null; insn = insn.getNext()) {
+			if(insn instanceof FieldInsnNode read && read.getOpcode() == Opcodes.GETSTATIC
+					&& internalName.equals(read.owner) && field.name.equals(read.name)
+					&& field.desc.equals(read.desc)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * The value of a field the runtime builds and then fills, rebuilt from the read-only view of it.
+	 *
+	 * <p>Measured on 26.1.2, where the runtime's static initialiser ends with</p>
+	 *
+	 * <pre>799: new HashMap; 806: putstatic PROFILES_MUTABLE      // the assignment, all a value run sees
+	 * 809: getstatic PROFILES_MUTABLE; ...; 816: Map.put(DEFAULT, ...)
+	 * 822: getstatic PROFILES_MUTABLE; ...; 829: Map.put(PERFORMANCE, ...)
+	 * 835: getstatic PROFILES_MUTABLE; 838: Collections.unmodifiableMap; 841: putstatic PROFILES</pre>
+	 *
+	 * <p>Lifting only the assignment shipped an <em>empty</em> map, and NeoForge's own
+	 * {@code RegisterDebugEntriesEvent} then died on the missing {@code DEFAULT} entry with
+	 * {@code NullPointerException: Map.size() ... "m" is null}, inside {@code Minecraft.<init>}. The
+	 * fills themselves cannot be lifted as they stand - they read locals built earlier in the same
+	 * initialiser - but the view they end up in can be read instead: the last statement above makes
+	 * {@code PROFILES} an unmodifiable view of exactly this map, so a mutable copy of that view is the
+	 * value the class was meant to start with. The payload has {@code PROFILES} of its own, assigned by
+	 * its own initialiser before this code runs, which is what makes the substitution sound.</p>
+	 *
+	 * @return the instructions building that copy, or {@code null} when the shape is not there
+	 */
+	private static List<AbstractInsnNode> populatedView(ClassNode payload, MethodNode clinit, String internalName,
+			FieldNode field) {
+		if(clinit.instructions == null) {
+			return null;
+		}
+		for(AbstractInsnNode insn = clinit.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if(!(insn instanceof MethodInsnNode call) || !"java/util/Collections".equals(call.owner)
+					|| !"unmodifiableMap".equals(call.name)) {
+				continue;
+			}
+			AbstractInsnNode source = skipPseudo(call.getPrevious());
+			if(!(source instanceof FieldInsnNode read) || read.getOpcode() != Opcodes.GETSTATIC
+					|| !internalName.equals(read.owner) || !field.name.equals(read.name)
+					|| !field.desc.equals(read.desc)) {
+				continue;
+			}
+			AbstractInsnNode target = skipPseudo(call.getNext());
+			if(!(target instanceof FieldInsnNode store) || store.getOpcode() != Opcodes.PUTSTATIC
+					|| !internalName.equals(store.owner)) {
+				continue;
+			}
+			// The copy is built out of that field, so the payload has to declare it: it is the one this
+			// code runs against, and a field only the runtime has would not resolve here.
+			if(!hasMember(payload, store.name, store.desc)) {
+				continue;
+			}
+			List<AbstractInsnNode> run = new ArrayList<>();
+			run.add(new TypeInsnNode(Opcodes.NEW, "java/util/HashMap"));
+			run.add(new InsnNode(Opcodes.DUP));
+			run.add(new FieldInsnNode(Opcodes.GETSTATIC, internalName, store.name, store.desc));
+			run.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/util/HashMap", "<init>",
+					"(Ljava/util/Map;)V", false));
+			return run;
 		}
 		return null;
 	}
