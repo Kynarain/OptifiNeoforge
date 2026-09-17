@@ -95,6 +95,7 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 
 	@Override
 	public void transform(ClassNode node, SimpleTransformationContext context) {
+		probeLayers();
 		byte[] bytes = payload().get(node.name);
 		if(bytes == null) {
 			return;
@@ -106,6 +107,83 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 		LOGGER.info("OptiFine payload: installed " + node.name.replace('/', '.') + " (" + finished.fields.size()
 				+ " fields, " + finished.methods.size() + " methods) [" + installed + " so far]");
 	}
+
+	/**
+	 * Where OptiFine's own classes live, printed once, because the stack trace of the failure this
+	 * answers is not enough to tell which loader it is.
+	 *
+	 * <p>Measured on 1.21.11, the failure is</p>
+	 *
+	 * <pre>NoClassDefFoundError: net/minecraft/world/level/storage/ValueOutput
+	 *   at Class.getDeclaredMethods0(Native Method)
+	 *   at net.optifine.reflect.ReflectorMethod.getMethods(ReflectorMethod.java:263)
+	 *   at ... GameRenderer.frameInit(1304)
+	 * Caused by: ClassNotFoundException: net.minecraft.world.level.storage.ValueOutput
+	 *   at java.net.URLClassLoader.findClass(URLClassLoader.java:445)</pre>
+	 *
+	 * <p>{@code getDeclaredMethods0} resolves the parameter types of the class it is enumerating with
+	 * <em>that class's own</em> defining loader, and the loader in the trace is a plain
+	 * {@code URLClassLoader} - which is not what a class in a module layer would be. So the question is
+	 * which loader defines {@code net.optifine.reflect.Reflector}, and whether it can see game classes
+	 * at all. Both are printed here rather than reasoned about: each candidate loader, its parent chain,
+	 * its URLs when it has any, and what it resolves the three names to.</p>
+	 */
+	private static void probeLayers() {
+		if(probed) {
+			return;
+		}
+		probed = true;
+		// Off unless asked for, the same way the 1.20.x/1.21.x lines' reload probe is: a payload that
+		// prints fifteen lines about class loaders on every launch is noise in a shipped mod, and the
+		// question it answers is asked once. Set OPTIFINEOFORGE_DEBUG_LAYERS=1 for the run that needs it.
+		if(System.getenv("OPTIFINEOFORGE_DEBUG_LAYERS") == null) {
+			return;
+		}
+		try {
+			reportLoader("own", OptifinePayloadClassProcessor.class.getClassLoader());
+			reportLoader("system", ClassLoader.getSystemClassLoader());
+			reportLoader("context", Thread.currentThread().getContextClassLoader());
+		} catch(Throwable t) {
+			LOGGER.warn("OptiFine classes probe failed: " + t);
+		}
+	}
+
+	private static void reportLoader(String label, ClassLoader loader) {
+		StringBuilder chain = new StringBuilder();
+		for(ClassLoader step = loader; step != null; step = step.getParent()) {
+			chain.append(step.getClass().getName());
+			if(step instanceof java.net.URLClassLoader urls) {
+				// Every URL of every loader in the chain, because the failure turns on exactly that:
+				// ReflectorClass.getTargetClass() is "Class.forName(name)" with no loader, so the class
+				// that resolves a game type is whichever loader defined ReflectorClass - and a second
+				// copy of OptiFine's classes on a plain URL classpath would resolve game names through
+				// a loader that never sees the game module layer. Printing only the top of the chain
+				// hides precisely the loader that matters when it is not the top.
+				for(URL url : urls.getURLs()) {
+					chain.append(" [").append(url).append(']');
+				}
+			}
+			chain.append(" -> ");
+		}
+		LOGGER.info("OptiFine classes probe: " + label + " = "
+				+ (loader == null ? "bootstrap" : loader.getClass().getName()) + "; chain " + chain + "bootstrap");
+		for(String name : new String[] {"net.optifine.reflect.Reflector",
+				"net.optifine.reflect.ReflectorClass",
+				"net.minecraft.world.level.storage.ValueOutput",
+				"net.minecraft.client.renderer.GameRenderer"}) {
+			try {
+				Class<?> found = Class.forName(name, false, loader);
+				LOGGER.info("OptiFine classes probe: " + label + " sees " + name + " -> module "
+						+ found.getModule().getName() + ", defined by "
+						+ (found.getClassLoader() == null ? "bootstrap" : found.getClassLoader().getClass().getName()));
+			} catch(Throwable t) {
+				LOGGER.info("OptiFine classes probe: " + label + " cannot load " + name + ": "
+						+ t.getClass().getName() + ": " + t.getMessage());
+			}
+		}
+	}
+
+	private static boolean probed;
 
 	/**
 	 * Copies one class node over another, the same way OptiFine's own newer processor does it: every
