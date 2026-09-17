@@ -2885,3 +2885,146 @@ PowerShell 5.1 根本解析不了**(`Invalid JSON primitive: 4 97 114 103 ...`,�
 
 
 
+
+## 1.21.10 与 1.21.9:一条链管三条线,四个缺陷,15/15(2026-09-18)
+
+这两条线的"前置"在上一轮就算完成了(原版 jar 与 sha1、安装器与 profile、OptiFine 两个 preview 构建),本轮做的是
+**把它们真的跑起来**,而两条线各自暴露出同一批缺陷 —— 因为 1.21.9 / 1.21.10 / 1.21.11 走的是同一条链、同一个挂载点,
+差别只有 loader 版本、NeoForge 版本和原版 jar 三个名字。
+
+### 一、先补齐两条线各自缺的两件事(都是实测)
+
+1. **本机 libraries 里缺两个库,而 rig 的启动器不会报**。`1.21.9.json` / `1.21.10.json` 里要
+   `com.mojang:jtracy:1.0.36` 与 `io.netty:netty-codec-http:4.1.118.Final`,两份都不在。
+   缺 jtracy 的后果不是"少个功能",而是**连 pre-bootstrap 都过不去**:
+
+   ```
+   java.lang.NoClassDefFoundError: com/mojang/jtracy/TracyClient
+     at net.minecraft.client.main.Main.main(Main.java:115)
+     at net.neoforged.fml.startup.Client.main(Client.java:19)
+   Description: Pre-bootstrap
+   ```
+
+   按版本 json 里的 url 取回并逐字节核对 sha1:`jtracy-1.0.36.jar` 12 876 字节(`20a63d06…`)、
+   `jtracy-1.0.36-natives-windows.jar` 47 599 字节(`b42bc771…`)、
+   `netty-codec-http-4.1.118.Final.jar` 674 362 字节(`eda08a71…`)。
+   顺带记一笔 rig 的缺口:启动器只在**profile 自己**的 libraries 缺失时打印 `!! N libraries not found`,
+   从 `inheritsFrom` 那一版继承来的库缺失时是**静默跳过**,所以这一类问题只能靠自己比对版本 json 发现。
+
+2. **FML 10 线的早期窗口:属性名是 ModLauncher 时代的,在 FML 10 上是空气**。
+   rig 的启动器给每条线都加 `-Dfml.earlyprogresswindow=false`,但 FML 10.0.32 / 10.0.14 只认游戏目录里
+   `config/fml.toml` 的 `earlyWindowProvider`;新建的游戏目录默认是 `fmlearlywindow`。实测(同一份载荷、同一个目录,
+   只差这一行):
+
+   | `earlyWindowProvider` | 观测 | 结果 |
+   |---|---|---|
+   | `fmlearlywindow`(默认) | 日志:`Loading ImmediateWindowProvider fmlearlywindow`;约 8-10 秒后 `IllegalStateException: Already building.` 落在 `SimpleBufferBuilder.begin ← RenderContext.renderText/blitTextureRegion ← PerformanceElement.render ← LoadingScreenRenderer.renderToFramebuffer ← DisplayWindow.renderToFramebuffer ← NeoForgeLoadingOverlay.render`,本次运行的 `crash-…-client.txt` 一份 | **EXITED(15s)**,标题画面都没到 |
+   | `none` | 日志:`Failed to find ImmediateWindowProvider none, disabling` | **STARTED(40s)** |
+
+   三次带 `fmlearlywindow` 的启动都崩在同一处(`run-final2110a`、`run-fresh2110a`、`run-ab2110on`),
+   改 `none` 之后四次全部正常。已核对 1.21.11 与 1.21.8 的游戏目录里本来就是 `none`
+   —— 也就是**这不是新缺陷,是这两条线的目录还没被设过**。
+   下一问(窄):rig 的启动器要么按 FML 代次写这一行,要么把那条失效的 `-Dfml.earlyprogresswindow` 注释改掉。
+
+### 二、`build-2111-chain.ps1` 参数化:三条线一条链
+
+| 参数 | 1.21.11(默认,已验证那条) | 1.21.10 | 1.21.9 |
+|---|---|---|---|
+| `-McVersion` | `1.21.11` | `1.21.10` | `1.21.9` |
+| `-NeoForgeVersion` | `21.11.45` | `21.10.64` | `21.9.16-beta` |
+| `-LoaderVersion`(挂载点编译用的 loader jar) | `10.0.36` | `10.0.32` | `10.0.14` |
+| `-RuntimeJar`(比对/回填的"运行时那一侧") | `minecraft-client-patched-21.11.45.jar`(默认推导) | `minecraft-client-patched-21.10.64.jar`(默认推导) | **`neoforge-21.9.16-beta-client.jar`**(显式) |
+
+`src/fml10` 两个源文件一个字节没改,只换 loader jar。1.21.9 的运行时那一侧要显式给,是因为**那一代安装器
+用的是老的 `--clean`/`--apply` 路径**,产出的是 `neoforge-21.9.16-beta-client.jar`(只有类),而不是
+`minecraft-client-patched-*.jar`;FML 10.0.14 认这个形状(`GameLocator.locateProductionMinecraft` 在
+`minecraft-client-patched` 缺失时回退到 `net.minecraft:client:<mc>-<neoform>:srg` + `:extra` +
+`net.neoforged:neoforge:<ver>:client`,启动日志里也能看到 `minecraft (composite(jar(…-srg.jar), jar(…-extra.jar), jar(…-client.jar)))`)。
+它作为"补丁后的游戏类"这一侧的替代是量过的:srg jar 9969 个类、client jar 9981 个类,对称差只有 1 / 13 个(都是补丁新增的合成类)。
+两个 metadata 模板现在**缺则生成、在则不覆盖**,1.21.11 那两个已验证的模板永远不会被重写。
+
+### 三、四个缺陷,每一个都由一次启动量出来
+
+| # | 现象 | 根因(实测) | 修法 |
+|---|---|---|---|
+| 1 | `NoClassDefFoundError: net/minecraft/resources/Identifier`(`DyeColor.<clinit>` ← 我们供给的 `ItemTags.create`),随后 38 次 `Cowardly refusing to send event … to a broken mod state`,OptiFine 的精灵采集永不发生,客户端永远打印 `[OptiFine] Waiting for model sprites` | `ForgeEraMembers` 把 26.x 的**类名写死**成 `Identifier`,而 1.21.10 / 1.21.9 还叫 `ResourceLocation`。实测:`Identifier.class` 只在 21.11.45 与 26.1.2.109 的补丁后 jar 里,21.10.64 与 21.9 的 client jar 里是 `ResourceLocation.class` | 工具改成**从运行时 jar 里解析**这个名字(两个都在时取新名 ⇒ 1.21.11 的输出逐字节不变);两个都没有就拒绝写 |
+| 2 | `VerifyError: Operand stack underflow`,`Location: BlockModelWrapper.<init>(List, List, ModelRenderProperties)V @12: invokestatic`;随后 `Caught error loading resourcepacks, removing all selected resourcepacks`,客户端停在加载画面 | 恢复这个类的两个实例字段初值(`renderType`、`modelLocation`)时,**只为整串调用 push 了一次 `aload_0`**,第二个 `invokestatic`(描述符 `(L…BlockModelWrapper;)V`)拿到空栈 | `RestoreMembers`:每次调用各 push 一次接收者。**这是工具里一直存在的缺陷**,其它线上没有任何构造器需要两个初值,所以从没发作 |
+| 3 | `ExceptionInInitializerError ← IndexOutOfBoundsException: Index 7 out of bounds for length 7`,栈是 `ModelDiscovery$ModelWrapper.slot ← <clinit> ← ModelDiscovery.<init> ← ModelManager.discoverModelDependencies` | 恢复 NeoForge 加的第八个槽 `KEY_ADDITIONAL_PROPERTIES` 时,把 `slot(7)` 放进了一个**仍然写着 7 的类**:`SLOT_COUNT=7`、`slot(int)` 的界是 7、构造器里的 `AtomicReferenceArray` 也是 7(OptiFine 这份是按 7 槽的原版编的) | 新工具 `SlotLayoutRepair`:拿运行时的 `SLOT_COUNT`,只改这三处数字(7 → 8),三处缺任何一处就拒绝写,防止"半对齐"的类在别处炸 |
+| 4 | 上一轮 1.21.10 停在 `Waiting for model sprites`(修好 #1 之后仍在) | 与 1.21.x 线上量到过的**同一个缺陷的离线版**:`CustomItems.registerIcons` 等 `modelSpritesUpdated`,唯一写它的是 `CustomItems.collectModelSprites`,而载荷里的这个调用要么在 NeoForge 扩容过的四参重载里(从运行时恢复,体内没有这个调用),要么在 OptiFine 自己那份的 `if(Config.isCustomItems())` 后面 | 新工具 `SpriteCollectionRepair`:在两个重载的**头部**各插一次 `CustomItems.collectModelSprites(map)`(与 1.21.x loader 的 `repairSpriteCollection` 同一条规则) |
+
+方法级的证据(每条都可在本轮产物里复现):
+
+* #2:`javap` 修前 `8: aload_0; 9: invokestatic optifineoforge$init$renderType; 12: invokestatic optifineoforge$init$modelLocation`,修后 `12: aload_0; 13: invokestatic …$modelLocation`。
+* #3:运行时 `slot(int)` 是 `bipush 8; Objects.checkIndex`,载荷是 `bipush 7`;修后载荷 `SLOT_COUNT: 7 → 8`、界 8、数组 8。
+* #4:线程转储(`logs/jstack-2110.txt`)把等待的那个人钉在
+  `net.optifine.Config.sleep ← net.optifine.CustomItems.registerIcons ← net.optifine.util.TextureUtils.registerCustomSprites
+  ← net.minecraft.client.renderer.texture.TextureAtlas.preStitch ← SpriteLoader.lambda$loadAndStitch$7
+  ← SimpleReloadInstance.lambda$prepareTasks$0`;
+  修后同一次日志里 `CustomItems: Collecting model sprites` 2 次、`Registering sprites` 1 次、`Waiting for model sprites` **0** 次。
+
+### 四、实测(2026-09-18)
+
+| 线 | NeoForge | 载荷 | VERDICT | `Setting user` | `Sound engine` | `[OptiFine]` | 装上的类 | `Pre-stitch` | stderr | 本次 crash |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **1.21.10** | 21.10.64 | 3 882 296 B | `STARTED (40s, Sound engine started)` | ✓ | ✓ | **280** | **394** | 13 | **0 字节** | 无 |
+| 1.21.10 对照(同 profile/同目录,无 mod) | 21.10.64 | — | `STARTED (40s)` | ✓ | ✓ | 0 | — | — | **0 字节** | 无 |
+| **1.21.9** | 21.9.16-beta | 3 807 587 B | `STARTED (40s, Sound engine started)` | ✓ | ✓ | **289** | **383** | 13 | **0 字节** | 无 |
+| 1.21.9 对照(同 profile/同目录,无 mod) | 21.9.16-beta | — | `STARTED (40s)` | ✓ | ✓ | 0 | — | — | **0 字节** | 无 |
+| 1.21.9 首次启动(目录里已有 `options.txt`、还没有 `optionsof.txt`) | 21.9.16-beta | 同上 | `STARTED (40s)` | ✓ | ✓ | 290 | 383 | 13 | 673 字节(见五-1) | 无 |
+| 回归 **1.21.11** | 21.11.45 | 4 017 419 B | `STARTED (40s, Sound engine started)` | ✓ | ✓ | **197**(基线 196) | **400**(=基线) | 15 | **107 字节**(=它的对照) | 无 |
+
+* 1.21.11 的 `[OptiFine]` 196 → 197 与日志行数 708 → 709 都只多一行,正是 #4 那条修复让
+  `CustomItems: Collecting model sprites` 在四参重载里也打印一次;装上的类仍是 400、stderr 仍是 107 字节。
+
+链路构建数字:
+
+| 线 | 比较的被替换类 | 计划回填 | 实际回填 | reparent | 成品游戏类 | payload | classes jar | Reflector 表 / gap |
+|---|---|---|---|---|---|---|---|---|
+| 1.21.10 | 549(720 无对应) | 349 | **384 / 89 类** | 1 | 552 | 3 882 296 B | 1 431 539 B | 247 / 8(1 stored) |
+| 1.21.9 | 515(718 无对应) | 342 | **375 / 88 类** | 1 | 518 | 3 807 587 B | 1 427 651 B | 246 / 6(1 stored) |
+| 1.21.11(回归) | 566 | 365 | **398 / 92 类** | 1 | 569 | 4 017 419 B | 1 486 796 B | 247 / 8(1 stored) |
+
+两处新工具的自我报告(1.21.10 与 1.21.9 完全同形):
+
+```
+7d/9 putting OptiFine's sprite collection back on the call path the game uses
+      collectModelSprites added to the head of discoverModelDependencies(…3 参…)(OptiFine's own guarded call is still there)
+      collectModelSprites added to the head of discoverModelDependencies(…4 参…)(the restored runtime overload, which had no call at all)
+7e/9 aligning a restored member with the class layout the runtime grew
+      ModelDiscovery$ModelWrapper SLOT_COUNT: 7 -> 8 / 界 8 / 数组 8
+```
+
+1.21.11 那条线上 7e 报的是"这个类不在载荷里"(它的 OptiFine 构建不替换这个类),这是**结果而不是失败**,
+工具按缺席处理并原样写回。
+
+### 五、还没修的,以及精确的下一问
+
+1. **首启一次性的 stderr,不是本轮的结论**。OptiFine 的 `Options.loadOfOptions` 对文件的每一行做
+   `String[] parts = line.split(":"); key = parts[0]; value = parts[1];`,**没有长度检查**;原版
+   `options.txt` 里有一行 `lastServer:`(`"lastServer:".split(":")` 在 Java 里长度是 1),于是
+   `ArrayIndexOutOfBoundsException` 进了 stderr(1.21.10 679 字节、1.21.9 673 字节),
+   异常被 OptiFine 自己吞掉、游戏照常进标题画面。它只在"目录里有 `options.txt`、还没有 `optionsof.txt`"的
+   **第一次**启动出现(那次启动里 OptiFine 就会写出 `optionsof.txt`,第二次起 stderr 回到 0)。
+   **1.21.11 线上潜伏着同一个缺陷** —— 它的目录里早就有 `optionsof.txt`,所以从没触发过,本轮的 107 字节与它无关。
+   下一问(窄且可判):要不要在载荷里给这个方法补一个长度守卫(判据:首次启动的 stderr 也回到 0),以及
+   1.21.x / 1.20.x 各线的同一段代码长什么样(它们的目录同样是复用的,缺陷可能只是没被触发)。
+2. **1.21.x 的 loader 里同一处 `aload_0` 缺陷**。`MemberRestoreTransformer` 里那段"给每个构造器插初值调用"的代码
+   与 `RestoreMembers` 修前逐字相同(一次 `aload_0` + N 次 `invokestatic`)。它在已验证的 7 条 1.21.x 线上没有发作
+   (每条线上每个构造器最多需要 1 个初值),但它是同一个缺陷。下一问:照 26.x 的修法改掉,并重跑一条已验证线,
+   判据是逐项等于基线(本轮没有改它,所以那 7 条线的状态不变)。
+3. 1.21.11 剩下的两问仍在原地,本轮没有动:七条 Reflector gap 各自的可观察代价,以及 196/400 与已知良好运行
+   的逐项对照。
+
+### 六、当前修订(2026-09-18,本轮之后)
+
+| 线 | 版本 | NeoForge | 状态 |
+|---|---|---|---|
+| 1.20.x | 1.20.1 / 1.20.2 / 1.20.4 / 1.20.6 | 47.1.106 / 20.2.88 / 20.4.251 / 20.6.141 | **已验证**(四条;1.20.2/1.20.4 带已知 Reflector 缺陷;本轮未动) |
+| 1.21.x | 1.21 / 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8 | 21.0.167 / 21.1.250 / 21.3.97 / 21.4.149 / 21.6.20-beta / 21.7.25-beta / 21.8.54 | **已验证**(七条;1.21 带已知 Reflector 缺陷;本轮未动) |
+| 26.x | 26.1.2 | 26.1.2.109(FML 11 + JDK 25) | **已验证** |
+| 1.21.x | 1.21.9 / 1.21.10 / **1.21.11** | 21.9.16-beta / 21.10.64 / 21.11.45 | **已验证**(三条;均 `STARTED` + `Setting user` + `Sound engine` + stderr = 各自对照 + 本次无崩溃报告) |
+
+⇒ **15 / 15 条线全部已验证**。1.21.11 本轮按回归重跑(`[OptiFine]` 197、装上 400、stderr 107 字节 = 它的对照)。
+
+`optionsof.txt` 那条首启缺陷是所有 FML 10 线共有的已知项(不影响启动),写在五-1。
+**未发布**(无标签、无 Release)。
