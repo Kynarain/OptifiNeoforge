@@ -2711,6 +2711,171 @@ client url:
 **打包**:`1.20.x` 的 `build/libs/OptifiNeoforge-0.2.0+mc1.20.4.jar` 已产出(159 588 字节);
 `1.21.x` 与 `26.x` 上一轮的产物不变;**未发布**(无标签、无 Release)。
 
+---
+
+## 1.21.11 通过:两问都修掉,而第二问的根因不是 `Identifier`(2026-09-18)
+
+两条线(FML 10 的挂载点 + 离线载荷)都动过,判据不变:`STARTED`、`Setting user`、stderr(除掉终端那一行)、
+无本次崩溃报告。
+
+### (a) Forge shim:从早期 classpath 搬进游戏层
+
+上一轮把因果链量到了底,这一轮只改**位置**,而位置就是全部:
+
+- **改前**:56 个 shim 由 `build-payload-2612.ps1 -ShimsDir` 写进 `optifine-payload.jar` 的**真包名**路径
+  (`net/minecraftforge/**`)。这个 jar 同时是早期服务 jar(`IModFileCandidateLocator` 服务文件让它被 FML 10
+  预加载),所以它的根类由一个普通 `URLClassLoader` 定义,而那个加载器看不到游戏模块层。
+- **改后**:`build-2111-chain.ps1` 第 7 步不再传 `-ShimsDir`,新增第 9 步把 `forge-shims-filled` 里的
+  56 个类写进 **`optifine-classes.jar`**——那是 `mods/` 里的普通 mod 文件,它的类由游戏层那个
+  `TransformingClassLoader` 定义,和游戏类同一个加载器。反射解析(`ReflectorClass.getTargetClass()` =
+  `Class.forName`,用的是调用者自己的加载器,而 Reflector 就在同一个模块里)因此拿到的是能解析游戏类型的 shim。
+
+脚本自己给出了判据,而不是靠读日志:
+
+```
+payload: 4017409 bytes
+  finished game classes under srg/: 569; OptiFine's own under srg/: 775
+  Forge shims left at real package paths in THIS jar: 0   (0 is the point ...)
+classes jar: 1486796 bytes (Forge API shims written into optifine-classes.jar: 56)
+```
+
+效果(stderr):**15 860 → 107 字节**,而那 107 字节与**不带 mod 的对照跑逐字节相同**(`logs\run-ctrl2111c`
+的 stderr 也是 107 字节,内容只有 log4j 那句 `Advanced terminal features are not available in this
+environment`)⇒ 这一轮之后,这条线的 stderr 里没有一个字节来自我们。修掉的两条是:
+
+```
+java.lang.NoClassDefFoundError: net/minecraft/core/HolderLookup$Provider
+  at java.lang.Class.getDeclaredMethods0(Native Method)
+  at net.optifine.reflect.ReflectorMethod.getMethods(...)
+Caused by: java.lang.ClassNotFoundException ... at java.net.URLClassLoader.findClass
+```
+被枚举的那个类是 shim `net/minecraftforge/common/extensions/IForgeBlockEntity`(实测:56 个 shim 里只有它
+同时含 `HolderLookup$Provider` 与 `serializeCaps(...ValueOutput)` 这类游戏类型签名)。
+
+### (b) 那个 null 的来源:`Reflector` 表里的一条**游戏类**成员,不是 `Identifier`
+
+上一轮把 null 钉到了 `TagConventionLogWarning` 的数组字面量第 149 项(源码行 201 ↔ 偏移 2942,
+`createForgeMapEntry(Registries.ITEM, "dyes/black", Tags$Items.DYES_BLACK)`)。这一轮先读 `Tags$Items`,
+问题的一半就没了:
+
+```
+DYES       = tag("dyes")              -> ItemTags.create(Identifier.fromNamespaceAndPath("c","dyes"))
+DYES_BLACK = DyeColor.BLACK.getTag()  -> 被换装的那个 DyeColor 自己的字段
+```
+
+所以"为什么 `DYES` 不是 null 而 `DYES_BLACK` 是"的答案很简单:两者根本不是同一种表达式。再看被换装的
+`DyeColor` 构造器(payload 里那份),链条闭合:
+
+```
+this.dyesTag = (TagKey) Reflector.ForgeItemTags_create.call("forge", "dyes/" + translationKeyIn);
+```
+
+而 `Reflector.ForgeItemTags` **不是一个 Forge 类**:`Reflector.<clinit>` 里它是
+`new ReflectorClass(net.minecraft.tags.ItemTags.class)` + `makeMethod("create", String.class, String.class)`
+——即 **Forge 当年给游戏类 `ItemTags` 加的双参数重载**。NeoForge 的 `ItemTags` 只剩
+`create(Identifier)`(实测 `javap`),于是查不到方法,`ReflectorMethod.call` 按设计**静默返回 null**,
+`dyesTag`/`dyedTag` 十六个颜色全是 null,`Tags$Items.DYES_BLACK` 是 null,NeoForge 自己的
+`TagConventionLogWarning.<clinit>` 抛 NPE,`ExceptionInInitializerError` → `Mod loading failures`。
+
+**这条缺陷的形状值得单独记住**:OptiFine 通过反射读 Forge API,缺目标时**不报错**,把一个 null 写进游戏类的
+字段;读它的是三个类之外的 NeoForge 代码。载入 mod 时看不到,崩溃点离原因很远。
+
+### 两个新工具(26.x `src/main/java/.../optifine/`,由 rig 编译)
+
+| 工具 | 作用 | 实测数字(1.21.11) |
+|---|---|---|
+| `ReflectorGaps` | 从 `Reflector.<clinit>` 的直线字节码里**还原整张反射表**(目标类、成员名、参数类型),再扫载荷里对它的用法,报出"运行时没有这个目标"的条目,并标出**把返回值写进字段**的那些 | 表 242 条(方法 127 / 字段 12 / 类 103);扫 568 个载荷类、143 处用法;缺目标 8 条,**其中 1 条是 stored** |
+| `ForgeEraMembers` | 给 stored 的那些补**真实现**(不是空壳),写进载荷 `srg/` 下,由挂载点照常装 | `net/minecraft/tags/ItemTags.create(String,String)`:运行时类 16 459 → 16 781 字节 |
+
+`ItemTags.create(String namespace, String path)` 的实现是把 `forge` 映射到本运行时的常规命名空间 `c`,
+其余命名空间原样传递——这不是猜的:NeoForge 自己的 `Tags$Items.tag(String)` 就是
+`ItemTags.create(Identifier.fromNamespaceAndPath("c", name))`,vanilla 的 `DyeColor` 构造器同样用 `"c"`,
+所以这样做出来的值与"这个运行时本来会算出的值"一致。
+
+### 实测(2026-09-18)
+
+| 运行 | 载荷 | VERDICT | `Setting user` | `Sound engine` | `[OptiFine]` | 装上的类 | stderr | 本次崩溃报告 |
+|---|---|---|---|---|---|---|---|---|
+| `run-fix2111a` | 未回填(`-SkipRestore` 的坑,见下) | EXITED | ✓ | ✗ | 26 | 167 | 107 字节 | 客户端崩溃 `NoSuchMethodError RenderTarget.<init>(String,ZZ)` |
+| `run-fix2111b` | 完整(回填 398 个成员) | STARTED | ✓ | ✓ | **196** | 400 | 107 字节 | 无 |
+| **`run-fix2111c`(验收)** | 同上 | **STARTED (40s, Sound engine started)** | ✓ | ✓ | **196** | **400** | **107 字节**(=对照跑的 107) | **无** |
+| `run-ctrl2111c`(同 profile,**不带两个 jar**) | — | STARTED (40s) | — | ✓ | — | — | 107 字节 | 无 |
+| `run-reg2111fix1218`(回归,1.21.8 / 21.8.54) | 上一轮产物 | STARTED (40s) | ✓ | ✓ | **337**(=基线) | — | **0 字节** | 无 |
+
+链路构建数字(`build-2111-chain.ps1 -SkipPatch`,回填完整):比较 566 个被替换类、
+计划回填 367 个成员、**实际 restored 398 member(s) across 92 class(es)、0 个类没捐体**、
+57 个 Forge 类型 40 个成员、56 个 shim(其中 5 个补了 default 方法)、成品游戏类 **569** 个
+(568 + 补上来的 `ItemTags`)、载荷 `optifine-payload.jar` **4 017 409 字节**、
+OptiFine 自己的类 775 个进 `srg/` 另加 `optifine-classes.jar` **1 486 796 字节**(modId `optifineclasses`)。
+
+**踩过的坑,记下来省下一次**:`-SkipRestore` 会把 `$restored` 设回 `$repatched`(即**未回填**的 jar),
+所以那次链是"合法地"用未回填的类装的载荷,于是出现
+`NoSuchMethodError: void RenderTarget.<init>(String, boolean, boolean)`(`MainTarget.<init>` ←
+`ClientHooks.instantiateMainTarget`)——而回填计划里明明有这一条
+(`M com/mojang/blaze3d/pipeline/RenderTarget <init> (Ljava/lang/String;ZZ)V`),
+回填后的类里也真的有。那个开关的含义是"跳过回填",不是"沿用上次回填的产物"。
+
+### 还没修:另外 7 条 gap(已量出,不在本轮结论里)
+
+`ReflectorGaps` 报的 8 条里,只有 1 条把返回值写进字段;剩下 7 条都是**调用后立刻用**的,所以不会崩,
+但都静默给出默认值(false/null/void):
+
+| 条目 | 目标(运行时缺) | 谁在调 |
+|---|---|---|
+| `ChunkAccess_getWorldForge` | `ChunkAccess.getWorldForge` | `ChunkMap` |
+| `ForgeBlockElementFace_data` | `BlockElementFace.data` | `FaceBakery` |
+| `ForgeEntity_isInWaterOrSwimmable` | `Entity.isInWaterOrSwimmable` | `LivingEntityRenderer` |
+| `ForgeItemBlockRenderTypes_isFancy` | `ItemBlockRenderTypes.isFancy` | `SingleVariant` |
+| `ForgeKeyBinding_setKeyConflictContext` | `KeyMapping.setKeyConflictContext` | `Options` |
+| `ForgeParticleResources_getProvider` | `ParticleResources.getProvider` | `ParticleEngine` |
+| `TerrainParticle_updateSprite` | `TerrainParticle.updateSprite` | `ClientLevel` |
+
+**下一问**(窄且可判):这 7 条各自"默认值"与真值差多少 —— 例如 `ParticleResources.getProvider` 返回 null
+会不会让 `ParticleEngine` 少一路粒子、`isFancy` 恒 false 会不会让快/精致模型选择走错。
+判据是每一条给出"OptiFine 侧的可观察差异"(不是"没崩就算过")。
+
+### 1.21.9 / 1.21.10:原版 jar 拿到了,NeoForge 装完了
+
+上一轮卡在镜像的 `downloads.client.url` 为空;这一轮实测发现比"空"更糟:**镜像那份 version json
+PowerShell 5.1 根本解析不了**(`Invalid JSON primitive: 4 97 114 103 ...`,正是 `"Arguments"` 的字节),
+而**启动器要读的正是这个文件**(libraries / assetIndex / arguments),所以它不只是下载源的问题。
+
+`prepare-line.ps1` 的修法(窄,三条):
+
+1. 取不到 client url 时退回 `piston-meta`(`Get-PistonVersionJson`:清单 → 版本 json → `downloads.client`),
+   并且**把 piston-meta 的那份 json 写回原路径**(镜像那份留作 `<version>.json.mirror`)——因为下载 URL 只是
+   这个文件里的一个字段;
+2. 下载后**核对 sha1**(两个来源是不同主机,不核对的话后面所有测量都没有意义);
+3. 新增 `Test-Fml10Install`:这一代安装器**不产出 `-client.jar`**,它跑 `PROCESS_MINECRAFT_JAR` 写出
+   `minecraft-client-patched-<ver>.jar` 并打印 `Successfully installed client into launcher`,而脚本原来据此报
+   "client jar present: False" 并**白跑四次安装器**(1.21.10 上实测)。现在按"profile 存在 + mainClass 是
+   `net.neoforged.fml.startup.Client` + patched jar 存在"判定。
+
+实测:
+
+| 线 | 原版 jar | sha1 | 安装器 | 结果 |
+|---|---|---|---|---|
+| 1.21.10 / 21.10.64 | 30 592 168 字节 | 与 piston-meta 一致 | 第 1 次即完成;手工补 4 个库(earlydisplay 10.0.32 360 274、loader 10.0.32 660 036、neoform 1.21.10-20251010.172816 mappings 541 275、universal 21.10.64 3 805 764) | profile ✓、`minecraft-client-patched-21.10.64.jar` 32 903 514 字节 ✓、universal ✓、**本代无 `-client.jar`** |
+| 1.21.9 / 21.9.16-beta | 30 591 861 字节(`ce92fd8d…`) | 与 piston-meta 一致 | 第 1 次报缺 5 个库并手工补齐(earlydisplay/loader 10.0.14、sponge-mixin 0.16.4、neoform 1.21.9-20250930.151910、universal 21.9.16-beta),第 2 次完成 | profile ✓、`neoforge-21.9.16-beta-client.jar` ✓、universal ✓ |
+
+两条线的 OptiFine jar 上一轮已取(1.21.9 `J7_pre2` 7 664 893 字节、1.21.10 `J7_pre11` 7 805 444 字节)。
+**下一步**是这两条线复用 1.21.11 的挂载点:同一代 FML 10,但 `OptifinePayloadClassProcessor` 目前按
+`loader-10.0.36` 编译、`build-2111-chain.ps1` 把 10.0.36 的路径写死了,而 21.10 用 loader **10.0.32**、
+21.9 用 **10.0.14** ⇒ 差事是把这三个路径参数化(挂载点本身不随行变),再各跑一次链。
+
+### 当前修订(2026-09-18,本轮之后)
+
+| 线 | 版本 | NeoForge | 状态 |
+|---|---|---|---|
+| 1.20.x | 1.20.1 / 1.20.2 / 1.20.4 / 1.20.6 | 47.1.106 / 20.2.88 / 20.4.251 / 20.6.141 | **已验证**(四条;1.20.2/1.20.4 带已知 Reflector 缺陷) |
+| 1.21.x | 1.21 / 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8 | 21.0.167 / 21.1.250 / 21.3.97 / 21.4.149 / 21.6.20-beta / 21.7.25-beta / 21.8.54 | **已验证**(七条;1.21 带已知 Reflector 缺陷;本轮 1.21.8 回归 337/0 字节,与基线一致) |
+| 26.x | 26.1.2 | 26.1.2.109(FML 11 + JDK 25) | **已验证** |
+| 1.21.x | **1.21.11** | 21.11.45 | **已验证**(`STARTED` + `Setting user` + `Sound engine` + `[OptiFine]` 196 行 + 装 400 个类 + stderr 107 字节=对照跑的 107 + 无崩溃报告)⇒ **13/15 条** |
+| 1.21.x | 1.21.9 / 1.21.10 | 21.9.16-beta / 21.10.64 | OptiFine ✓、原版 jar ✓、NeoForge 装完 ✓;差"参数化挂载点编译用的 loader 版本"后各跑一次链 |
+
+**打包**:产物不变(1.20.x `OptifiNeoforge-0.2.0+mc1.20.4.jar` 159 588、1.21.x 与 26.x 上一轮产物);
+**未发布**(无标签、无 Release)。
+
 
 
 
