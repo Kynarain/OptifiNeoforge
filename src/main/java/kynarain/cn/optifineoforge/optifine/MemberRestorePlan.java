@@ -683,12 +683,26 @@ public final class MemberRestorePlan {
 	 * @return a static method taking no arguments, or {@code null} when no safe assignment was found
 	 */
 	private static MethodNode staticInitialiser(ClassNode runtime, String internalName, FieldNode field) {
-		// Every method of the class is searched, not only its static initialiser, because the value may be
-		// built anywhere the initialiser calls into - a lambda body, a static helper. Measured on 1.21.6,
-		// where RenderSystem's PIPELINE_MODIFIERS is assigned in a synthetic method rather than in
-		// <clinit>, and searching only <clinit> left the field without a value and the client dead on its
-		// first frame with "PIPELINE_MODIFIERS is null".
-		for(MethodNode method : runtime.methods) {
+		// The static initialiser first, then only the methods it reaches. Both halves are measured.
+		//
+		// The second half is 1.21.6: RenderSystem.PIPELINE_MODIFIERS is assigned in a static helper
+		// rather than in <clinit>, and searching only <clinit> left the field null and the client dead on
+		// its first frame with "PIPELINE_MODIFIERS is null". But searching *every* method is wrong in the
+		// other direction, and 26.1.2 is where that showed:
+		//
+		//   DebugScreenEntries.MODDED_ENTRIES_REGISTERED = true;   // inside registerModdedDebugEntries()
+		//
+		// is a flag the method *sets*, not a value the class starts with. Lifting it into the payload's
+		// own <clinit> made the flag true before anything registered, and NeoForge's own call then died
+		// with "IllegalStateException: Already registered modded debug entries!" during
+		// Minecraft.<init>. A value is only an initial value if the class initialiser can reach it.
+		List<MethodNode> candidates = new ArrayList<>();
+		MethodNode clinit = findMethod(runtime, "<clinit>", "()V");
+		if(clinit != null) {
+			candidates.add(clinit);
+			candidates.addAll(reachedFrom(runtime, clinit));
+		}
+		for(MethodNode method : candidates) {
 			if(method.instructions == null) {
 				continue;
 			}
@@ -707,6 +721,36 @@ public final class MemberRestorePlan {
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * The class's own methods one method can reach, itself excluded.
+	 *
+	 * <p>Only calls whose owner is this class count: a value built inside another class belongs to that
+	 * class's initialisation, not to this one, and copying its code here would run it at the wrong time.</p>
+	 */
+	private static List<MethodNode> reachedFrom(ClassNode runtime, MethodNode start) {
+		List<MethodNode> found = new ArrayList<>();
+		List<MethodNode> queue = new ArrayList<>();
+		queue.add(start);
+		for(int i = 0; i < queue.size(); i++) {
+			MethodNode method = queue.get(i);
+			if(method.instructions == null) {
+				continue;
+			}
+			for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+				if(!(insn instanceof MethodInsnNode call) || !runtime.name.equals(call.owner)) {
+					continue;
+				}
+				MethodNode target = findMethod(runtime, call.name, call.desc);
+				if(target == null || target == start || found.contains(target) || queue.contains(target)) {
+					continue;
+				}
+				found.add(target);
+				queue.add(target);
+			}
+		}
+		return found;
 	}
 
 	/** One class out of a jar, for a value that has to come from the class the game will load. */
