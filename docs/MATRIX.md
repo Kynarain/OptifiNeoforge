@@ -2667,7 +2667,7 @@ build/libs/OptifiNeoforge-0.2.0+mc1.20.4.jar   159 588 字节
 与记录的基线(`optifine=337 settingUser=1 sound=1 CTM=38 stderr=0`)**逐项一致**,并且
 `no crash report from this run` ⇒ 共享 rig 的改动没有碰到已验证的线(默认不开新开关时,命令行与改前完全相同)。
 
-## 1.21.9 / 1.21.10:前置只走了一半(网络卡在 NeoForge)
+## 1.21.9 / 1.21.10:前置走了两步,卡在原版 jar(镜像的 URL 是空的)
 
 OptiFine 那一半**完成**(镜像的元数据与文件名都核过):
 
@@ -2676,11 +2676,26 @@ OptiFine 那一半**完成**(镜像的元数据与文件名都核过):
 | 1.21.9 | `J7_pre1`、`J7_pre2` | `preview_OptiFine_1.21.9_HD_U_J7_pre2.jar`(7 664 893 字节) |
 | 1.21.10 | `J7_pre2` … `J7_pre11`(10 条) | `preview_OptiFine_1.21.10_HD_U_J7_pre11.jar`(7 805 444 字节) |
 
-NeoForge 那一半**卡住**:21.9.16-beta / 21.10.64 不在本机,而 `prepare-line.ps1` 取安装器与版本
-元数据都要 `https://maven.neoforged.net/releases/...`,本轮该主机连不上(HEAD 请求超时;
-github.com 正常)。1.21.9 / 1.21.10 的原版 jar 也不在本机,那是 `prepare-line.ps1` 里能先走完的一步。
-**下一问**是纯网络的:`prepare-line.ps1 -McVersion 1.21.9 -NfPrefix 21.9` 跑到
-"NeoForge 21.9.x" 那一步为止,拿到安装器之后 1.21.10 照做,挂载点直接复用 1.21.11 的
+NeoForge 那一半**走了一半**:`prepare-line.ps1 -McVersion 1.21.9 -NfPrefix 21.9` 与
+`-McVersion 1.21.10 -NfPrefix 21.10` 都跑到了最后,而且**安装器下来了** ——
+`nf-21.9.16-beta-installer.jar`(6 344 885 字节)、`nf-21.10.64-installer.jar`(4 145 753 字节),
+`versions\neoforge-21.9.16-beta\` 与 `versions\neoforge-21.10.64\` 的 profile 也都写出来了
+(说明 `maven.neoforged.net` 在 01:02 / 01:04 那两个时刻是通的,本轮早些时候它超时过)。
+
+**真正卡住的是原版 jar,而原因在镜像的 JSON 里**:`bmclapi2` 给的版本 json 里
+`downloads.client.url` 是**空字符串**(实测 `1.21.9.json`),于是 `prepare-line.ps1` 拼出一个
+"主机名为空"的 URI 并重试 10 次:
+
+```
+client url:
+  attempt 1 failed at  : 无效的 URI: 未能分析主机名。
+```
+
+⇒ 两条线的原版 jar 都还是 False,`neoforge-21.9.16-beta-client.jar` / `-universal.jar` 也是 False
+(安装器那 3–4 次尝试没有产出它们 —— 与 21.0.167 记录过的同一种形状:安装器自己报"缺库",要手工补齐再跑)。
+**下一问**是脚本级的,而且很窄:`prepare-line.ps1` 在镜像 JSON 的 `downloads.client.url` 为空时,
+应当退回 `piston-meta` 取那一条 URL(它已经在用 piston-meta 作整份清单的兜底,只是没用在 client url 上),
+然后按老办法手工补齐安装器报缺的库;之后 1.21.10 照做,挂载点直接复用 1.21.11 的
 `OptifinePayloadClassProcessor`(同代 FML 10.0.36)。
 
 ### 当前修订(2026-09-18,本轮之后)
