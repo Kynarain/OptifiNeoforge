@@ -3028,3 +3028,22 @@ PowerShell 5.1 根本解析不了**(`Invalid JSON primitive: 4 97 114 103 ...`,�
 
 `optionsof.txt` 那条首启缺陷是所有 FML 10 线共有的已知项(不影响启动),写在五-1。
 **未发布**(无标签、无 Release)。
+### 七、顺手关掉的一个潜伏缺陷:1.21.x loader 里同一个 `aload_0`(2026-09-18)
+
+上一节五-2 记的那处"同一段代码"本轮改掉了,并按要求重跑了一条已验证线。改动是把
+"一次 `aload_0` + N 次 `invokestatic`"改成"每次调用各 push 一次接收者"(`MemberRestoreTransformer`),
+对一个只恢复 1 个初值的构造器来说**生成的字节码逐字节不变**,所以它对本轮的 7 条 1.21.x 线是"关掉地雷"而不是改行为。
+判据是重跑 1.21.8(`build-line.ps1 -Line 1218 -Launch -Tag reg1218aload -TimeoutSec 150`):
+
+| 项 | 基线 | 本次 |
+|---|---|---|
+| VERDICT | `STARTED (40s, Sound engine started)` | `STARTED (40s, Sound engine started)` |
+| `Setting user` / `Sound engine` | ✓ / ✓ | ✓ / ✓ |
+| `[OptiFine]` 行数 | 337 | **337** |
+| CTM 行数 | 38 | **38** |
+| stderr | 0 字节 | **0 字节** |
+| 日志行数 | 919 | **919** |
+| 换装的类 | 380 | 380 |
+| 本次 crash | 无 | 无 |
+
+⇒ 逐项一致。分支 `1.21.x` 的头因此从 `094952b` 前进一格(见提交),那 7 条线的状态不变。
