@@ -2420,6 +2420,48 @@ stderr 15 860 字节(2 条 CNFE);本轮 game2111 出现 2 份崩溃报告(见下
 注意 `[OptiFine] 182 行` 与 `Setting user`/`Sound engine` 同时出现 ⇒ OptiFine 在 FML 10 上**确实是活的**,
 挂载点这一层已经不是问题;剩下的两问都在"OptiFine 自己的类住在哪一层/哪一份字节"上。
 
+## 打包/发布:第一次真的跑起来(2026-09-18)
+
+`gradlew build` 与 `release/version.ps1` 到这一轮为止**只在 dry-run 里出现过**。这次三条线各自真跑了一遍,
+产物命名矩阵如下(`release/version.ps1 show` 的真实输出 + `build/libs/` 里的真实文件):
+
+| 分支 | `minecraft_version` | 版本(经 `release/version.ps1`) | 产物 | 字节 |
+|---|---|---|---|---|
+| `1.20.x` | 1.20.4 | 0.2.0(未升) | `OptifiNeoforge-0.2.0+mc1.20.4.jar` | **未产出**(见下) |
+| `1.21.x` | 1.21.4 | 0.1.0 → **0.1.1**(`patch`) | `OptifiNeoforge-0.1.1+mc1.21.4.jar` | 161 231 |
+| `26.x` | 26.1.2 | 0.1.0 → **0.1.1**(`patch`) | `OptifiNeoforge-0.1.1+mc26.1.2.jar` | 124 172 |
+
+升版理由按 `docs/VERSIONING.md` 的档位表:两条线都是 `patch`(只修正行为/新增已支持版本,不改使用方式),
+`1.0.0` 仍然保留 —— 它是"加载器确实在游戏里跑起来"的断言,由 rig 的 `VERDICT: STARTED` 支撑,这一次不由打包动作给出。
+
+### 两个真实的拦路虎(都已修,且第二个修错一次)
+
+1. **26.x:`src/main/java` 根本编译不过**。这条分支的目标是 FML 11(没有 ModLauncher),而 `src/main/java` 里
+   放着 ModLauncher 时代的 `OptifiNeoforgeTransformationService` 与 13 个 transformer ⇒ 100 个错误,
+   全是 `程序包 cpw.mods.modlauncher.api 不存在`。修法不是删,是**搬**:`src/main/java` → `src/ml11/java`
+   (与 1.20.x 分支既有的 `src/ml10` / `src/ml11` 约定一致),`src/main/java` 只留这个 MC 目标能编译的东西
+   (mod 入口 + 离线工具)。搬完 `BUILD SUCCESSFUL`。
+2. **两条线的 ASM 版本都是坑,而且方向相反**:
+   - 26.x:NeoForge 26.1.2.109 把 `org.ow2.asm:asm-commons` **strictly 钉在 9.9.1**,仓库里写 9.10.1 ⇒
+     整个 classpath 解析不了。`asm_version` 改 9.9.1 即可。
+   - 1.21.x:NeoForge 21.4.149 把 `org.ow2.asm:asm` **strictly 钉在 9.8**,而 9.8 **没有** `Remapper(int)`
+     构造器,`SrgRemap.Renamer` 用的正是它。第一版修法是改成无参 `super()` + 抑制弃用 —— **错了,而且错得很值**:
+     它编译通过,却**悄悄改了工具的输出**(1.21 载荷从 4 165 109 变成 4 165 610 字节),1.21 随即
+     `EXITED (15s)` 崩在
+     `AbstractMethodError: … ParticleEngine$$Lambda … does not define or inherit 'ParticleProvider create(SpriteSet)'`
+     (`ParticleEngine.register`)。**规尺**:ASM 9.10.1 上这两个构造器**不等价**。
+     正确的修法是 `build.gradle` 里加 `resolutionStrategy.eachDependency` 把 `org.ow2.asm.*` 统一到
+     `project.asm_version`(= 工具被验证过的那版),`SrgRemap` 原样恢复。
+     恢复后复跑(`logs\run-verify121back`):载荷回到 **4 165 109 字节**、`VERDICT: STARTED (40s, Sound engine started)`、
+     `Setting user` ✓、无本次崩溃报告、stderr 14 141 字节(仍是那 4 条已知 Reflector 异常)⇒ 1.21 回到基线。
+
+### 1.20.x 没产出:不是代码问题,是网络
+
+`gradlew build` 停在 `:createMinecraftArtifacts`(约 3–4 分钟后超时),失败信息是
+maven.neoforged.net 的 TLS 握手被断开(`Remote host terminated the handshake`,与 26.x 第一次失败同因)。
+代码侧没有改动,`release/version.ps1 show` 给出的产物名是 `OptifiNeoforge-0.2.0+mc1.20.4.jar`,
+下一轮重试这个任务即可 —— 判据是 `build/libs/` 里出现该文件。
+
 ### 当前修订(2026-09-18)
 
 | 线 | 版本 | NeoForge | 状态 |
