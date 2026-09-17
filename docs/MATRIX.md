@@ -2200,6 +2200,67 @@ public boolean handlesClass(SelectionContext context) {          // line 66-72
    编译**的(它的 `OptiFineBaseTransformer` 构造器里就引用了 `net.neoforged.neoforge.client.extensions.IMinecraftExtension`),
    所以回填量可能远小于 1.21.x 的各线。
 
+## 26.1.2 通过:离线路线走通,四步一个坑(2026-09-17)
+
+按上面那条结论走离线路线之后,这条线是"每修一处就前进一步"的又一例。四步里前一步已由上一轮留下,
+后三步是这一轮做的,每一步都先量到根因再改:
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | `NoSuchMethodError: RenderPipelines.lambda$registerCustomPipelines$0` | 运行时的方法从供体回填了,它调用的合成 lambda 没回填 | 已在载荷里补上(上一轮) |
+| 2 | `IllegalStateException: Already registered modded debug entries!` | 取值提取"在类里任意方法找赋值",把 `registerModdedDebugEntries()` **方法体内**的 `MODDED_ENTRIES_REGISTERED = true` 当成了类的初值 | `57713b7`:先找 `<clinit>`,再只找 `<clinit>` 能到达的方法(`reachedFrom`) |
+| 3 | `NullPointerException: Map.size() ... "m" is null`(在 `RegisterDebugEntriesEvent.<init>` 里) | `PROFILES_MUTABLE` 被提升成**空 map**:运行时的 `<clinit>` 先 `new HashMap` 赋值、再**往同一个 map 里 put** 两个 profile;只搬赋值就只剩空壳。NeoForge 的构造器读 `mutableProfiles.get(DEFAULT)` ⇒ null | 新增 `populatedView`:当 `<clinit>` 在赋值后**又读同一个字段**时,改从它的只读视图重建——末尾那句 `Collections.unmodifiableMap(PROFILES_MUTABLE)` → `PROFILES` 说明两者内容相同,而 `PROFILES` 是载荷自己 `<clinit>` 里(本代码之前)就已赋好的,于是发 `new HashMap(PROFILES)` |
+| 4 | `NoSuchMethodError: Font.ellipsize(FormattedText, int)`(在 NeoForge 自己的 `ExtendedButton.extractContents`) | **接口并集没做**:载荷的 `Font implements net.minecraftforge.client.extensions.IForgeFont`(我们生成的**空 shim**),运行时的 `Font implements net.neoforged.neoforge.client.extensions.IFontExtension`,而 `ellipsize` 只是后者的 **default 方法** —— 换装等于把承载这个方法的接口丢掉了 | 新增 `ReparentPayload.unionInterfaces`:补上运行时那份实现的接口,但**只补抽象方法载荷已经有的**(否则会把 NoSuchMethodError 变成更晚的 AbstractMethodError)。**必须放在成员回填之后**:`IFontExtension` 的抽象方法 `self()` 正是回填来的,先做并集会因缺 `self()` 而拒绝 |
+
+实测(2026-09-17 22:40,`logs\run-diag2612m`):
+
+```
+VERDICT: STARTED (40s, marker: Sound engine started)   no crash report from this run
+Setting user ✓        [OptiFine] 3478 行        OptiFine: processClass: 795 次
+ConnectedTextures 40 行    Shaders 101 行     NullPointerException 0    NoSuchMethodError 0
+stderr 107 字节 = 1 行 "Advanced terminal features are not available in this environment"
+```
+
+关于那 107 字节:**同一条线不带任何 mod 的对照跑(`run-ctrl2612b`)stderr 也正好是 107 字节、同一行**,
+只有时间戳不同 ⇒ 那是 FML 11 在重定向 stdio 下由终端日志组件写出的环境告警,不是本 mod 的输出。
+判据按"mod 自己往 stderr 写了 0 字节"计。
+
+载荷规模(供体/接口那两步的实测):`restored 253 member(s) across 72 class(es) from 222 planned`、
+接口并集补了 8 个类(`Font`/`VertexConsumer`/`BlockState`/`ModelBaker` 等)、`built` 后
+`mods-stage-2612\optifine-payload.jar` 4 034 946 字节。第二次独立复跑(`run-final2612`)数字一致:
+`[OptiFine]` 3478、`processClass` 795、`Setting user` ✓、CTM 40、无本次 crash、stderr 107 字节。
+
+### 顺带修掉一个自己引入的回归:原版 jar 不能加在 ModLauncher 线的 classpath 上
+
+为了 26.1.2 的"基础类"那条线,启动器曾加过一条兜底:**profile 自己没有 jar 时退回 `inheritsFrom` 那一版的 jar**。
+按规矩跑 1.21.8 回归时它立刻露出来了:
+
+```
+java.lang.module.ResolutionException: Module minecraft contains package com.mojang.blaze3d.buffers,
+  module _1._21._8 exports package com.mojang.blaze3d.buffers to minecraft
+	at cpw.mods.modlauncher.ModuleLayerHandler.buildLayer(ModuleLayerHandler.java:83)
+```
+
+原版 jar 会以自己的自动模块(`_1._21._8`)加入模块路径,与游戏层里的 `minecraft` 模块导出同一个包 ⇒
+模块解析在**任何 mod 加载之前**就失败(52 行日志、`Setting user` 0 次)。修法是把这条兜底**限定在
+FML 10/11 的 profile 上**(`mainClass == net.neoforged.fml.startup.Client`):那几条线的游戏类来自
+`minecraft-client-patched` 与 FML 自己的解析,而 ModLauncher 线的游戏类来自 libraries 里的补丁后 client jar,
+**不需要也不允许**再多一份原版 jar。
+
+修完复跑:1.21.8 回到基线(`lines=900 stderr=0 settingUser=1 optifine=337 sound=1 CTM=38`),
+26.1.2 数字不变 ⇒ 两边都干净。**规则(新增)**:启动器里任何"补一份游戏 jar"的动作都必须按主类分代次,
+ModLauncher 线与 FML 10/11 线的 classpath 不能共用一个形状。
+
+### 当前修订(2026-09-17)
+
+| 线 | 版本 | NeoForge | 状态 |
+|---|---|---|---|
+| 1.20.x | 1.20.1 / 1.20.2 / 1.20.4 / 1.20.6 | 47.1.106 / 20.2.88 / 20.4.251 / 20.6.141 | **已验证**(四条;1.20.2/1.20.4 带已知 Reflector 缺陷) |
+| 1.21.x | 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8 | 21.1.250 / 21.3.97 / 21.4.149 / 21.6.20-beta / 21.7.25-beta / 21.8.54 | **已验证**(六条) |
+| 26.x | **26.1.2** | 26.1.2.109(FML 11 + JDK 25) | **已验证**(11/15 条) |
+| 1.21.x | 1.21 | 21.0.167 | 前置未装(镜像 JSON 解析失败 + installer 未留下 `-client/-universal`) |
+| 1.21.x | 1.21.9 / 1.21.10 / 1.21.11 | 21.9.16-beta / 21.10.64 / 21.11.45 | 需要我们自己写 `ClassProcessor`(OptiFine 1.21.11 J9 不含) |
+
 
 
 
