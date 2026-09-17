@@ -255,8 +255,17 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 						continue;
 					}
 					InsnList call = new InsnList();
-					call.add(new VarInsnNode(Opcodes.ALOAD, 0));
 					for(String name : wanted) {
+						// One receiver push per call. A single ALOAD 0 for the whole list is only right
+						// while a constructor needs one restored field, and the offline twin of this code
+						// (RestoreMembers) proved on 1.21.10 what happens otherwise: BlockModelWrapper's
+						// three-argument constructor restores two fields, the second INVOKESTATIC then
+						// found an empty stack, and the class failed verification -
+						//   VerifyError: Operand stack underflow ... @12: invokestatic
+						// which killed the resource reload and left the client on its loading screen. No
+						// line here needs two yet, so this is a latent defect being closed rather than a
+						// behaviour change: with one wanted initialiser the emitted code is identical.
+						call.add(new VarInsnNode(Opcodes.ALOAD, 0));
 						call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, input.name, name, "(L" + input.name + ";)V", false));
 					}
 					constructor.instructions.insertBefore(insn, call);
