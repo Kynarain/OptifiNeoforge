@@ -2334,6 +2334,92 @@ Caused by: java.lang.ClassNotFoundException: net.minecraft.world.item.ItemStack
 而它的加载器根本不连游戏层 —— 修法就落在"别让同一批类在两处各定义一次"或"给 SERVICE 层模块补读边"上,
 而不是继续在 Reflector 里找。
 
+### 同一份 loader、同一张模块图,1.21.8 是干净的 ⇒ 缺陷跟着 OptiFine 构建走
+
+改了共享的启动器(`launch-neoforge.ps1` 只多打一个退出码)与 121x 的 loader(多打一段模块探针)之后,
+按规矩跑了 1.21.8 回归(`logs\run-reg1218y`,2026-09-18 00:15):
+
+```
+VERDICT: STARTED (40s, Sound engine started)   [OptiFine] 337   Setting user ✓   Sound engine ✓
+换装 380 类   CTM 38   stderr 0 字节   无本次崩溃报告   919 行
+```
+
+与上一轮记录的基线(`optifine=337 settingUser=1 sound=1 CTM=38 stderr=0`)**数字一致**(行数 900→919,
+多出来的正是新加的那 19 行探针)⇒ 1.21.8 未受影响,两条改动都是"只加日志"。
+
+而**这张模块图在 1.21.8 上完全一样**:`SERVICE layer holds optifine`(读不到 `minecraft`)、
+`GAME layer holds ... srg(PAYLOAD) ...`、四个包同样 `owned by minecraft = true, exported to srg = true`。
+同一份 loader、同一张图,1.21.8 的 stderr 是 0,1.21 是 14 141 字节 ⇒ **缺陷不随加载器走,随 OptiFine 构建走**:
+它出现在 1.20.2(`I7_pre1`)、1.20.4(`I7`)、1.21(`J1_pre9`)三条线,而 1.20.1(`I6`)、1.20.6(`J1_pre18`)、
+1.21.1(`J1`)、1.21.3(`J2`)、1.21.4(`J3`)、1.21.6/7/8(`J6_pre*`)都没有。三条带缺陷的线里两条是 preview
+(1.20.2 的唯一构建也是 preview),但 1.20.4 是 release ⇒ 判据不是 preview/release,而是 **I7 与 J1_pre9
+这一批 OptiFine 的 `Reflector` 表**。
+
+## 1.21.11:FML 10 的挂载点首次由我们提供,并真的装上了类(2026-09-18)
+
+这是本轮的第二件事,也是**第一条 FML 10 线(FML 10.0.36,主类 `net.neoforged.fml.startup.Client`,
+classpath 里没有 modlauncher/securejarhandler)**。26.1.2 那条线不需要自己的挂载点,因为 OptiFine 的
+K1_pre2 **自带** `OptiFineClassProcessor`;而 1.21.9 / 1.21.10 / 1.21.11 的 OptiFine
+(`J7_pre*` / `J9`)只声明了一个服务文件 —— 实测 `OptiFine_1.21.11_HD_U_J9.jar` 的
+`META-INF/services/` 下只有 `cpw.mods.modlauncher.api.ITransformationService`,在 FML 10 上**没有宿主**。
+
+### 新代码(26.x 分支 `src/fml10/java`,由 rig 编译,不进 Gradle 构建)
+
+| 类 | 作用 |
+|---|---|
+| `OptifinePayloadClassProcessor extends SimpleClassProcessor` | 挂载点本体:`targets()` = 载荷里 `srg/` 下那批成品游戏类;`transform()` 从**自己这个 jar**(`getProtectionDomain().getCodeSource()`,不是资源名 —— `srg/` 这个路径没有任何包认领它)读出成品类,整类覆盖运行时的类 |
+| `OptifinePayloadLocator implements IModFileCandidateLocator` | **什么都不找**,只为了让这个 jar 被 FML 的早期服务扫描认出来 |
+
+`OptifinePayloadLocator` 的存在完全来自一次实测:`EarlyServiceDiscovery.SERVICES` 恰好是
+`{IModFileCandidateLocator, IModFileReader, IDependencyLocator, GraphicsBootstrapper,
+ImmediateWindowProvider}` —— **`ClassProcessor` 不在里面**。所以只声明 `ClassProcessor` 的 jar 不会被预加载,
+`FMLLoader.createClassProcessorSet` 跑的时候它的类还不在 launch context 上,处理器**一次都不会被构造**。
+实测:1.21.11 第一次启动进了标题画面、`mods/` 两个 jar 都被接受,但 `[OptiFine]` **0 行**、
+处理器日志一行都没有。OptiFine 自己的 26.1.2 jar 也是同时声明这两个服务文件的,原因相同。
+
+### 逐个坑(每个都来自一次启动,而不是读代码)
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | `InvalidModFileException: Missing license (optifine-payload.jar)` | 我写的载荷元数据模板少了 `license` 字段(FML 10 必需) | 模板补 `license = "All rights reserved"` |
+| 2 | 处理器没被构造 | `ClassProcessor` 不在早期服务集合里(见上) | 加 `OptifinePayloadLocator` + `IModFileCandidateLocator` 服务文件 |
+| 3 | `IllegalArgumentException: Invalid class name: com/mojang/blaze3d/buffers/GpuBuffer$MappedView`(在 `NameValidation.validateClassName` ← `SimpleClassProcessor$Target.<init>` ← 我们的 `targets()`) | `Target` 的构造器用 `ClassDesc.of` 校验,**要的是点号二进制名**,我给的是斜杠内部名 | `targets()` 里 `name.replace('/', '.')`(嵌套类的 `$` 保持不变,ASM 的 `Type.getClassName()` 也是这个形状) |
+| 4 | `IllegalAccessError: NeoForgeRenderTypes$Internal tried to access method 'RenderType create(String, RenderSetup)'` | 整类覆盖把 OptiFine 编译版里**更窄**的成员可见性也带了进来,而 NeoForge 的 access transformer 把运行时那份放宽过,NeoForge 自己的代码依赖放宽后的形式 | 移植 1.21.x 那条已验证的规则:类标志取 OptiFine 的,**成员可见性取两者更宽的**;字段在运行时那份没有 final 时去掉 final;接口字段强制 `public static final` |
+
+### 实测(2026-09-18 00:26,`logs\run-diag2111e`)
+
+```
+VERDICT: STARTED (40s, marker: Sound engine started)
+Setting user ✓   Sound engine ✓   [OptiFine] 182 行
+挂载点: reading finished classes from file:.../mods/optifine-payload.jar
+挂载点: 568 finished game classes;installed ... [391 so far]     ← 391 个类真的被装了进去
+stderr 15 860 字节(2 条 CNFE);本轮 game2111 出现 2 份崩溃报告(见下)
+```
+
+链路的构建数字(`build-2111-chain.ps1`,与 26.1.2 的 `build-2612-chain.ps1` 同形):比较 566 个被替换类
+(758 个运行时没有对应)、计划回填 367 个成员、实际 `restored 398 member(s) across 92 class(es)`、
+57 个 Forge 类型生成 shim(其中 5 个被补了 default 方法)、成品游戏类 568 个、
+载荷 `optifine-payload.jar` 4 029 634 字节、OptiFine 自己的类 775 个进 `srg/` 另加 `optifine-classes.jar`
+1 465 469 字节(modId `optifineclasses`)。
+
+### 还没通过:两份崩溃报告,两个精确的下一问
+
+1. `crash-2026-09-18_00.26.06-fml.txt`:`Mod loading failures have occurred`,
+   `TagConventionLogWarning.createForgeMapEntry` ← `ExceptionInInitializerError` @ `NeoForgeMod.<init>:600`。
+   **下一问**:这是"我们装进去的类"引起的,还是 21.11.45 本身的问题 —— 判据是同一 profile **不带我们两个 jar**
+   的对照跑(26.1.2 那条线就是靠同一手法把 107 字节 stderr 归给终端的)。
+2. `ClassNotFoundException: net.minecraft.world.level.storage.ValueOutput`,栈是
+   `ReflectorMethod.getMethods` ← `ReflectorResolver.resolve` ← `GameRenderer.frameInit`,
+   而**加载器是 `java.net.URLClassLoader`**(帧上写 `TRANSFORMER/optifineclasses@1.0.0/…`)——
+   也就是说 OptiFine 自己的类(`net.optifine.**`,在 `optifineclasses.jar` 里)这次是从一个 URLClassLoader 出来的,
+   它看不到游戏类。**下一问**:FML 10 把"带 metadata 的普通 mod 文件"放进哪一层、用哪个加载器 ——
+   26.1.2 那条线的同类问题是"早期服务层的类取到的是**原版**归档里的那份",这次连类都找不到,
+   两者是不是同一个原因的两种表现(判据:打印 `net.optifine.reflect.Reflector.class.getModule()`
+   与它的 `getClassLoader()`)。
+
+注意 `[OptiFine] 182 行` 与 `Setting user`/`Sound engine` 同时出现 ⇒ OptiFine 在 FML 10 上**确实是活的**,
+挂载点这一层已经不是问题;剩下的两问都在"OptiFine 自己的类住在哪一层/哪一份字节"上。
+
 ### 当前修订(2026-09-18)
 
 | 线 | 版本 | NeoForge | 状态 |
