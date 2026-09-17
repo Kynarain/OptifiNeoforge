@@ -40,7 +40,8 @@ import org.objectweb.asm.tree.MethodNode;
  *
  * <p>and the table's {@code ForgeItemTags} is {@code new ReflectorClass(ItemTags.class)} with
  * {@code makeMethod("create", String.class, String.class)} - Forge's two-argument helper on the game's
- * own tag class. NeoForge kept only {@code create(Identifier)}, so the call answers null, both tag
+ * own tag class. NeoForge kept only the one-argument form - {@code create(Identifier)} on 1.21.11 and
+ * 26.1.2, {@code create(ResourceLocation)} on 1.21.9 and 1.21.10 - so the call answers null, both tag
  * fields of every {@code DyeColor} constant are null, and
  * {@code net.neoforged.neoforge.common.Tags$Items.DYES_BLACK} - which is
  * {@code DyeColor.BLACK.getTag()} - is null, which makes NeoForge's own
@@ -66,7 +67,29 @@ public final class ForgeEraMembers {
 
 	private static final String ITEM_TAGS = "net/minecraft/tags/ItemTags";
 	private static final String TAG_KEY = "net/minecraft/tags/TagKey";
+
+	/**
+	 * The two names this project's lines use for the resource-location class, newest first, and the one
+	 * this run resolved. It is <em>not</em> a constant, and that is a measurement: 1.21.11 (and 26.1.2)
+	 * renamed the class to {@code Identifier}, while 1.21.9 and 1.21.10 still call it
+	 * {@code ResourceLocation} - checked in the archives themselves, {@code Identifier.class} is present
+	 * in the 21.11.45 and 26.1.2.109 patched jars and absent from 21.10.64's and 21.9's, which carry
+	 * {@code ResourceLocation.class} instead.
+	 *
+	 * <p>Hardcoding the newer name is exactly what broke the 1.21.10 line: the supplied
+	 * {@code ItemTags.create} threw {@code NoClassDefFoundError: net/minecraft/resources/Identifier}
+	 * inside {@code DyeColor.<clinit>}, FML answered by marking the mod file broken and refusing every
+	 * later event to it ({@code Cowardly refusing to send event ... to a broken mod state}, 38 times), and
+	 * OptiFine's sprite collection - which is event-driven - never ran, so the client sat in
+	 * {@code [OptiFine] Waiting for model sprites} until the launch timed out. The API shape is the same
+	 * on both names: {@code fromNamespaceAndPath(String, String)} returning itself, and
+	 * {@code ItemTags.create(<that class>)} returning {@code TagKey}.
+	 */
 	private static final String IDENTIFIER = "net/minecraft/resources/Identifier";
+	private static final String RESOURCE_LOCATION = "net/minecraft/resources/ResourceLocation";
+
+	/** The name {@link #IDENTIFIER} or {@link #RESOURCE_LOCATION} this run's runtime actually has. */
+	private static String resourceLocation;
 
 	private ForgeEraMembers() {
 	}
@@ -106,6 +129,8 @@ public final class ForgeEraMembers {
 		for(int index = 1; index < files.size(); index++) {
 			runtime.add(Path.of(files.get(index)));
 		}
+		resourceLocation = resolveResourceLocation(runtime);
+		System.out.println("  the runtime's resource-location class: " + resourceLocation);
 
 		List<String> supplied = new ArrayList<>();
 		List<String> skipped = new ArrayList<>();
@@ -232,15 +257,40 @@ public final class ForgeEraMembers {
 		body.visitVarInsn(Opcodes.ALOAD, 0);
 		body.visitLabel(namespaceReady);
 		body.visitVarInsn(Opcodes.ALOAD, 1);
-		body.visitMethodInsn(Opcodes.INVOKESTATIC, IDENTIFIER, "fromNamespaceAndPath",
-				"(Ljava/lang/String;Ljava/lang/String;)L" + IDENTIFIER + ";", false);
+		body.visitMethodInsn(Opcodes.INVOKESTATIC, resourceLocation, "fromNamespaceAndPath",
+				"(Ljava/lang/String;Ljava/lang/String;)L" + resourceLocation + ";", false);
 		body.visitMethodInsn(Opcodes.INVOKESTATIC, ITEM_TAGS, "create",
-				"(L" + IDENTIFIER + ";)L" + TAG_KEY + ";", false);
+				"(L" + resourceLocation + ";)L" + TAG_KEY + ";", false);
 		body.visitInsn(Opcodes.ARETURN);
 		body.visitMaxs(0, 0);
 		body.visitEnd();
 		writer.visitEnd();
 		return writer.toByteArray();
+	}
+
+	/**
+	 * Which of the two names the runtime jars given actually contain. The newer name wins when both are
+	 * present, so the 1.21.11 / 26.1.2 output stays byte-for-byte what it was before this tool learned
+	 * the older name; a runtime with neither is refused rather than guessed at, because a body naming a
+	 * class that does not exist is precisely the failure recorded above.
+	 */
+	private static String resolveResourceLocation(List<Path> runtime) throws IOException {
+		boolean hasIdentifier = false;
+		boolean hasResourceLocation = false;
+		for(Path jar : runtime) {
+			try(ZipFile zip = new ZipFile(jar.toFile())) {
+				hasIdentifier |= zip.getEntry(IDENTIFIER + ".class") != null;
+				hasResourceLocation |= zip.getEntry(RESOURCE_LOCATION + ".class") != null;
+			}
+		}
+		if(hasIdentifier) {
+			return IDENTIFIER;
+		}
+		if(hasResourceLocation) {
+			return RESOURCE_LOCATION;
+		}
+		throw new IOException("neither " + IDENTIFIER + " nor " + RESOURCE_LOCATION
+				+ " is in the runtime jars given, so the supplied body cannot be written");
 	}
 
 	private static byte[] findClass(List<Path> jars, String name) throws IOException {

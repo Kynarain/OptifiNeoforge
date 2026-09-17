@@ -281,8 +281,19 @@ public final class RestoreMembers {
 					continue;
 				}
 				InsnList call = new InsnList();
-				call.add(new VarInsnNode(Opcodes.ALOAD, 0));
 				for(String name : wanted) {
+					// One receiver push per call, and that is a measured correction rather than a style
+					// choice: a single ALOAD 0 in front of the whole list is only correct while a
+					// constructor needs one restored field. The first constructor that needed two -
+					// BlockModelWrapper's three-argument one on 1.21.10, which restores renderType and
+					// modelLocation - produced
+					//   VerifyError: Operand stack underflow
+					//     Location: BlockModelWrapper.<init>(List, List, ModelRenderProperties)V @12: invokestatic
+					// because the second INVOKESTATIC found the stack empty, and the class was then
+					// unusable: the resource reload died with it and the client never left its loading
+					// screen. Every class on the other lines needed at most one initialiser per
+					// constructor, which is why nothing caught it.
+					call.add(new VarInsnNode(Opcodes.ALOAD, 0));
 					call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, name,
 							"(L" + internalName + ";)V", false));
 				}
