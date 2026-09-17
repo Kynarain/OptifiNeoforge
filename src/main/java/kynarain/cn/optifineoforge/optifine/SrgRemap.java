@@ -169,7 +169,6 @@ public final class SrgRemap {
 	 * so a rename can land on a name the class already declares. Refusing that rename keeps the class
 	 * loadable; the member keeps its SRG name and is reported.</p>
 	 */
-	@SuppressWarnings("deprecation")
 	private static final class Renamer extends Remapper {
 		private final SrgMemberMap map;
 		private final SrgMemberMap.RuntimeIndex runtime;
@@ -177,13 +176,16 @@ public final class SrgRemap {
 		ClassNode current;
 
 		Renamer(SrgMemberMap map, SrgMemberMap.RuntimeIndex runtime, Report report) {
-			// The no-argument constructor, with the deprecation suppressed, rather than the
-			// API-version one: NeoForge 21.4.149's modDevApiElements pins org.ow2.asm:asm strictly to
-			// 9.8, and that release does not have Remapper(int) at all - measured, "cannot apply
-			// Remapper's constructor to the given types" is what gradlew build says on this branch.
-			// The two constructors mean the same thing here (the argument is the current API version),
-			// and the suppression is what keeps the older release's deprecation note off stderr.
-			super();
+			// The API-version constructor, and it matters - not for style. Changing it to the
+			// no-argument one so that gradlew build would compile against ASM 9.8 (which has no
+			// Remapper(int)) silently changed what the remap produces: the payload went from 4165109
+			// to 4165610 bytes, and 1.21 then died with
+			//   AbstractMethodError: Receiver class net.minecraft.client.particle.ParticleEngine$$Lambda
+			//   does not define or inherit an implementation of 'ParticleProvider create(SpriteSet)'
+			// at ParticleEngine.register. The two constructors do not mean the same thing on ASM
+			// 9.10.1, so this stays exactly as the line was verified with; the Gradle build gets ASM
+			// 9.10.1 through the resolution strategy in build.gradle instead.
+			super(Opcodes.ASM9);
 			this.map = map;
 			this.runtime = runtime;
 			this.report = report;

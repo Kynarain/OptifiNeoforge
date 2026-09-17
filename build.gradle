@@ -96,3 +96,22 @@ tasks.named('build') {
                 "NeoForge ${targetNeoForge}, Java ${targetJavaVersion})"
     }
 }
+
+// The offline tools (kynarain.cn.optifineoforge.optifine) compile against the ASM version named in
+// gradle.properties, not against the one NeoForge 21.4.149 pins: its modDevApiElements demands
+// org.ow2.asm:asm STRICTLY 9.8, and SrgRemap needs the API-version Remapper(int) constructor that
+// 9.8 does not have - measured: "cannot apply Remapper's constructor to the given types". Raising
+// asm_version alone cannot work (the classpath stops resolving), and using the no-argument
+// constructor instead changes what the remap produces - measured on 1.21: the payload grew by 501
+// bytes and the run died with "AbstractMethodError: Receiver class
+// net.minecraft.client.particle.ParticleEngine$$Lambda ... ParticleProvider create(SpriteSet)". So
+// the Gradle build takes the version the tools are verified with, and only for this project's own
+// compileOnly dependencies.
+configurations.configureEach {
+    resolutionStrategy.eachDependency { details ->
+        if (details.requested.group == 'org.ow2.asm') {
+            details.useVersion project.asm_version
+            details.because 'the tools are verified against this ASM version; NeoForge pins 9.8 strictly'
+        }
+    }
+}
