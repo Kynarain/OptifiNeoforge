@@ -169,6 +169,7 @@ public final class SrgRemap {
 	 * so a rename can land on a name the class already declares. Refusing that rename keeps the class
 	 * loadable; the member keeps its SRG name and is reported.</p>
 	 */
+	@SuppressWarnings("deprecation")
 	private static final class Renamer extends Remapper {
 		private final SrgMemberMap map;
 		private final SrgMemberMap.RuntimeIndex runtime;
@@ -176,9 +177,13 @@ public final class SrgRemap {
 		ClassNode current;
 
 		Renamer(SrgMemberMap map, SrgMemberMap.RuntimeIndex runtime, Report report) {
-			// The API-version constructor rather than the no-argument one: ASM 9.10 deprecated the
-			// latter, and a deprecation note on stderr is enough to abort the rig build.
-			super(Opcodes.ASM9);
+			// The no-argument constructor, with the deprecation suppressed, rather than the
+			// API-version one: NeoForge 21.4.149's modDevApiElements pins org.ow2.asm:asm strictly to
+			// 9.8, and that release does not have Remapper(int) at all - measured, "cannot apply
+			// Remapper's constructor to the given types" is what gradlew build says on this branch.
+			// The two constructors mean the same thing here (the argument is the current API version),
+			// and the suppression is what keeps the older release's deprecation note off stderr.
+			super();
 			this.map = map;
 			this.runtime = runtime;
 			this.report = report;
