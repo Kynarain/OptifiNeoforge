@@ -752,18 +752,50 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 					names.append(module.getName()).append(' ');
 				}
 				LOGGER.info("module graph: GAME layer holds " + names.toString().trim());
+				// Which layer holds us, and which holds the payload, is the question the Reflector
+				// defect turns on: a module name can exist in more than one layer, and the layer whose
+				// reads matter is the one that owns the class doing the reflecting. ModLauncher 11 has
+				// four layers (BOOT / SERVICE / PLUGIN / GAME) and mod files live in PLUGIN.
+				for(IModuleLayerManager.Layer which : IModuleLayerManager.Layer.values()) {
+					layers.getLayer(which).ifPresent(other -> {
+						StringBuilder otherNames = new StringBuilder();
+						for(Module module : other.modules()) {
+							otherNames.append(module.getName())
+									.append(module.getPackages().contains("net.optifine.reflect") ? "(PAYLOAD)" : "")
+									.append(' ');
+						}
+						LOGGER.info("module graph: " + which + " layer holds " + otherNames.toString().trim());
+					});
+				}
 				layer.findModule("minecraft").ifPresent(game -> {
 					// Both edges matter and they are granted separately, which is the whole reason this
 					// probe exists: an export to a module that cannot read the game is worth nothing, and
 					// the first measurement showed exactly that shape - the export went to 'optifine'
 					// while the payload actually lives in 'srg'.
 					for(String candidate : new String[] {"optifine", "srg", "neoforge"}) {
-						layer.findModule(candidate).ifPresent(module -> LOGGER.info(
+						layer.findModule(candidate).ifPresent(module -> {
+							LOGGER.info(
 								"module graph: " + candidate + " -> minecraft: reads it = " + module.canRead(game)
 										+ ", net.minecraft.client is exported to it = "
 										+ game.isExported("net.minecraft.client", module)
 										+ ", net.minecraft.resources is exported to it = "
-										+ game.isExported("net.minecraft.resources", module)));
+										+ game.isExported("net.minecraft.resources", module));
+							// The Reflector defect, measured instead of guessed. OptiFine's Reflector
+							// reflects method signatures and the JVM then has to load the types it finds
+							// - and four of those loads fail with ClassNotFoundException even though the
+							// classes plainly exist, which is what these four packages are: the exact
+							// ones named by the failing reflectors on this family of lines
+							// (BlockState, PoseStack, BlockEntityWithoutLevelRenderer, ItemStack).
+							// Metadata only: nothing is loaded, so this cannot itself change the run.
+							for(String pkg : new String[] {"net.minecraft.world.level.block.state",
+									"com.mojang.blaze3d.vertex", "net.minecraft.client.renderer",
+									"net.minecraft.world.item", "net.optifine.reflect"}) {
+								LOGGER.info("module graph: package " + pkg + " : owned by minecraft = "
+										+ game.getPackages().contains(pkg)
+										+ ", exported to " + candidate + " = " + game.isExported(pkg, module)
+										+ ", owned by " + candidate + " = " + module.getPackages().contains(pkg));
+							}
+						});
 					}
 				});
 			});
