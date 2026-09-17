@@ -2251,14 +2251,96 @@ FML 10/11 的 profile 上**(`mainClass == net.neoforged.fml.startup.Client`):那
 26.1.2 数字不变 ⇒ 两边都干净。**规则(新增)**:启动器里任何"补一份游戏 jar"的动作都必须按主类分代次,
 ModLauncher 线与 FML 10/11 线的 classpath 不能共用一个形状。
 
-### 当前修订(2026-09-17)
+## 1.21 通过,以及它带出来的那条已知缺陷被量到了新的一层(2026-09-18)
+
+1.21 是本轮"前置已装好、直接建线"的第一条。它和 1.21.1 / 1.21.3 同形(ModLauncher 11.0.4、FML 4.0.23、
+`neoforge.mods.toml`、JDK 21),所以线参数没有任何新东西 —— 唯一要按镜像实际清单确认的是 OptiFine 这一版:
+**1.21 只有 preview 构建**(`/optifine/1.21` 返回 8 条,全部是 `J1_pre1..pre9`,没有 release),
+所以这一条线用的是最新的 `preview_OptiFine_1.21_HD_U_J1_pre9.jar`,与 1.21.6/1.21.7/1.21.8 同样处理。
+
+线参数落在 `build-line.ps1` 的新条目 `'121'`(`Repo` = `OptifiNeoforge-121x`、`Work` = `build-121`、
+`Out` = `mods-stage-121\optifiNeoforge-combined.jar`、`Profile` = `neoforge-21.0.167`、
+`GameDir` = `game121`),`Work` 下另建了 `optifine-mods.toml`(`neoforge` 区间 `[21.0,)`、`minecraft` 区间
+`[1.21,1.21.1)`;这个模板每个 `Work` 一份,是 `build-rig-jar.ps1` 的必需输入)。
+`datafixerupper` / `brigadier` 按 1.21 自己的版本 json 取 **8.0.16 / 1.2.9**(不是 1.21.3 的 1.3.10)。
+
+构建(2026-09-17 23:51,`logs\build-line-121-first.txt`):
+
+```
+1/5 tools ✓   2/5 repack ✓(OptiFine 根条目 srg=1098、notch=1165)
+3/5 patch ✓   patched 6 852 376 B;4150 条进、1199 条丢;classpath jar 2 695 865 B
+3b/5 SRG→official:重写 21907 个方法名 + 17730 个字段名,88 个解析不到,13 个因同名被拒
+3b1/5 家族跳过 1 个(com/mojang/blaze3d/vertex/VertexMultiConsumer)
+3b4/5 嵌套改名配对 3 个(Gui$1DisplayEntry / LevelChunkSection$1BlockCounter / ParticleEngine$1ParticleDefinition)
+3b2/5 打桩 22 个成员(7 个类),11 个留给 loader
+3c/5 载荷 4 165 109 B / 1140 类,434 个搬到 optifineoforge/patched,1165 条 patch/notch 丢弃
+4/5 loader ✓  5/5 combined jar 4 334 149 B / 3111 条 / 61 个供体
+```
+
+实测(2026-09-18 00:03,`logs\run-final121b`):
+
+```
+VERDICT: STARTED (40s, marker: Sound engine started)   无本次崩溃报告
+Setting user ✓   [OptiFine] 252 行   换装类 315 个   Pre-stitch 14   CTM 38   着色器 14 行
+stderr 14 141 字节 = 4 条 CNFE(见下)
+```
+
+`Setting user`、`Sound engine started`、OptiFine 的 Config 都在跑(252 行 `[OptiFine]`,`Pre-stitch` 14 次,
+CTM 38 行),**但 stderr 不是 0**,而是与 1.20.2 / 1.20.4 完全同形的 4 条 `NoClassDefFoundError`:
+
+```
+java.lang.NoClassDefFoundError: net.minecraft.world.item.ItemStack
+  at java.base/java.lang.Class.getDeclaredMethods0(Native Method)
+  at net.optifine.reflect.ReflectorMethod.getMethod(ReflectorMethod.java:238)
+  at net.optifine.reflect.ReflectorMethod.getTargetMethod(ReflectorMethod.java:82)
+  at net.optifine.reflect.ReflectorResolver.resolve(ReflectorResolver.java:45)
+  at net.minecraft.client.renderer.GameRenderer.frameInit(GameRenderer.java:1568)
+Caused by: java.lang.ClassNotFoundException: net.minecraft.world.item.ItemStack
+  at java.base/jdk.internal.loader.BuiltinClassLoader.loadClass(BuiltinClassLoader.java:641)
+  at cpw.mods.cl.ModuleClassLoader.loadClass(ModuleClassLoader.java:216)     ← 两层
+  at cpw.mods.cl.ModuleClassLoader.loadClass(ModuleClassLoader.java:216)     ← 然后才是应用加载器
+```
+
+每次跑固定 4 条、类名在 `ItemStack` / `BlockState` / `PoseStack` / `BlockEntityWithoutLevelRenderer`
+之间取,与 1.20.2(14 631 字节)/ 1.20.4(14 481 字节)的字节数同量级、三条头完全一样。
+
+### 这一轮把这条缺陷往前推了一层(新测量,不是猜测)
+
+上一轮对它的记录停在"与加载器无关,是独立待办",并留下"先量清楚它到底为什么加载不了"。这一轮在 loader 里
+加了一个**只读模块元数据**的探针(`PatchedClassTransformer.logModulesOnce`,不加载任何游戏类),量到:
+
+| 观测 | 结果 |
+|---|---|
+| 四个包的归属 | `net.minecraft.world.level.block.state` / `com.mojang.blaze3d.vertex` / `net.minecraft.client.renderer` / `net.minecraft.world.item` **全部 owned by `minecraft` = true** |
+| 是否导出给载荷模块 | 对 `srg`(GAME 层)`exported = true`;**对 `optifine` 也 `exported = true`** |
+| 读边 | `srg -> minecraft: reads it = true`;`optifine -> minecraft: reads it = **false**` |
+| 载荷在哪 | `GAME layer holds neoforge minecraft **srg(PAYLOAD)** mixin_synthetic mixinextras.neoforge`,即 `net.optifine.reflect` 属于 GAME 层的 `srg` |
+| 我们自己(loader 类)在哪 | `SERVICE layer holds optifine` —— 同一个 jar 同时被 ModLauncher 当作 transformation service 装进了 SERVICE 层 |
+
+⇒ **不是"包没导出"、也不是"读边缺失"**:那两个包既归 `minecraft` 又已导出给 `srg`,而 `srg` 也读得到
+`minecraft`。所以缺陷不在模块图上,而在**发起这次解析的那个加载器**:栈里是"两层 `ModuleClassLoader`
+都没接住,最后落到应用类加载器"。
+
+另外两条排除了"是我们换装换坏的":
+
+- `ItemStack` 在整条线里**一次都没被换装**(`Replaced net.minecraft.world.item.ItemStack` 出现 0 次),
+  却照样出现在失败名单里 ⇒ 与"我们换进去的那份字节"无关;
+- `BlockState` / `PoseStack` / `BlockEntityWithoutLevelRenderer` 各自只被换装 **1 次**(日志可数),说明
+  失败的那次请求**没有走到任何会换装的加载器**(否则日志里会出现第二次 `Replaced`)。
+
+**下一条线索(下一轮的第一个实验)**:在探针里把 `optifine`(SERVICE 层,读不到 `minecraft`)自己
+`getPackages()` 的样本打出来,看同一个 jar 是否在两个层各有一份**同名不同包**的 `Reflector*`
+(例如 `srg.net.optifine.reflect` 与 `net.optifine.reflect`);若是,则失败的那次反射发生在 SERVICE 层那份上,
+而它的加载器根本不连游戏层 —— 修法就落在"别让同一批类在两处各定义一次"或"给 SERVICE 层模块补读边"上,
+而不是继续在 Reflector 里找。
+
+### 当前修订(2026-09-18)
 
 | 线 | 版本 | NeoForge | 状态 |
 |---|---|---|---|
 | 1.20.x | 1.20.1 / 1.20.2 / 1.20.4 / 1.20.6 | 47.1.106 / 20.2.88 / 20.4.251 / 20.6.141 | **已验证**(四条;1.20.2/1.20.4 带已知 Reflector 缺陷) |
-| 1.21.x | 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8 | 21.1.250 / 21.3.97 / 21.4.149 / 21.6.20-beta / 21.7.25-beta / 21.8.54 | **已验证**(六条) |
-| 26.x | **26.1.2** | 26.1.2.109(FML 11 + JDK 25) | **已验证**(11/15 条) |
-| 1.21.x | 1.21 | 21.0.167 | 前置未装(镜像 JSON 解析失败 + installer 未留下 `-client/-universal`) |
+| 1.21.x | **1.21** / 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8 | 21.0.167 / 21.1.250 / 21.3.97 / 21.4.149 / 21.6.20-beta / 21.7.25-beta / 21.8.54 | **已验证**(七条;**1.21 带已知 Reflector 缺陷**:`STARTED` + `Setting user` ✓ + 无崩溃 + stderr 14 141 字节) |
+| 26.x | 26.1.2 | 26.1.2.109(FML 11 + JDK 25) | **已验证**(12/15 条) |
 | 1.21.x | 1.21.9 / 1.21.10 / 1.21.11 | 21.9.16-beta / 21.10.64 / 21.11.45 | 需要我们自己写 `ClassProcessor`(OptiFine 1.21.11 J9 不含) |
 
 
