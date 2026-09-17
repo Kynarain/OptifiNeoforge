@@ -77,6 +77,7 @@ public final class ShimInheritedMembers {
 	public static List<String> fill(Path payload, Path shimsDir, Path outDir, List<Path> runtimeJars) throws IOException {
 		Map<String, ClassNode> index = new TreeMap<>();
 		Set<String> shimNames = new LinkedHashSet<>();
+		Set<String> namelessShims = new LinkedHashSet<>();
 		// The payload first: its copy of a class is the one that will be loaded, and therefore the one
 		// whose supertypes the call sites resolve against.
 		Map<String, Path> payloadEntries = new LinkedHashMap<>();
@@ -114,8 +115,23 @@ public final class ShimInheritedMembers {
 			}
 			String internal = shimsDir.relativize(file).toString().replace('\\', '/');
 			internal = internal.substring(0, internal.length() - ".class".length());
+			// A file literally called ".class" yields a name ending in '/', which is a directory and not
+			// a class. It is produced by the shim generator when a referenced type comes out with an
+			// empty simple name, and resolving it here threw
+			//   NoSuchFileException: ...\forge-shims-filled\net\minecraftforge\client\event\.class
+			// which aborted the whole pass and left the payload with a single shim instead of 57. Skipped
+			// and counted rather than silently dropped: the generator's own report is where that name
+			// has to be fixed, and a skip that says nothing would hide it.
+			if(internal.isEmpty() || internal.endsWith("/")) {
+				namelessShims.add(internal);
+				continue;
+			}
 			index.put(internal, read(new ClassReader(Files.readAllBytes(file))));
 			shimNames.add(internal);
+		}
+		if(!namelessShims.isEmpty()) {
+			System.out.println("skipped " + namelessShims.size() + " shim file(s) whose name is not a class: "
+					+ namelessShims);
 		}
 
 		// What the payload asks for and neither the payload, the runtime nor the shims can answer.
