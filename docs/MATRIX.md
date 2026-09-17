@@ -1,5 +1,10 @@
 # 版本矩阵现状与推进顺序
 
+> **本文按时间追加,是"当时写了什么"的记录。** 顶部的阶段总结写于 2026-09-16,里面的"未开始""发布:一次都没有"
+> 等判断在 2026-09-18 之后已经不成立:**15 / 15 条线全部实机验证,1.0.0 已发布(10 条)** ——
+> 当前状态与逐条数字见文末的 [「1.0.0:第一次真实发布」](#10第一次真实发布2026-09-18) 一节,那里也有未发布的
+> 5 条及各自的原因。下面保留原文,不改写历史结论。
+
 本文只记录**实测**的差距与顺序,不重复 `docs/PLAN.md`(计划)与 `docs/DEVELOPMENT.md`(实测记录)。
 
 ## 当前真实进度(2026-09-16,阶段性总结)
@@ -3047,3 +3052,74 @@ PowerShell 5.1 根本解析不了**(`Invalid JSON primitive: 4 97 114 103 ...`,�
 | 本次 crash | 无 | 无 |
 
 ⇒ 逐项一致。分支 `1.21.x` 的头因此从 `094952b` 前进一格(见提交),那 7 条线的状态不变。
+
+## 1.0.0:第一次真实发布(2026-09-18)
+
+### 一、发布决定(照 `docs/VERSIONING.md` 与 `docs/PUBLISHING.md` 走)
+
+- `docs/VERSIONING.md` 说得很清楚:**`0.x` 的含义是"加载器还没在真实游戏里跑起来",第一个跑起来的产物才升到
+  `1.0.0`**。15 / 15 条线现在都有实机记录(判据见上面的逐轮实测),所以三条分支各自用
+  `release/version.ps1 patch -Base 1.0.0` 升版 —— 脚本里 `-Base` 就是为"第一次真跑起来"准备的那条路,
+  没有手改 `gradle.properties`;每个分支的 `gradle.properties` 与"为什么升这一档"的说明放在同一个提交里。
+- **一个 MC 版本一个产物,一个产物一个标签。** 判据是实测的:jar 里的 `META-INF/neoforge.mods.toml` 把
+  `minecraft` 依赖写成闭区间(1.21.4 的 jar 里是 `[1.21.4,1.21.4]`),所以 `+mc1.21.4` 的 jar 在 1.21.8 上
+  不会被加载。标签名与产物名一致(`v1.0.0+mc<MC 版本>`),这是 PUBLISHING.md 第 5 步要求的"某个版本号对某个产物"。
+
+### 二、已发布(10 条;正文写在各自的 Release 里)
+
+| 线 | MC / NeoForge | 标签 | 产物(字节) | SHA-256(前 12) | 验收(实机记录) |
+|---|---|---|---|---|---|
+| 26.x | 26.1.2 / 26.1.2.109 | `v1.0.0+mc26.1.2` | 159 635 | `14890f4b8ad5` | `STARTED`、`Setting user` ✓、`[OptiFine]` 3478、stderr 107 B(= 无 mod 对照跑)、本次无 crash |
+| 1.20.x | 1.20.4 / 20.4.251 | `v1.0.0+mc1.20.4` | 159 589 | `45aa72956e9a` | `STARTED`、✓、241、stderr 14 481 B¹、本次无 crash |
+| 1.20.x | 1.20.6 / 20.6.141 | `v1.0.0+mc1.20.6` | 159 708 | `46daf38b0913` | `STARTED`、✓、222、stderr 0 B、本次无 crash |
+| 1.21.x | 1.21 / 21.0.167 | `v1.0.0+mc1.21` | 161 233 | `ea88795872ea` | `STARTED`、✓、252、stderr 14 141 B¹、本次无 crash |
+| 1.21.x | 1.21.1 / 21.1.250 | `v1.0.0+mc1.21.1` | 161 234 | `b8032c557d15` | `STARTED`、✓、223、stderr 0 B、本次无 crash |
+| 1.21.x | 1.21.3 / 21.3.97 | `v1.0.0+mc1.21.3` | 161 235 | `bbbd37fb498d` | `STARTED`、✓、225、stderr 0 B、本次无 crash |
+| 1.21.x | 1.21.4 / 21.4.149 | `v1.0.0+mc1.21.4` | 161 235 | `b7125668db37` | `STARTED`、✓、232、stderr 0 B、本次无 crash |
+| 1.21.x | 1.21.6 / 21.6.20-beta | `v1.0.0+mc1.21.6` | 161 238 | `de29a28b13e6` | `STARTED`、✓、340、stderr 0 B、本次无 crash(**不含启用光影包**) |
+| 1.21.x | 1.21.7 / 21.7.25-beta | `v1.0.0+mc1.21.7` | 161 239 | `48fb0e7edb87` | `STARTED`、✓、340、stderr 0 B、本次无 crash(**不含启用光影包**) |
+| 1.21.x | 1.21.8 / 21.8.54 | `v1.0.0+mc1.21.8` | 161 235 | `09582cc096bf` | `STARTED`、✓、337、stderr 0 B、本次无 crash |
+
+¹ 1.20.2 / 1.20.4 / 1.21 三条线带的那条已知 Reflector 缺陷(每次启动 4 条 `NoClassDefFoundError`);1.20.2 本轮
+没有产出 jar(见下),但它的这条缺陷与 1.20.4 同形。
+
+**发布的是什么**:各分支自己的 Gradle 构建产物,**加载器侧**(实测:每个 jar 里 `net/optifine/**` 条目数为 0),
+不含 OptiFine 的类、也没有随包分发 OptiFine。能直接放进 `mods/` 的成品仍要按 rig 的流水线用**用户自己的**
+OptiFine jar 合成 —— 上面每一条验收数字都是那样量出来的。
+
+### 三、已验证但这一轮没有发布(5 条,原因都是构建而不是验证)
+
+| 线 | 原因(实测) |
+|---|---|
+| 1.20.1 / 47.1.106 | 那一代 NeoForge 是旧的 `net.neoforged:forge` 坐标,Gradle 插件报 `Could not find net.neoforged:neoforge:1.20.1-47.1.106`(`gradle.properties` 里早就记着这条) |
+| 1.20.2 / 20.2.88 | `20.2.88` 在 Maven 上没有 ModDevGradle 需要的 `neoforge-moddev-bundle` 变体:`Unable to find a variant … with the requested capability` |
+| 1.21.9 / 1.21.10 / 1.21.11 | 这三版 NeoForge 已经没有 ModLauncher,而本分支的 `src/main` 编译的是 `cpw.mods.modlauncher.api.ITransformationService`。**实测 1.21.11**(21.11.45):`BUILD FAILED in 11m 15s`,死在 `:compileJava`,`错误: 程序包cpw.mods.modlauncher.api不存在`(MemberRestoreTransformer 等);**1.21.10 同样实测一次**(21.10.64,`BUILD FAILED in 14m`,`SortProbeFix` 与 `MemberRestoreTransformer` 同一错误);1.21.9 未单独尝试(同一条路)。这三条的挂载点是我们自己的 `ClassProcessor`(26.x 分支 `src/fml10`,由 rig 编译**进载荷 jar**),而载荷 jar 含 OptiFine 的类、不分发 |
+
+### 四、这一轮的网络实况(为什么有的线要重试)
+
+每个**非默认**目标都要走一遍 neoform 流水线(重新下载 MC、NeoForge 与整套库),而这一轮
+`maven.neoforged.net` / `libraries.minecraft.net` 反复断连:1.21.8 第一次 `BUILD FAILED in 15m 10s`、
+1.20.6 第一次 10m 28s(log4j 的 `maven-metadata.xml` 取不到)、1.21.6 第一次 4m 40s
+(`fancymodloader:securejarhandler:9.0.2` 解析不到)、1.21 三次全败。
+
+**重试是有效的,而且第二次通常很快**:失败的那一次已经把绝大多数产物落进缓存,1.21.8 重试 2m51s、
+1.20.6 重试 40s、1.21.6 重试 9m18s、**1.21 重试(第四次)4m34s** 都过了。所以"某一轮构建失败"在本项目里首先是一个
+网络事实,不是代码事实 —— 上面第三节里真正属于"构建不出来"的只有 1.20.1、1.20.2 与 1.21.9/1.21.10/1.21.11 五条,
+而 1.21 那条只是网络,重试之后就发布了。
+
+### 五、这一轮改了哪些文档(都在各自分支上提交并推送)
+
+- 三条分支的 `gradle.properties`(0.1.1 / 0.1.1 / 0.2.0 → 1.0.0)与各自 README 的实测状态;
+- `26.x` 的 `docs/PUBLISHING.md`("现状"一节改成"已经发布过一次",并写明发布的 10 条/未发布的 5 条,以及
+  "构建失败先重试并区分网络与真构建不出来"这条这一轮量出来的规矩);
+- `26.x` 的 `docs/MATRIX.md` 顶部加了"这份副本已过时,运行日志在 `1.20.x`"的指引;
+- `main` 的落地页从"骨架阶段"改成 15/15 已实机验证 + 实测矩阵 + 产物命名规则 + 证据在哪;
+- 标签全部打在"升版那一提交"上(26.x `bf3de0d`、1.21.x `1340e58`、1.20.x `48dd023`),没有提交任何构建产物、
+  OptiFine jar 或 `test-downloads/`。
+
+### 六、发布本身的记录
+
+10 个 GitHub Release 通过 GitHub API 创建,资产用 `Invoke-RestMethod` 上传,每个 Release 附**一个** jar、
+正文里写该线的验收数字与已接受缺陷。逐个 Release 的 URL、字节数与 SHA-256 见上表
+(Release URL 形如 `https://github.com/Kynarain/OptifiNeoforge/releases/tag/v1.0.0+mc1.21.4`)。
+标签全部是附注标签(`git tag -a`),消息里带产物名、字节数与 SHA-256;`git push origin <tag>` 逐个推送。
