@@ -437,6 +437,76 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		}
 	}
 
+	/**
+	 * Gives a class the loader keeps the members the payload declares and this copy does not have.
+	 *
+	 * <p>The mirror of the member restore, and it exists because keeping a class is not the same as leaving
+	 * it alone: the payload's <em>callers</em> are still installed, and they call whatever their own
+	 * compilation saw. Measured on 1.21, where two decisions meet:</p>
+	 *
+	 * <pre>SpriteLoader is replaced by the payload
+	 * SpriteResourceLoader is left as the runtime has it (the interface rule above)
+	 *   -> NoSuchMethodError: SpriteResourceLoader.create(java.util.Collection)
+	 *      at SpriteLoader.loadAndStitch(SpriteLoader.java:187)</pre>
+	 *
+	 * <p>{@code MissingTargets} cannot report this by construction: it indexes the payload as well as the
+	 * runtime, on the reasoning that a swapped class is what will be loaded - and the whole point here is
+	 * that this class is not swapped. So the members come from the payload's own copy, which this
+	 * transformer already holds.</p>
+	 *
+	 * <p>Interface fields are normalised rather than copied, for the reason recorded on the swap path: the
+	 * JVM rejects any other modifier combination outright
+	 * ({@code ClassFormatError: Illegal field modifiers in class ...: 0x9}). A method with a body copied
+	 * into an interface needs no change - a non-abstract, non-static interface method is a default method
+	 * by definition.</p>
+	 */
+	private static void addPayloadMembers(ClassNode input, ClassNode patched) {
+		if(patched == null) {
+			return;
+		}
+		boolean isInterface = (input.access & Opcodes.ACC_INTERFACE) != 0;
+		int fields = 0;
+		int methods = 0;
+		for(FieldNode field : patched.fields) {
+			if(hasField(input, field.name, field.desc)) {
+				continue;
+			}
+			int access = field.access;
+			if(isInterface) {
+				access = (access & ~(Opcodes.ACC_PRIVATE | Opcodes.ACC_PROTECTED))
+						| Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL;
+			}
+			input.fields.add(new FieldNode(access, field.name, field.desc, field.signature, field.value));
+			fields++;
+		}
+		for(MethodNode method : patched.methods) {
+			if("<init>".equals(method.name) || "<clinit>".equals(method.name)) {
+				continue;
+			}
+			if(hasMethod(input, method.name, method.desc)) {
+				continue;
+			}
+			MethodNode copy = new MethodNode(method.access, method.name, method.desc, method.signature,
+					method.exceptions == null ? null : method.exceptions.toArray(new String[0]));
+			method.accept(copy);
+			input.methods.add(copy);
+			methods++;
+		}
+		if(fields > 0 || methods > 0) {
+			LOGGER.info("Gave " + input.name.replace('/', '.') + " the payload's " + fields + " field(s) and "
+					+ methods + " method(s), because the payload's own callers are still installed");
+		}
+	}
+
+	private static boolean hasField(ClassNode node, String name, String desc) {
+		for(FieldNode field : node.fields) {
+			if(field.name.equals(name) && field.desc.equals(desc)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	@Override
 	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
 		logModulesOnce();
@@ -476,6 +546,7 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 			LOGGER.info("Left " + input.name.replace('/', '.') + " alone: the keep plan keeps this runtime's"
 					+ " copy whole, because a constant the payload inlined into its own bodies does not match"
 					+ " the one here");
+			addPayloadMembers(input, patched);
 			return input;
 		}
 
@@ -574,6 +645,7 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 			LOGGER.info("Left " + patched.name.replace('/', '.') + " alone: the runtime adds members to that "
 					+ "interface, and installing OptiFine's copy would replace the static initialiser that "
 					+ "fills them");
+			addPayloadMembers(input, patched);
 			return input;
 		}
 
