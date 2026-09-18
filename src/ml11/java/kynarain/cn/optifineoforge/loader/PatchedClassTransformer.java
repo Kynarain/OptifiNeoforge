@@ -590,7 +590,13 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	 * inert on every line whose OptiFine already speaks official names - all of them but 1.21.</p>
 	 */
 	private static void renameSrgMembers(ClassNode node) {
-		if(SRG_NAMES.isEmpty() || node == null || !("false".equals(System.getProperty("optifineoforge.renameSrg")))) {
+		// On by default, off with -Doptifineoforge.renameSrg=false. The first attempt at this guard was
+// written as !("false".equals(...)), which reads correctly and is inverted: an unset property is not
+// "false", so the negation was true and the pass returned every time - measured as a run that loaded
+// the table and renamed nothing, while the same build with the property set to true renamed five names
+// and removed the registration failure. The README carries that discrepancy; this is its cause.
+		if(SRG_NAMES.isEmpty() || node == null
+				|| "false".equals(System.getProperty("optifineoforge.renameSrg"))) {
 			return;
 		}
 		int renamed = 0;
