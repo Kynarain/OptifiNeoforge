@@ -309,6 +309,22 @@ reload 1: 28 listeners
 在 `lambda$of$0` 里对 `PreparableReloadListener$PreparationBarrier.wait(...)` 的调用**之后**再打一行,列出**已经到达 barrier** 的监听器;
 28 个里缺的那一个就是答案。这一轮到此为止是因为上下文用尽,不是因为这条线查不动了。
 
+**接着做了,但这一针打偏了 —— 记下来,免得下次重复。** 在 `lambda$of$0` 里找 barrier 调用并打点之后,实测
+`barrier reached: 0`(而 `listener task started` 仍是 28、`finished` 仍是 0)。**这不是"没人到达 barrier",是插桩位置错了**:
+`javap` 出来看,`lambda$of$0` 自己**不调用** barrier,它只是把 barrier 作为参数传给
+`PreparableReloadListener.reload(barrier, ...)` —— 真正调用 `barrier.wait(...)` 的是**每个监听器自己的 `reload` 实现**。
+所以那一条 0 什么也不能说明,不能当作结论。
+
+真正该插的类是 `SimpleReloadInstance$1`(实测它就是 `PreparableReloadListener$PreparationBarrier` 的实现,方法签名 `public <T> CompletableFuture<T> wait(T)`)。
+它拿到的参数是监听器交上来的值、不是监听器本身,所以要点名"缺的是哪一个监听器",办法是**在 `wait` 里打出当前线程名**,
+再和 `listener task started` 那组日志(每条都带监听器名字)按线程对上:任务开始过、却从未在 `wait` 里出现过的那个线程,
+对应的监听器就是答案,而且这不需要改任何监听器的代码。
+
+这一轮真正站得住的两条实测:① **28 个监听器任务全部开始、零个结束**(所以是"全部停在同一个地方",不是某一个卡住);
+② **`SimpleReloadInstance` 不在负载里**(payload 里 0 个条目),也就是说跑的是运行时那份,我们的插桩确实生效
+(否则不会有那 28 行)。
+
+
 
 
 

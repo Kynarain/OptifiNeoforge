@@ -91,11 +91,40 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 	/** Marks one listener's task as started, and as finished when it returns. */
 	private static void probeListenerTask(MethodNode method) {
 		method.instructions.insert(taskCall("started"));
+		probeBarrier(method);
 		for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
 			if(insn.getOpcode() == Opcodes.RETURN) {
 				method.instructions.insertBefore(insn, taskCall("finished"));
 			}
 		}
+	}
+
+	/**
+	 * Marks the listeners that reach the reload's barrier.
+	 *
+	 * <p>Vanilla hands each listener a {@code PreparationBarrier} and waits for every one of them, so a
+	 * single listener that never calls it holds the whole reload open - measured on 1.21 as 28 tasks started
+	 * and none finished. Listing the ones that do arrive names the one that does not, which is the whole
+	 * question at that point.</p>
+	 */
+	private static void probeBarrier(MethodNode method) {
+		for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if(insn instanceof MethodInsnNode call && BARRIER.equals(call.owner) && BARRIER_WAIT.equals(call.name)) {
+				method.instructions.insert(insn, barrierCall());
+			}
+		}
+	}
+
+	/** {@code PreparableReloadListener$PreparationBarrier}, and the method everyone has to reach. */
+	private static final String BARRIER = "net/minecraft/server/packs/resources/PreparableReloadListener$PreparationBarrier";
+
+	private static final String BARRIER_WAIT = "wait";
+
+	private static InsnList barrierCall() {
+		InsnList call = new InsnList();
+		call.add(new VarInsnNode(Opcodes.ALOAD, 3));
+		call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "reachedBarrier", "(Ljava/lang/Object;)V", false));
+		return call;
 	}
 
 	private static InsnList taskCall(String probeMethod) {

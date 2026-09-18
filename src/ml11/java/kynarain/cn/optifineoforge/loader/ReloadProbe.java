@@ -126,6 +126,23 @@ public final class ReloadProbe {
 		LOGGER.info("listener task finished (" + running + " in flight): " + describe(listener));
 	}
 
+	/**
+	 * A listener has reached the reload barrier, so the reload can proceed once every listener has.
+	 *
+	 * <p>Paired with the started/finished pair, this is what names the listener that holds a reload open:
+	 * vanilla waits for all of them, so the one never listed here is the one responsible.</p>
+	 */
+	public static void reachedBarrier(Object listener) {
+		if(!enabled()) {
+			return;
+		}
+		reached++;
+		LOGGER.info("barrier reached (" + reached + " of " + running + " in flight): " + describe(listener));
+	}
+
+	/** How many listeners have reached the barrier in this reload. */
+	private static volatile int reached;
+
 	/** Listener tasks in flight, so a reload that stalls with none in flight is visible as such. */
 	private static volatile int running;
 
