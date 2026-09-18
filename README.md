@@ -602,3 +602,19 @@ OptiFine 的 Forge 侧入口是一个 ModLauncher 服务:`META-INF/services/cpw.
 这条线上大多数客户端监听器继承的是 `SimplePreparableReloadListener`,真正的入口是它定义的 **`prepare` / `apply`**,
 `reload` 是基类里那个不再被重写的方法。下一轮只需再加一个名字(`prepare`),`entered` 就应该从 4 涨到 22,
 那时的差集才是可信的"27 里缺哪一个监听器"。
+
+### 补充记录:第三个入口名让命中从 4 变成 10(第 29 轮)
+
+按上一轮的结论加了 `prepare`(并在编译产物里查过这个名字确实存在)之后,实测:
+
+| 计数 | 值 |
+|---|---|
+| `delivered` | 22 / 22(不变) |
+| `reload entered` | **4 → 10** |
+| `started` | 25 |
+
+方向是对的,但还没到位:`prepare` 覆盖了 6 个,剩下 15 个仍未标记(其中 `ObjLoader`、`BrandingControl`、`ClientModLoader`
+不是可直接插桩的类,真正待查的是 12 个)。剩下的这 12 个既没有 `reload`、`onResourceManagerReload`,也没有 `prepare` ——
+而这正好指向 `SimplePreparableReloadListener` 的另一半:**它同时定义 `prepare` 与 `apply`,多数监听器只实现其中一个**,
+另一个用基类的空实现,所以"只插桩要覆盖的入口"这一步还差 `apply` 这个名字。下一轮加上 `apply`(第四种名字)后,
+`entered` 应当接近 22,那时的 `started - entered` 才是可信的"哪一个监听器从未到达 barrier"。

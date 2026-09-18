@@ -72,8 +72,8 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 			ReloadProbe.saw(input.name.replace('/', '.'));
 		}
 		for(MethodNode method : input.methods) {
-			if((RELOAD.equals(method.name) || RESOURCE_MANAGER_RELOAD.equals(method.name))
-					&& LISTENERS_TO_MARK.contains(input.name)) {
+			if((RELOAD.equals(method.name) || RESOURCE_MANAGER_RELOAD.equals(method.name)
+					|| PREPARE.equals(method.name)) && LISTENERS_TO_MARK.contains(input.name)) {
 				InsnList call = new InsnList();
 				call.add(new LdcInsnNode(input.name.replace('/', '.')));
 				call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "reloadEntered", "(Ljava/lang/String;)V", false));
@@ -191,6 +191,16 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 	 * are tried; whichever the class declares is the one that gets marked.</p>
 	 */
 	private static final String RESOURCE_MANAGER_RELOAD = "onResourceManagerReload";
+
+	/**
+	 * The third entry point, and the one most of this line's listeners actually have.
+	 *
+	 * <p>Measured: all 22 planned classes are delivered to this transformer and only 4 accept the injection,
+	 * because the rest declare neither reload nor onResourceManagerReload - they extend
+	 * {@code SimplePreparableReloadListener}, whose entry point is prepare, with reload left as the base
+	 * class method nothing overrides. Adding this name is what should take the marking from 4 to 22.</p>
+	 */
+	private static final String PREPARE = "prepare";
 
 
 
