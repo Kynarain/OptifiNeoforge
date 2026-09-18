@@ -19,10 +19,10 @@
 |---|---|---|---|---|---|---|
 | 1.21 | `21.0.167` | `OptifiNeoforge-1.0.0+mc1.21.jar` | 无 | `preview_OptiFine_1.21_HD_U_J1_pre9.jar` | 21 | 已验证 · 已发布(`[OptiFine]` 252 行、stderr 14 141 字节、无崩溃报告) |
 | 1.21.1 | `21.1.250` | `OptifiNeoforge-1.0.0+mc1.21.1.jar` | `OptiFine_1.21.1_HD_U_J1.jar` | `preview_OptiFine_1.21.1_HD_U_J1_pre15.jar` | 21 | 已验证 · 已发布(223 行、stderr 0 字节、无崩溃报告;本轮本机复现四项判据一致、232 行,见下) |
-| 1.21.3 | `21.3.97` | `OptifiNeoforge-1.0.0+mc1.21.3.jar` | `OptiFine_1.21.3_HD_U_J2.jar` | `preview_OptiFine_1.21.3_HD_U_J2_pre12.jar` | 21 | 已验证 · 已发布(225 行、stderr 0 字节、无崩溃报告) |
-| 1.21.4 | `21.4.149` | `OptifiNeoforge-1.0.0+mc1.21.4.jar` | `OptiFine_1.21.4_HD_U_J3.jar` | `preview_OptiFine_1.21.4_HD_U_J4_pre2.jar` | 21 | 已验证 · 已发布(232 行、stderr 0 字节、无崩溃报告) |
-| 1.21.6 | `21.6.20-beta` | `OptifiNeoforge-1.0.0+mc1.21.6.jar` | 无 | `preview_OptiFine_1.21.6_HD_U_J6_pre3.jar` | 21 | 已验证 · 已发布(340 行、stderr 0 字节、无崩溃报告;**不含启用光影包**) |
-| 1.21.7 | `21.7.25-beta` | `OptifiNeoforge-1.0.0+mc1.21.7.jar` | 无 | `preview_OptiFine_1.21.7_HD_U_J6_pre7.jar` | 21 | 已验证 · 已发布(340 行、stderr 0 字节、无崩溃报告;**不含启用光影包**) |
+| 1.21.3 | `21.3.97` | `OptifiNeoforge-1.0.0+mc1.21.3.jar` | `OptiFine_1.21.3_HD_U_J2.jar` | `preview_OptiFine_1.21.3_HD_U_J2_pre12.jar` | 21 | 已验证 · 已发布(225 行、stderr 0 字节、无崩溃报告;本轮本机复现四项判据一致、225 行,见下) |
+| 1.21.4 | `21.4.149` | `OptifiNeoforge-1.0.0+mc1.21.4.jar` | `OptiFine_1.21.4_HD_U_J3.jar` | `preview_OptiFine_1.21.4_HD_U_J4_pre2.jar` | 21 | 已验证 · 已发布(232 行、stderr 0 字节、无崩溃报告;本轮本机复现四项判据一致、232 行,见下) |
+| 1.21.6 | `21.6.20-beta` | `OptifiNeoforge-1.0.0+mc1.21.6.jar` | 无 | `preview_OptiFine_1.21.6_HD_U_J6_pre3.jar` | 21 | 已验证 · 已发布(340 行、stderr 0 字节、无崩溃报告;**不含启用光影包**;本轮本机复现四项判据一致、347 行,见下) |
+| 1.21.7 | `21.7.25-beta` | `OptifiNeoforge-1.0.0+mc1.21.7.jar` | 无 | `preview_OptiFine_1.21.7_HD_U_J6_pre7.jar` | 21 | 已验证 · 已发布(340 行、stderr 0 字节、无崩溃报告;**不含启用光影包**;本轮本机复现四项判据一致、347 行,见下) |
 | 1.21.8 | `21.8.54` | `OptifiNeoforge-1.0.0+mc1.21.8.jar` | 无 | `preview_OptiFine_1.21.8_HD_U_J6_pre16.jar` | 21 | 已验证 · 已发布(337 行、stderr 0 字节、无崩溃报告;本轮本机复现四项判据一致、344 行,见下) |
 | 1.21.9 | `21.9.16-beta` | `OptifiNeoforge-1.0.0+mc1.21.9.jar` | 无 | `preview_OptiFine_1.21.9_HD_U_J7_pre2.jar` | 21 | 已验证 · **未发布**(构建已通过:产物是加载器侧工具 + mod 骨架,不含挂载点,见下文) |
 | 1.21.10 | `21.10.64` | `OptifiNeoforge-1.0.0+mc1.21.10.jar` | 无 | `preview_OptiFine_1.21.10_HD_U_J7_pre11.jar` | 21 | 已验证 · **未发布**(同上) |
@@ -87,6 +87,27 @@ from SRG to Mojang's official names at 1.20.6"),但这台机器上的 `preview_O
 记录至少对 J1_pre9 不成立**。要让这条线能跑,需要把 `SrgRemap` 那一步接进 rig,而它要两张表:MCPConfig 的 `joined.tsrg`
 (本机有)和 NeoForm 的 `-mappings-merged.txt`(本机没有,要用 installertools 的合并步骤生成)。这一步没做,所以 1.21 本轮的
 状态是"未跑",不是"失败",也不是"通过"。
+
+### 复现一次启动需要什么(本轮量出来的 rig 要求)
+
+上面每个数字都出自同一套流程,而流程自身这一轮也被量出几条硬性要求 —— 写在这里,免得下一个人或下一轮重新踩:
+
+1. **加载器 jar 必须为当前这一版重新构建**。借别的线的产物、或用改动加载器代码之前的旧产物,都会表现成"加载器 bug":
+   实测 1.21.1 用旧产物跑,挂在 NeoForge 自己的 `AttachmentSync.onChunkSent`,报
+   `VerifyError: Type 'BlockEntity' is not assignable to 'AttachmentHolder'` —— 而那正是重定父类那条修正在修的东西。
+2. **`MissingTargets --stub` 要给足运行时 classpath**(游戏 jar + NeoForge universal + 库 jar)。给少了会得到一份几乎全是
+   库成员的 804 行 stub 文件,真正要补的十几个成员(例如 `BlockModelPart.layer()`)被埋在里面;而且交给加载器的 payload
+   必须是**补齐之后**的那一个。这条命令行会超出 Windows 上限(220 多个 jar),要用 Java 的 `@argfile` 传。
+3. **转换器的 `targets` 必须包含各计划里的类**,不能只取负载索引:不在负载里的类不会被它看到,接口计划与运行时 stub
+   会静默失效。
+4. **游戏目录里要有 `optionsof.txt`**(见上文,OptiFine J1/J2 的坑)。
+5. 启动参数要 `earlyWindowProvider=none`,并且**不要最小化窗口**、`options.txt` 里 `enableVsync=false`;否则渲染线程会
+   卡在 `glfwSwapBuffers`,读起来像"没起来"。
+6. `[OptiFine]` 行数按 `latest.log` 原始条数记录;rig 打印的那个数是三个来源合并后的匹配数,正好是它的两倍。
+
+第 1、2、3 条已经写进 rig 的 `add-line.ps1`:一条命令把"下载原版客户端 → 装 NeoForge(含安装器 IPv6 补种重试)→
+跑离线管线 → 生成两条计划 → 补运行时 stub → 按目标构建加载器 jar → 组装两个 jar → 放 `optionsof.txt`"串起来,
+剩下的只有 `launch.ps1` 与判读。
 
 ### 1.21.8 的根因:负载与运行时的结构性冲突
 
