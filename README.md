@@ -130,7 +130,28 @@ OptiFine 自己的转换器**先**替掉了 `RenderStateShard`(本行日志里�
   `public net.minecraft.client.renderer.RenderStateShard *`,由 FML 在加载期应用,而不是烘进那个 jar。
 
 所以下一步要把 **AT 配置**当成第三个来源(`PayloadDrift` 现在只比两个 jar),或者让转换器真正拿到 AT 之后的运行时类。
-这一轮没做,1.21 因此仍然是**未通过**:四个判据里 `Setting user` 与 stderr 为通过、`Sound engine started` 为不通过、本次运行有 1 份崩溃报告。
+
+**AT 这条来源已经补上了,那一处也就没了;卡点换成了下一处。** `PayloadDrift` 现在接受 `--at <jar 或 cfg>`:直接读
+`neoforge-<ver>-universal.jar` 里的 `META-INF/accesstransformer.cfg`,把里面 `<class> *`、`<access>-f <class> <field>`、
+`<access> <class> <method>(<args>)<return>` 三种写法都收进来,并**与运行时 jar 的可见性取更宽的那个**当作目标。实测这条线上
+AT 配置给出 2 个类 + 422 个具名成员,access plan 从 81 行涨到 **255 行**(`RenderStateShard` 一个类就 140 条:96 个字段 + 44 个方法),
+其中就包含 `RENDERTYPE_ENTITY_SOLID_SHADER`。重跑后 `IllegalAccessError` 消失,`[OptiFine]` 行数从 60 涨到 74 —— 这一处**确实修好了**。
+
+新的卡点是另一类,而且能一句话说清:**负载的调用方需要一个"被我们故意不替换"的类所提供的、只存在于负载里的成员**。实测:
+
+```
+NoSuchMethodError: SpriteResourceLoader.create(java.util.Collection)
+  at SpriteLoader.loadAndStitch(SpriteLoader.java:187)
+```
+
+日志同一段里两件事同时发生:`SpriteLoader` 被负载替换,而 `SpriteResourceLoader` 被**按接口规则留着运行时的副本**
+("运行时给这个接口加了成员,装负载会连带换掉填这些字段的静态初始化器")。于是负载版 `SpriteLoader` 调的是 OptiFine 那一代
+`create(Collection)`,留下的运行时副本没有这个重载。`MissingTargets` 看不到这类问题,因为它**刻意把负载也索引进去**
+(理由见它的注释:被替换的类自己能满足这些引用)—— 而这里那个类恰恰没有被替换。要修就是给"被留着的类"补上负载需要的成员
+(方向与 `MemberRestorePlan` 相反),这一步没做。
+
+**1.21 本轮结论:仍未通过。** `Setting user` 通过、stderr 0 字节、`Sound engine started` 不通过、本次运行 1 份崩溃报告。
+
 
 **另一处 rig 侧的坑**:`add-line.ps1` 每次都会用**原始** OptiFine jar 重新生成 prepared jar,所以对 prepared jar 做过的改写会被
 它覆盖 —— 实测第一次重跑就退回到 `NoSuchFieldError: Direction.f_122346_`。这条线上正确的顺序是:prepare-line → 改写补丁游戏类 →

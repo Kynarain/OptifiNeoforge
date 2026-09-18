@@ -81,6 +81,7 @@ public final class PayloadDrift {
 		Path plan = null;
 		Path interfacePlan = null;
 		Path accessPlan = null;
+		List<Path> atSources = new ArrayList<>();
 		Path payload = null;
 		for(int index = 0; index < args.length; index++) {
 			if("--plan".equals(args[index])) {
@@ -101,6 +102,12 @@ public final class PayloadDrift {
 					System.exit(2);
 				}
 				accessPlan = Path.of(args[index]);
+			} else if("--at".equals(args[index])) {
+				if(++index >= args.length) {
+					System.err.println("--at needs a file or jar");
+					System.exit(2);
+				}
+				atSources.add(Path.of(args[index]));
 			} else if(payload == null) {
 				payload = Path.of(args[index]);
 			} else {
@@ -120,6 +127,9 @@ public final class PayloadDrift {
 			read(jar, runtime);
 		}
 		System.out.println("runtime: " + runtime.size() + " classes from " + runtimeJars.size() + " jar(s)");
+		if(!atSources.isEmpty()) {
+			readAccessTransformers(atSources);
+		}
 
 		Map<String, List<String>> constantDrift = new TreeMap<>();
 		Map<String, List<String>> signatureDrift = new TreeMap<>();
@@ -180,10 +190,12 @@ public final class PayloadDrift {
 				// on a line where OptiFine's transformer replaced that class first, both are the payload's
 				// - which is why this list has to come from the runtime jar offline.
 				for(org.objectweb.asm.tree.MethodNode method : node.methods) {
-					checkVisibility(method.access, was, method.name, method.desc, accessDrift, node.name);
+					checkVisibility(method.access, was, method.name, method.desc, accessDrift, node.name,
+						accessTargetFor(node.name, method.name, method.desc));
 				}
 				for(FieldNode field : node.fields) {
-					checkVisibility(field.access, was, field.name, field.desc, accessDrift, node.name);
+					checkVisibility(field.access, was, field.name, field.desc, accessDrift, node.name,
+						accessTargetFor(node.name, field.name, field.desc));
 				}
 				for(Map.Entry<String, Set<String>> entry2 : was.descriptors.entrySet()) {					Set<String> mine = descriptorsOf(node, entry2.getKey());
 					if(mine.isEmpty()) {
@@ -380,13 +392,159 @@ public final class PayloadDrift {
 
 	/** Records one member whose runtime copy is more visible than the payload's, if it is. */
 	private static void checkVisibility(int payloadAccess, Shape runtime, String name, String desc,
-			Map<String, List<String>> drift, String owner) {
+			Map<String, List<String>> drift, String owner, Integer accessTarget) {
 		Integer theirs = runtime.memberAccess.get(name + " " + desc);
-		if(theirs == null || rank(theirs) <= rank(payloadAccess)) {
+		int target = 0;
+		boolean any = false;
+		if(theirs != null) {
+			target = theirs;
+			any = true;
+		}
+		// NeoForge's own access transformers widen members at load time, and those are not visible in the
+		// runtime jar at all - which is how this check missed the one field that mattered:
+		//   public net.minecraft.client.renderer.RenderStateShard *
+		// leaves RenderStateShard.RENDERTYPE_ENTITY_SOLID_SHADER protected static final in the jar while
+		// FML makes it public at load time, so NeoForgeRenderTypes$Internal may reach it. Anything the
+		// config widens is therefore treated as if the runtime had it that wide already.
+		if(accessTarget != null && (!any || rank(accessTarget) > rank(target))) {
+			target = accessTarget;
+			any = true;
+		}
+		if(!any || rank(target) <= rank(payloadAccess)) {
 			return;
 		}
 		drift.computeIfAbsent(owner, key -> new ArrayList<>())
-				.add(name + "\t" + desc + "\t" + theirs + "\tpayload " + payloadAccess + " runtime " + theirs);
+				.add(name + "\t" + desc + "\t" + target + "\tpayload " + payloadAccess + " runtime " + target);
+	}
+
+	/** Every access word an AT line may start with, mapped to the bit it sets. */
+	private static final Map<String, Integer> AT_WORDS = Map.of(
+			"public", Opcodes.ACC_PUBLIC,
+			"protected", Opcodes.ACC_PROTECTED,
+			"private", Opcodes.ACC_PRIVATE,
+			"default", 0);
+
+	/** {@code owner} to the access an AT line gives every member of it, from {@code <class> *} lines. */
+	private static final Map<String, Integer> AT_ALL_MEMBERS = new LinkedHashMap<>();
+
+	/** {@code owner} and {@code name desc} to the access an AT line gives that one member. */
+	private static final Map<String, Integer> AT_BY_MEMBER = new LinkedHashMap<>();
+
+	/**
+	 * Reads NeoForge's access transformer config, from a file or from inside a jar.
+	 *
+	 * <p>The three shapes a line comes in are all in {@code neoforge-<version>-universal.jar}'s
+	 * {@code META-INF/accesstransformer.cfg}: {@code public <class> *} for every member,
+	 * {@code protected-f <class> <field>} for one field, and
+	 * {@code public <class> <method>(<args>)<return>} for one method. The trailing {@code -f} and
+	 * {@code -m} narrow a line to fields or methods; both are accepted and ignored here, because a member
+	 * name is only ever looked up among the members the payload actually has.</p>
+	 */
+	private static void readAccessTransformers(List<Path> sources) throws IOException {
+		for(Path source : sources) {
+			List<String> lines;
+			if(source.getFileName().toString().endsWith(".jar")) {
+				lines = new ArrayList<>();
+				try(java.util.zip.ZipFile zip = new java.util.zip.ZipFile(source.toFile())) {
+					java.util.zip.ZipEntry entry = zip.getEntry("META-INF/accesstransformer.cfg");
+					if(entry == null) {
+						System.out.println("no META-INF/accesstransformer.cfg in " + source.getFileName());
+						continue;
+					}
+					try(InputStream stream = zip.getInputStream(entry)) {
+						for(String line : new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).split("\\R")) {
+							lines.add(line);
+						}
+					}
+				}
+			} else {
+				lines = Files.readAllLines(source);
+			}
+			for(String raw : lines) {
+				String line = raw;
+				int hash = line.indexOf('#');
+				if(hash >= 0) {
+					line = line.substring(0, hash);
+				}
+				line = line.trim();
+				if(line.isEmpty()) {
+					continue;
+				}
+				String[] parts = line.split("\\s+");
+				if(parts.length < 2) {
+					continue;
+				}
+				String word = parts[0];
+				int dash = word.indexOf('-');
+				if(dash > 0) {
+					word = word.substring(0, dash);
+				}
+				Integer access = AT_WORDS.get(word);
+				if(access == null || parts.length < 3) {
+					continue;
+				}
+				String owner = parts[1].replace('.', '/');
+				if("*".equals(parts[2])) {
+					AT_ALL_MEMBERS.merge(owner, access, (left, right) -> rank(right) > rank(left) ? right : left);
+					continue;
+				}
+				String member = parts[2];
+				String name = member;
+				String descriptor = "";
+				int paren = member.indexOf('(');
+				if(paren >= 0) {
+					name = member.substring(0, paren);
+					descriptor = descriptorOf(member.substring(paren));
+				}
+				AT_BY_MEMBER.put(owner + "|" + name + "|" + descriptor, access);
+			}
+		}
+		System.out.println("access transformers: " + AT_ALL_MEMBERS.size() + " class(es) and "
+				+ AT_BY_MEMBER.size() + " named member(s)");
+	}
+
+	/** Turns an AT's source-shaped parameter list into a JVM descriptor. */
+	private static String descriptorOf(String parameters) {
+		StringBuilder result = new StringBuilder("(");
+		String body = parameters.substring(1, parameters.lastIndexOf(')'));
+		String rest = parameters.substring(parameters.lastIndexOf(')') + 1);
+		if(!body.isBlank()) {
+			for(String argument : body.split(",")) {
+				result.append(typeOf(argument.trim()));
+			}
+		}
+		return result.append(')').append(typeOf(rest.trim())).toString();
+	}
+
+	private static String typeOf(String type) {
+		if(type.endsWith("[]")) {
+			return "[" + typeOf(type.substring(0, type.length() - 2));
+		}
+		switch(type) {
+			case "void": return "V";
+			case "boolean": return "Z";
+			case "byte": return "B";
+			case "char": return "C";
+			case "short": return "S";
+			case "int": return "I";
+			case "long": return "J";
+			case "float": return "F";
+			case "double": return "D";
+			default: return "L" + type.replace('.', '/') + ";";
+		}
+	}
+
+	/** The access an AT config gives this member, or null when no line covers it. */
+	private static Integer accessTargetFor(String owner, String name, String desc) {
+		Integer named = AT_BY_MEMBER.get(owner + "|" + name + "|" + desc);
+		Integer whole = AT_ALL_MEMBERS.get(owner);
+		if(named == null) {
+			return whole;
+		}
+		if(whole == null) {
+			return named;
+		}
+		return rank(named) > rank(whole) ? named : whole;
 	}
 
 	/** A constant, with the string form quoted so 7 and "7" cannot be confused. */
