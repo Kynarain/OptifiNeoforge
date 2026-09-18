@@ -24,18 +24,29 @@
 | 1.21.6 | `21.6.20-beta` | `OptifiNeoforge-1.0.0+mc1.21.6.jar` | 无 | `preview_OptiFine_1.21.6_HD_U_J6_pre3.jar` | 21 | 已验证 · 已发布(340 行、stderr 0 字节、无崩溃报告;**不含启用光影包**) |
 | 1.21.7 | `21.7.25-beta` | `OptifiNeoforge-1.0.0+mc1.21.7.jar` | 无 | `preview_OptiFine_1.21.7_HD_U_J6_pre7.jar` | 21 | 已验证 · 已发布(340 行、stderr 0 字节、无崩溃报告;**不含启用光影包**) |
 | 1.21.8 | `21.8.54` | `OptifiNeoforge-1.0.0+mc1.21.8.jar` | 无 | `preview_OptiFine_1.21.8_HD_U_J6_pre16.jar` | 21 | 已验证 · 已发布(337 行、stderr 0 字节、无崩溃报告) |
-| 1.21.9 | `21.9.16-beta` | `OptifiNeoforge-1.0.0+mc1.21.9.jar` | 无 | `preview_OptiFine_1.21.9_HD_U_J7_pre2.jar` | 21 | 已验证 · **未发布**(挂载点在 rig 编译的载荷 jar 里,本分支的 Gradle 构建产不出它) |
+| 1.21.9 | `21.9.16-beta` | `OptifiNeoforge-1.0.0+mc1.21.9.jar` | 无 | `preview_OptiFine_1.21.9_HD_U_J7_pre2.jar` | 21 | 已验证 · **未发布**(构建已通过:产物是加载器侧工具 + mod 骨架,不含挂载点,见下文) |
 | 1.21.10 | `21.10.64` | `OptifiNeoforge-1.0.0+mc1.21.10.jar` | 无 | `preview_OptiFine_1.21.10_HD_U_J7_pre11.jar` | 21 | 已验证 · **未发布**(同上) |
 | 1.21.11 | `21.11.45` | `OptifiNeoforge-1.0.0+mc1.21.11.jar` | `OptiFine_1.21.11_HD_U_J9.jar` | `preview_OptiFine_1.21.11_HD_U_J9_pre4.jar` | 21 | 已验证 · **未发布**(同上;stderr 107 字节 = 它的无 mod 对照跑) |
 
 `1.0.0` 的含义按 `docs/VERSIONING.md`:它由这一条线自己的实机启动记录支撑,不是"功能完备"的断言。
 表中 NeoForge 一列是**这条线实际验证用的版本**(1.21.4 用的是 `21.4.149`,不是镜像里更新的 `21.4.157`)。
 
-**1.21.9 / 1.21.10 / 1.21.11 没有发布,原因是构建而不是验证**(实测):这三版的 NeoForge 已经去掉 ModLauncher,
-而本分支 `src/main` 编译的是 `cpw.mods.modlauncher.api.ITransformationService`。实测 1.21.11(21.11.45)与
-1.21.10(21.10.64)各一次,都死在 `:compileJava`(`错误: 程序包cpw.mods.modlauncher.api不存在`),
-所以本分支的 Gradle 构建产不出这三条的 jar;它们的挂载点是我们自己的 `ClassProcessor`(`26.x` 分支的
-`src/fml10`,由 rig 编译**进载荷 jar**),而那份载荷 jar 含 OptiFine 的类、按 `docs/PUBLISHING.md` 不分发。
+**1.21.9 / 1.21.10 / 1.21.11:构建阻塞已解除,但仍未发布。** 原来的原因写在"构建而不是验证"上,本轮复现了
+它:这三版的 NeoForge 去掉了 ModLauncher,而本分支把实现 `cpw.mods.modlauncher.api.ITransformationService`
+的那批类放在 `src/main`,于是 `:compileJava` 直接失败 —— 2026 在这台机器上复现 1.21.11(`21.11.45`),
+`错误: 程序包cpw.mods.modlauncher.api不存在` 共 **100 个**,全部落在实现 ModLauncher 接口的那批类上。
+
+现在这批类移到了 `src/ml11/java`,由 `-Pmountpoint` 决定编不编:`modlauncher`(1.21 – 1.21.8)编,
+`fml10`(1.21.9 起)不编。三条线的构建因此都能通过,实测各一次:`1.21.9`(`21.9.16-beta`)、
+`1.21.10`(`21.10.64`)、`1.21.11`(`21.11.45`),产物都在 `build/libs/`。
+
+`fml10` 产出的 jar 里是**加载器侧工具 + mod 骨架**,没有挂载点:这三条线的挂载点是我们自己的
+`ClassProcessor`(`26.x` 分支的 `src/fml10`,由 rig 编译**进载荷 jar**),而那份载荷 jar 含 OptiFine 的类、
+按 `docs/PUBLISHING.md` 不分发 —— 这与 `26.x` 为 26.1.2 发布的产物是同一类东西。
+
+**本节只改了构建,没有改任何实机结论**:这台机器上没有 rig,本轮**没有**重跑启动,
+所以这三条的实机判据仍然只有 `docs/MATRIX.md` 里那一份。发布本身也仍是独立的一步(需要一条启动记录与
+Release 正文),尚未做。
 
 两列 OptiFine 都只表示"该构建存在",不代表可用;这里也不表示正式版比 preview 更适合移植。
 
@@ -57,16 +68,35 @@
 ## 构建
 
 需要 **JDK 21**(整条线统一)。仓库根目录就是 Gradle 项目,目标版本用 `-Pmc` 切换(非默认目标必须同时给
-`-Pneoforge`,以免"没验证过的配对看起来像支持"):
+`-Pneoforge` 与 `-Pmountpoint`,以免"没验证过的配对看起来像支持"):
 
 ```powershell
-.\gradlew build                                            # 默认目标:1.21.4 / 21.4.149
-.\gradlew build -Pmc=1.21.8 -Pneoforge=21.8.54             # 这条线的其它已验证版本
+.\gradlew build                                                                   # 默认目标:1.21.4 / 21.4.149
+.\gradlew build "-Pmc=1.21.8"  "-Pneoforge=21.8.54"  "-Pmountpoint=modlauncher"   # 这一代还带 ModLauncher
+.\gradlew build "-Pmc=1.21.11" "-Pneoforge=21.11.45" "-Pmountpoint=fml10"         # 这一代已经没有 ModLauncher
 ```
 
+**在 PowerShell 里 `-P...` 必须加引号**:不加时 `-Pmc=1.21.11` 会被拆开,报
+`Task '.21.11' not found in root project`(Gradle 9.6.1 实测);`cmd.exe` 下不加引号也可以。
+
+`-Pmountpoint` 决定编哪个挂载点源码根:1.21 – 1.21.8 的 NeoForge 还带 ModLauncher,编 `src/ml11/java`
+(实现 `ITransformationService` 的转换服务与各 transformer);1.21.9 起 NeoForge 已经没有 ModLauncher、
+`cpw.mods.modlauncher.api` 随之消失,那批类编不过,所以 `fml10` 不编任何挂载点根。
+
 产物为 `build/libs/OptifiNeoforge-<版本>+mc<MC 版本>.jar`,例如 `OptifiNeoforge-1.0.0+mc1.21.8.jar`。
-**1.21.9 / 1.21.10 / 1.21.11 不在这个构建里**:这三版的 NeoForge 已经去掉 ModLauncher,挂载点是我们自己的
-`ClassProcessor`(`26.x` 分支的 `src/fml10`,由 rig 编译进载荷 jar),本分支的 `src/main` 编译不出它。
+**十条线的目标现在都能构建**,但两种挂载点的产物内容不同(实测 1.21.4 与 1.21.11):
+
+| `-Pmountpoint` | 1.21.4 / 21.4.149 实测 | 1.21.11 / 21.11.45 实测 |
+|---|---|---|
+| jar 大小 | 161 235 字节 | 109 765 字节 |
+| 条目数 | 55 | 39 |
+| `kynarain/cn/optifineoforge/loader/**` | 16 个类 | **0 个类** |
+| 离线工具 `…/optifine/**` | 32 个类 | 32 个类 |
+| `META-INF/services/**` | 无 | 无 |
+
+也就是说 `fml10` 的 jar 只有加载器侧工具与 mod 骨架 —— 这三条线的挂载点由 rig 编译进载荷 jar。
+两个 jar 里都**没有** OptiFine 的类,也都**不含** `META-INF/services/`,所以都不是"放进 `mods/` 就能用"的成品;
+这一点与 `docs/PUBLISHING.md` 对已发布 jar 的说明一致。
 
 ## 工作原理(计划)
 

@@ -26,6 +26,42 @@ if(targetNeoForge == null){
     targetNeoForge = defaultNeoForge
 }
 
+// The mount point decides which source root is compiled, because this line spans the last
+// ModLauncher generation and the first one without it. NeoForge 21.9 (Minecraft 1.21.9) dropped
+// ModLauncher, and with it cpw.mods.modlauncher.api: measured on 1.21.11 (21.11.45), ":compileJava"
+// stopped with "错误: 程序包cpw.mods.modlauncher.api不存在" - 100 errors, every one of them in the
+// transformation service and the transformers that implement cpw.mods.modlauncher.api.ITransformer.
+// Those classes sat in src/main, so nothing here could build 1.21.9 / 1.21.10 / 1.21.11 at all;
+// they now live in a source root of their own and are compiled only where ModLauncher exists.
+//
+//   -Pmountpoint=modlauncher  -> compile src/ml11/java (Minecraft 1.21 to 1.21.8, ModLauncher 11)
+//   -Pmountpoint=fml10        -> compile no mount-point root (Minecraft 1.21.9 and later). Those
+//                                lines have no ModLauncher for anything to register with, and their
+//                                mount point is the FML 10 ClassProcessor that the rig compiles into
+//                                the payload jar (26.x's src/fml10) - a jar that carries OptiFine's
+//                                classes and is not distributed. This build therefore produces the
+//                                loader-side tools and the mod skeleton alone, which is the same kind
+//                                of artifact the 26.x line publishes for 26.1.2.
+//
+// Same rule as -Pneoforge: a target that was not verified has to be stated rather than guessed.
+def defaultMountPoint = project.mount_point.toString()
+def targetMountPoint = project.findProperty('mountpoint')?.toString()
+if(targetMountPoint == null){
+    if(targetMc != defaultMc){
+        throw new GradleException(
+            "no mount point recorded for Minecraft ${targetMc}: pass -Pmountpoint=modlauncher " +
+            "(1.21 to 1.21.8) or -Pmountpoint=fml10 (1.21.9 and later), and record the line in " +
+            "docs/MATRIX.md once it is verified")
+    }
+    targetMountPoint = defaultMountPoint
+}
+if(!(targetMountPoint in ['modlauncher', 'fml10'])){
+    throw new GradleException("unknown mount point '${targetMountPoint}': expected modlauncher or fml10")
+}
+if(targetMountPoint == 'modlauncher'){
+    sourceSets.main.java.srcDir 'src/ml11/java'
+}
+
 version = "${project.mod_version_base}+mc${targetMc}"
 group = project.maven_group
 
@@ -93,7 +129,7 @@ tasks.named('processResources') {
 tasks.named('build') {
     doFirst {
         println "Building ${project.archives_base_name} ${project.version} (Minecraft ${targetMc}, " +
-                "NeoForge ${targetNeoForge}, Java ${targetJavaVersion})"
+                "NeoForge ${targetNeoForge}, Java ${targetJavaVersion}, mount point ${targetMountPoint})"
     }
 }
 
