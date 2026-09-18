@@ -3558,3 +3558,36 @@ java.lang.VerifyError: Bad type on operand stack
   "为什么没跑"的边界量清楚了。
 - 其余 13 条线没有跑,**没有发布任何东西**。
 
+### 五、补充:那一问已经答了(reparent 为什么没跑)
+
+上一节把"`input` 为什么已经是 Forge 版本"留成了下一问。这一轮给 `PatchedClassTransformer` 加了一行日志
+(`1.21.x` `0af9601`)—— 因为"计划覆盖的类"被静默跳过时,`Re-parented` 与 `Left ... alone` **同时为零**,
+而这与"计划根本没被读到"是同一个形状,分不清就要多花一轮。日志实测输出:
+
+```
+Reparent plan covers net.minecraft.world.level.block.entity.BlockEntity:
+  the payload extends net/minecraftforge/common/capabilities/CapabilityProvider$BlockEntities,
+  the class handed over extends net/minecraftforge/common/capabilities/CapabilityProvider$BlockEntities
+  - equal, so nothing is rewritten and the copy is installed as it is
+```
+
+也就是**判据本身**,不用再猜:交给 transformer 的那份 `input`,父类**已经是** Forge 类型。于是这一条线上
+`BlockEntity` 始终挂着 Forge 父类,因果链是完整的:
+
+1. reparent 被跳过(`1.21.x` 上 `Re-parented` 0 行、`Left ... BlockEntity alone` 0 行) →
+2. `VerifyError: Bad type on operand stack`,`BlockEntity` 不能赋给 `AttachmentHolder`
+   (`ClientPayloadHandler.handle`)→ FML 报 `Failed to wait for future Mod Construction` →
+3. FML 随后对注册事件 `Cowardly refusing to send event ...`,而 OptiFine 卡在
+   `[OptiFine] Waiting for model sprites`(180 秒里刷了 33 次,没有图集、没有声音引擎)。
+
+这一轮加的是**日志不是修法**:修法取决于"为什么交过来的那份已经是 OptiFine 的",这一点仍未定。
+
+### 六、一条方法论教训(rig 差点给出一次假通过)
+
+把 mod jar 名字写空时,`launch.ps1` 会把**目录**当成 jar 复制进 `mods/`,于是那一次运行报出
+`VERDICT: STARTED`、`Setting user` ✓、`Sound engine started` ✓、0 崩溃报告、stderr 0 字节 —— 而
+**`[OptiFine]` 行数是 0**,也就是 OptiFine 根本没加载。判定脚本现在会拒绝非文件的 mod 路径。
+
+**记这一条的原因比它本身重要**:本项目把"`[OptiFine]` 行数"当验收数字之一,而这一次它恰好是唯一能戳破
+假通过的那一列。判据里的每一列都不是装饰。
+
