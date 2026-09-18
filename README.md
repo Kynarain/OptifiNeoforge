@@ -18,7 +18,7 @@
 | Minecraft | NeoForge | 产物 | OptiFine 正式版 | OptiFine 最新 preview | Java | 状态(实测) |
 |---|---|---|---|---|---|---|
 | 1.21 | `21.0.167` | `OptifiNeoforge-1.0.0+mc1.21.jar` | 无 | `preview_OptiFine_1.21_HD_U_J1_pre9.jar` | 21 | 已验证 · 已发布(`[OptiFine]` 252 行、stderr 14 141 字节、无崩溃报告) |
-| 1.21.1 | `21.1.250` | `OptifiNeoforge-1.0.0+mc1.21.1.jar` | `OptiFine_1.21.1_HD_U_J1.jar` | `preview_OptiFine_1.21.1_HD_U_J1_pre15.jar` | 21 | 已验证 · 已发布(223 行、stderr 0 字节、无崩溃报告) |
+| 1.21.1 | `21.1.250` | `OptifiNeoforge-1.0.0+mc1.21.1.jar` | `OptiFine_1.21.1_HD_U_J1.jar` | `preview_OptiFine_1.21.1_HD_U_J1_pre15.jar` | 21 | 已验证 · 已发布(223 行、stderr 0 字节、无崩溃报告;本轮本机复现四项判据一致、232 行,见下) |
 | 1.21.3 | `21.3.97` | `OptifiNeoforge-1.0.0+mc1.21.3.jar` | `OptiFine_1.21.3_HD_U_J2.jar` | `preview_OptiFine_1.21.3_HD_U_J2_pre12.jar` | 21 | 已验证 · 已发布(225 行、stderr 0 字节、无崩溃报告) |
 | 1.21.4 | `21.4.149` | `OptifiNeoforge-1.0.0+mc1.21.4.jar` | `OptiFine_1.21.4_HD_U_J3.jar` | `preview_OptiFine_1.21.4_HD_U_J4_pre2.jar` | 21 | 已验证 · 已发布(232 行、stderr 0 字节、无崩溃报告) |
 | 1.21.6 | `21.6.20-beta` | `OptifiNeoforge-1.0.0+mc1.21.6.jar` | 无 | `preview_OptiFine_1.21.6_HD_U_J6_pre3.jar` | 21 | 已验证 · 已发布(340 行、stderr 0 字节、无崩溃报告;**不含启用光影包**) |
@@ -47,6 +47,23 @@
 **本节只改了构建,没有改任何实机结论**:这台机器上没有 rig,本轮**没有**重跑启动,
 所以这三条的实机判据仍然只有 `docs/MATRIX.md` 里那一份。发布本身也仍是独立的一步(需要一条启动记录与
 Release 正文),尚未做。
+
+**1.21.1:四项判据在本机复现通过(`[OptiFine]` 232 行,记录为 223)。** 同一条 rig 流程(离线换类 + 计划)在这条线上重跑,
+量到三件事:
+
+- **重定父类那条修正在这条线上也是必需的,而且是它救回来的**。第一次跑挂在 NeoForge 自己的 `AttachmentSync.onChunkSent`:
+  `VerifyError: Type 'BlockEntity' is not assignable to 'AttachmentHolder'` —— 这正是加载器注释里记的那种失败。原因不是计划错,
+  而是本轮的加载器 jar 一开始是从一份**旧的** Gradle 产物装出来的(那份产物早于上一轮的重定父类修正)。用当前代码重建后日志里出现
+  `Reparent plan covers ...: ... equal, so that copy is not the runtime's and the plan is applied on its own measurement`,并通过 ——
+  说明"两份父类字符串相同不代表交上来的就是运行时的副本"这一判断在 1.21.1 上同样成立。
+- **接口计划在这条线上也生效**:13 个类被补回运行时的扩展接口(如 `BlockState` 的 `IBlockStateExtension`、`Font` 的
+  `IFontExtension`)。它是通过的必要条件与否**没有单独测**:只测到它确实运行、且整条线通过。
+- **这条线的 OptiFine 构建(J1)在空游戏目录上会自己崩**:`Options.loadOfOptions` 抛
+  `ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1`,位置是 OptiFine 自己加的方法(1.21.4 / 1.21.8 两版
+  在同样空的目录上不会)。放入一份有效的 `optionsof.txt` 后即通过。这是 OptiFine 侧的行为,不是加载器的判据,记在这里是为了
+  下次复现时不必再查一遍。
+
+本机实测:四项判据通过、新增崩溃报告 0、stderr 0 字节、`[OptiFine]` **232 行**、图集 `Created:` 14。同样**没有重新发布**。
 
 **1.21.8:四项判据在本机复现通过(`[OptiFine]` 344 行,记录为 337)。** 本轮按**离线换类**路线
 重建了这一版(`preview_OptiFine_1.21.8_HD_U_J6_pre16` + NeoForge `21.8.54`),第一次跑停在 `Setting user` 之后:模型重载抛
