@@ -108,9 +108,27 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 		}
 
 		int restored = 0;
+		boolean targetIsInterface = (input.access & Opcodes.ACC_INTERFACE) != 0;
 		for(FieldNode field : donor.fields) {
 			if(!hasField(input, field.name, field.desc)) {
-				input.fields.add(new FieldNode(field.access, field.name, field.desc, field.signature, field.value));
+				int access = field.access;
+				if(targetIsInterface) {
+					// The donor is written as a plain class, so its fields arrive without the rules that
+					// apply in an interface - and final is cleared on purpose, because an initialiser fills
+					// them - so the donor's own flags cannot be copied across as they are. Whatever the
+					// donor says, an interface's fields have to be public static final or the JVM rejects
+					// the class outright:
+					//
+					//   ClassFormatError: Illegal field modifiers in class
+					//     net/minecraft/client/renderer/block/model/BlockStateModel$Unbaked: 0x9
+					//
+					// measured on 1.21.8, where that class is an interface in the runtime while its donor
+					// copy is a class. PatchedClassTransformer has carried this same rule on the swap path
+					// since the VertexConsumer failure its own comment records; this path never had it.
+					access = (access & ~(Opcodes.ACC_PRIVATE | Opcodes.ACC_PROTECTED))
+							| Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL;
+				}
+				input.fields.add(new FieldNode(access, field.name, field.desc, field.signature, field.value));
 				restored++;
 			}
 		}

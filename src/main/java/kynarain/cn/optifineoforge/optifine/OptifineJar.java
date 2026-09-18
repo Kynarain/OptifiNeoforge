@@ -210,16 +210,53 @@ public final class OptifineJar {
 	 * on that route, so the jar they come out of never needs to satisfy a signature scan.
 	 */
 	public static int prepareForLoader(Path in, Path out, String metadataName, String metadataText, boolean addForgeStubs) throws IOException {
-		return rewrite(in, out, metadataName, metadataText, true, addForgeStubs);
+		return rewrite(in, out, metadataName, metadataText, true, addForgeStubs, Set.of());
+	}
+
+	/**
+	 * The same, with the classes OptiFine must not patch left untouched.
+	 *
+	 * <p>This is the other half of the keep plan {@link PayloadDrift} writes, and it is needed because
+	 * OptiFine's own transformation service is in the chain: on 1.21.8 the services register in the order
+	 * {@code [mixin, OptiFine, fml, OptifiNeoforge]}, so OptiFine patches a class <em>before</em> anything
+	 * here sees it. A loader-side decision to keep the runtime's copy is therefore not enough on its own -
+	 * declining to install a payload leaves OptiFine's copy in place, which is the copy that must not be
+	 * loaded. Dropping the class's patch entries is what lets the runtime's own class through.</p>
+	 *
+	 * <p>Measured on 1.21.8 with only the loader-side half in place: the keep plan fired, the loader logged
+	 * that it left the class alone, and the client failed exactly as before, because the class it left alone
+	 * was OptiFine's:
+	 *
+	 * <pre>IndexOutOfBoundsException: Index 7 out of bounds for length 7
+	 *   at ModelDiscovery$ModelWrapper.slot(ModelDiscovery.java:212)   &lt;- still the payload's line
+	 *   at ModelDiscovery$ModelWrapper.&lt;clinit&gt;(ModelDiscovery.java:200)</pre>
+	 *
+	 * <p>Both entries are dropped, the delta and the digest that goes with it. Only {@code patch/srg} is
+	 * touched: that is the namespace the runtime is named in on these lines, and the one OptiFine's
+	 * transformer resolves against. The obfuscated-namespace variant under {@code notch/} is already
+	 * dropped whole.</p>
+	 *
+	 * @param unpatched internal names, with slashes, of the classes whose patch entries are removed
+	 * @return the number of entries removed
+	 */
+	public static int prepareForLoader(Path in, Path out, String metadataName, String metadataText, boolean addForgeStubs,
+			Set<String> unpatched) throws IOException {
+		return rewrite(in, out, metadataName, metadataText, true, addForgeStubs, unpatched);
 	}
 
 	private static int rewrite(Path in, Path out, String metadataName, String metadataText, boolean stripInstaller, boolean addForgeStubs) throws IOException {
+		return rewrite(in, out, metadataName, metadataText, stripInstaller, addForgeStubs, Set.of());
+	}
+
+	private static int rewrite(Path in, Path out, String metadataName, String metadataText, boolean stripInstaller, boolean addForgeStubs,
+			Set<String> unpatched) throws IOException {
 		Path parent = out.toAbsolutePath().getParent();
 		if(parent != null) {
 			Files.createDirectories(parent);
 		}
 		Path temp = Files.createTempFile(parent, "optifine-", ".jar");
 		int stripped = 0;
+		Set<String> droppedClasses = new LinkedHashSet<>();
 		try {
 			try(ZipFile zip = new ZipFile(in.toFile());
 					ZipOutputStream target = new ZipOutputStream(Files.newOutputStream(temp))) {
@@ -239,6 +276,10 @@ public final class OptifineJar {
 						// signatures name obfuscated game types, and FML resolves every signature in
 						// the jar before the game starts.
 						stripped++;
+						continue;
+					}
+					if(!unpatched.isEmpty() && patchedClassOf(name, unpatched) != null) {
+						droppedClasses.add(patchedClassOf(name, unpatched));
 						continue;
 					}
 					ZipEntry copy = new ZipEntry(name);
@@ -277,7 +318,40 @@ public final class OptifineJar {
 		} finally {
 			Files.deleteIfExists(temp);
 		}
+		if(!droppedClasses.isEmpty()) {
+			System.out.println("  patch entries dropped for " + droppedClasses.size() + " class(es): "
+					+ droppedClasses);
+		}
 		return stripped;
+	}
+
+	/** The prefix OptiFine keeps its srg-namespace deltas under, and the two suffixes they come with. */
+	private static final String PATCH_PREFIX = "patch/srg/";
+
+	private static final String PATCH_DELTA = ".class.xdelta";
+
+	private static final String PATCH_DIGEST = ".class.md5";
+
+	/**
+	 * The class whose patch entry this is, when it belongs to one the keep plan takes out, else null.
+	 *
+	 * <p>{@code patch/srg/<internal name>.class.xdelta} and its {@code .class.md5} sibling are the pair
+	 * OptiFine's transformer needs for one class, so both have to go together.</p>
+	 */
+	private static String patchedClassOf(String name, Set<String> unpatched) {
+		if(!name.startsWith(PATCH_PREFIX)) {
+			return null;
+		}
+		String rest = name.substring(PATCH_PREFIX.length());
+		String owner;
+		if(rest.endsWith(PATCH_DELTA)) {
+			owner = rest.substring(0, rest.length() - PATCH_DELTA.length());
+		} else if(rest.endsWith(PATCH_DIGEST)) {
+			owner = rest.substring(0, rest.length() - PATCH_DIGEST.length());
+		} else {
+			return null;
+		}
+		return unpatched.contains(owner) ? owner : null;
 	}
 
 	/**
@@ -328,7 +402,8 @@ public final class OptifineJar {
 	 * Development aid: {@code OptifineJar <jar>} prints the layout, and
 	 * {@code OptifineJar <in> <out> <metadata file>} writes the rewritten copy with the metadata
 	 * read from standard input... which is awkward from a shell, so the second form instead reads
-	 * a template file: {@code OptifineJar <in> <out> <metadata file> <template file> [--no-forge-stubs]}.
+	 * a template file:
+	 * {@code OptifineJar <in> <out> <metadata file> <template file> [--no-forge-stubs] [--unpatched <file>]}.
 	 */
 	public static void main(String[] args) throws IOException {
 		if(args.length == 1) {
@@ -337,24 +412,64 @@ public final class OptifineJar {
 			OptifineConfig.describe(jar).forEach(line -> System.out.println(line));
 			return;
 		}
-		if(args.length == 4 || args.length == 5) {
+		if(args.length >= 4) {
 			Path in = Path.of(args[0]);
 			Path out = Path.of(args[1]);
 			String metadataName = args[2];
 			String template = Files.readString(Path.of(args[3]), StandardCharsets.UTF_8);
+			boolean addForgeStubs = true;
+			Set<String> unpatched = new LinkedHashSet<>();
+			for(int index = 4; index < args.length; index++) {
+				if("--no-forge-stubs".equals(args[index])) {
+					addForgeStubs = false;
+				} else if("--unpatched".equals(args[index])) {
+					if(++index >= args.length) {
+						System.err.println("--unpatched needs a file");
+						System.exit(2);
+					}
+					unpatched = readUnpatched(Path.of(args[index]));
+				} else {
+					System.err.println("unknown option: " + args[index]);
+					System.exit(2);
+				}
+			}
 			Layout layout = inspect(in);
 			// The command line prepares a jar for the loader, so it does the whole job: metadata,
 			// installer entries and the obfuscated-namespace variant, plus the Forge API stubs.
 			// The Forge API stubs fill gaps on lines where NeoForge removed the Forge API; on 1.20.x that API is present, and a shell of the same name would shadow the real class.
-			boolean addForgeStubs = args.length < 5 || !"--no-forge-stubs".equals(args[4]);
-			prepareForLoader(in, out, metadataName, template, addForgeStubs);
+			prepareForLoader(in, out, metadataName, template, addForgeStubs, unpatched);
 			System.out.println("wrote " + out + " (" + Files.size(out) + " bytes)");
 			System.out.println("was : " + (layout.metadataName() == null ? "(no metadata)" : layout.metadataName()));
 			System.out.println("now : " + inspect(out).metadataName());
 			return;
 		}
 		System.err.println("usage: OptifineJar <jar>");
-		System.err.println("       OptifineJar <in> <out> <metadata file> <template file> [--no-forge-stubs]");
+		System.err.println("       OptifineJar <in> <out> <metadata file> <template file>"
+				+ " [--no-forge-stubs] [--unpatched <file>]");
 		System.exit(2);
+	}
+
+	/**
+	 * Reads the keep plan's class list: the first tab-separated field of every line that is not blank and
+	 * does not start with {@code #}.
+	 *
+	 * <p>The same file {@link PayloadDrift} writes for the loader, so the two halves of the decision
+	 * cannot drift apart. Its member form ({@code owner name desc}) is accepted here too and its owner is
+	 * taken, because a class whose one method must keep the game's body is a class OptiFine's patch cannot
+	 * be trusted with either.</p>
+	 */
+	private static Set<String> readUnpatched(Path file) throws IOException {
+		Set<String> result = new LinkedHashSet<>();
+		for(String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+			String text = line.trim();
+			if(text.isEmpty() || text.startsWith("#")) {
+				continue;
+			}
+			String owner = text.split("\t")[0].trim();
+			if(!owner.isEmpty()) {
+				result.add(owner);
+			}
+		}
+		return result;
 	}
 }

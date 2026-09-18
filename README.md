@@ -23,7 +23,7 @@
 | 1.21.4 | `21.4.149` | `OptifiNeoforge-1.0.0+mc1.21.4.jar` | `OptiFine_1.21.4_HD_U_J3.jar` | `preview_OptiFine_1.21.4_HD_U_J4_pre2.jar` | 21 | 已验证 · 已发布(232 行、stderr 0 字节、无崩溃报告) |
 | 1.21.6 | `21.6.20-beta` | `OptifiNeoforge-1.0.0+mc1.21.6.jar` | 无 | `preview_OptiFine_1.21.6_HD_U_J6_pre3.jar` | 21 | 已验证 · 已发布(340 行、stderr 0 字节、无崩溃报告;**不含启用光影包**) |
 | 1.21.7 | `21.7.25-beta` | `OptifiNeoforge-1.0.0+mc1.21.7.jar` | 无 | `preview_OptiFine_1.21.7_HD_U_J6_pre7.jar` | 21 | 已验证 · 已发布(340 行、stderr 0 字节、无崩溃报告;**不含启用光影包**) |
-| 1.21.8 | `21.8.54` | `OptifiNeoforge-1.0.0+mc1.21.8.jar` | 无 | `preview_OptiFine_1.21.8_HD_U_J6_pre16.jar` | 21 | 已验证 · 已发布(337 行、stderr 0 字节、无崩溃报告) |
+| 1.21.8 | `21.8.54` | `OptifiNeoforge-1.0.0+mc1.21.8.jar` | 无 | `preview_OptiFine_1.21.8_HD_U_J6_pre16.jar` | 21 | 已验证 · 已发布(337 行、stderr 0 字节、无崩溃报告;本轮本机复现四项判据一致、344 行,见下) |
 | 1.21.9 | `21.9.16-beta` | `OptifiNeoforge-1.0.0+mc1.21.9.jar` | 无 | `preview_OptiFine_1.21.9_HD_U_J7_pre2.jar` | 21 | 已验证 · **未发布**(构建已通过:产物是加载器侧工具 + mod 骨架,不含挂载点,见下文) |
 | 1.21.10 | `21.10.64` | `OptifiNeoforge-1.0.0+mc1.21.10.jar` | 无 | `preview_OptiFine_1.21.10_HD_U_J7_pre11.jar` | 21 | 已验证 · **未发布**(同上) |
 | 1.21.11 | `21.11.45` | `OptifiNeoforge-1.0.0+mc1.21.11.jar` | `OptiFine_1.21.11_HD_U_J9.jar` | `preview_OptiFine_1.21.11_HD_U_J9_pre4.jar` | 21 | 已验证 · **未发布**(同上;stderr 107 字节 = 它的无 mod 对照跑) |
@@ -47,6 +47,49 @@
 **本节只改了构建,没有改任何实机结论**:这台机器上没有 rig,本轮**没有**重跑启动,
 所以这三条的实机判据仍然只有 `docs/MATRIX.md` 里那一份。发布本身也仍是独立的一步(需要一条启动记录与
 Release 正文),尚未做。
+
+**1.21.8:四项判据在本机复现通过(`[OptiFine]` 344 行,记录为 337)。** 本轮按**离线换类**路线
+重建了这一版(`preview_OptiFine_1.21.8_HD_U_J6_pre16` + NeoForge `21.8.54`),第一次跑停在 `Setting user` 之后:模型重载抛
+`ExceptionInInitializerError`(索引 7 越界,长度 7),没有图集、没有声音引擎。根因由新增的离线工具 `PayloadDrift` 定位:
+**补丁负载是 OptiFine 为它自己的基线编出来的,与这条 NeoForge 线的运行时在结构上不一致**,而这类不一致成员级回填够不到。
+
+| 类 | 冲突 | 现象 |
+|---|---|---|
+| `ModelDiscovery$ModelWrapper` | `SLOT_COUNT` 负载 7 / 运行时 8(NeoForge 加了第 8 个槽位 `KEY_ADDITIONAL_PROPERTIES`) | 该常量内联进 `slot(int)` 的 `Objects.checkIndex` 与 `fixedSlots` 的数组长度,回填计划写进去的 `KEY_ADDITIONAL_PROPERTIES = slot(7)` 在该类自己的 `<clinit>` 里越界 |
+| 14 个类 | 负载缺运行时才有的 NeoForge 扩展接口(如 `UnbakedGeometry` 缺 `UnbakedGeometryExtension`) | 运行时的 `ModelWrapper` 调用 `UnbakedGeometry.bake(..., ContextMap)`,而该方法只由这个扩展接口声明 |
+
+两处都不是"某个成员写错",而是**已内联的常量**和**不在被替换类里的接口**:前者改不了,后者加不上。所以本轮加了两条
+由 `PayloadDrift` 离线实测生成的计划:
+
+- `keep-runtime.txt`(`owner<TAB>*`):整类保留运行时的副本,并把该类的补丁条目从 OptiFine jar 里删掉。只做前者不够 ——
+  实测 OptiFine 的转换服务注册在**前面**(顺序 `[mixin, OptiFine, fml, OptifiNeoforge]`),而它打出来的类是它自己的编译结果,
+  于是"不装负载"留下的恰恰是 OptiFine 的那一份;补丁条目删掉之后,运行时的类才会被加载。
+- `runtime-interfaces.txt`(`owner<TAB>interface`):把运行时自己的扩展接口补回去,对**所有**被转换的类生效,不只是被替换的那些
+  (上面这张表的第二行就是没补的结果)。
+
+同轮量到并修正的两处 rig 问题:① `MissingTargets --stub` 必须给足运行时 classpath(游戏 jar + NeoForge universal + 174 个库 jar)。
+只给游戏 jar 时它报 126 个缺失、写出 804 行 stub 文件,而其中几乎全是库成员;给全之后只剩 16 个,而这 16 个里有
+`BlockModelPart.layer()` —— 少了它模型烘焙在 `SingleVariant.<init>` 就崩;补出来的 payload 才是要交给加载器的那一个。
+② 转换器的 `targets` 不能只取负载索引,否则不在负载里的类根本不会被它看到,接口计划与运行时 stub 会静默失效。
+
+本机实测(本机 rig,`-Fresh`、`earlyWindowProvider=none`、200 秒):
+
+| 判据 | 结果 |
+|---|---|
+| `Setting user` | 通过 |
+| `Sound engine started` | 通过 |
+| 本次运行新增崩溃报告 | **0** |
+| stderr | **0 字节** |
+| 图集 `Created:` | 13 |
+| `[OptiFine]` 行数 | **344**(记录为 337,相差 7 行;口径是 `latest.log` 里 `[OptiFine]` 的出现次数) |
+
+口径说明:rig 的 harness 打印的 `[OptiFine] lines` 是 stdout、stderr 与 `latest.log` 三个来源**合并后**的匹配数,同一批行
+会被计两次,所以它显示的是上表这个数的两倍(本轮 1.21.8 显示 688、1.21.4 显示 464);表里所有版本记录的都是 `latest.log` 的
+原始条数。688 与 337 曾经看起来像两倍关系,核实后不是:原始条数为 344,与 337 只差 7 行。
+
+**没有回归**:本轮改的是 1.21.x 共用的加载器代码,所以用同一份代码重建了已验证的 1.21.4(`OptiFine_1.21.4_HD_U_J3` +
+`21.4.149`,同样的 rig 命令)并复跑:**四项判据通过、新增崩溃报告 0、stderr 0 字节、`[OptiFine]` 232 行**,与表里记录的
+232 行完全一致。这一版 1.21.8 **没有重新发布**,表里的"已发布"仍指原有产物。
 
 两列 OptiFine 都只表示"该构建存在",不代表可用;这里也不表示正式版比 preview 更适合移植。
 

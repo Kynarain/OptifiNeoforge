@@ -42,6 +42,19 @@ import org.objectweb.asm.tree.MethodNode;
  * reference whose owner is a game class and asks the runtime, hierarchy included, whether the member is
  * there. What it prints is the complete set that {@code gatherCapabilities} is one of, which is what a
  * decision about shimming or stripping needs.</p>
+ *
+ * <p><b>Give it the whole runtime classpath, not just the game jar.</b> The report is a function of what
+ * it is asked to resolve against, and the difference is not cosmetic. Measured on 1.21.8 with the game jar
+ * alone: 126 references missing, of which almost all are library members that live in {@code libraries/}
+ * ({@code com.mojang.serialization}, {@code datafixers}, {@code logging}, {@code jtracy}, {@code authlib}).
+ * With the same payload against the game jar plus NeoForge's universal jar plus all 174 library jars: 16
+ * missing, and those 16 are the real ones. Two consequences, both measured. The 804-line stub file the
+ * short-classpath run wrote was mostly library members, so its size says nothing about how much is
+ * actually missing - and the members that stop the client outright were among the few that mattered
+ * ({@code GpuTexture.isStencilEnabled}, {@code BlockModelPart.layer}, {@code BlockEntity}'s capability
+ * members). And the two outputs have to be used together: a member whose owner is in the payload is
+ * stubbed <em>into the output jar</em>, while one whose owner is a runtime class can only be listed in
+ * the file for the loader to add, so the payload handed to the loader has to be the stubbed one.</p>
  */
 public final class MissingTargets {
 	private MissingTargets() {

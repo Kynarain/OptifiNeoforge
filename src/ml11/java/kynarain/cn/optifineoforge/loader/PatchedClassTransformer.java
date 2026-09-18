@@ -372,6 +372,17 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 
 	private static final Set<String> TARGETS = loadTargets();
 
+	/**
+	 * Every class this transformer has to be called for, which is not the same as every class it swaps.
+	 *
+	 * <p>The index alone is not enough, and the gap was measured rather than reasoned about. ModLauncher
+	 * calls a transformer only for the classes it declares, so a class that is not in the payload was never
+	 * offered here - and that silently disabled the other two things this transformer does to a class it
+	 * does <em>not</em> swap: the runtime interfaces from the interface plan, which exist precisely for
+	 * classes that arrive stripped of them, and the runtime stubs, whose owners are runtime classes by
+	 * definition. On 1.21.8 the stub file's own deferred entry names a class that is in no payload at all.
+	 * So the set is the union of every plan's owners.</p>
+	 */
 	private static Set<String> loadTargets() {
 		Set<String> targets = new HashSet<>();
 		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(INDEX)) {
@@ -379,26 +390,51 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 				// Lines where OptiFine already speaks the runtime's names need none of this, and the
 				// index is simply absent there.
 				LOGGER.info("No " + INDEX + " in this jar; no classes will be swapped in");
-				return Set.of();
-			}
-			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
-				String name = line.trim();
-				if(name.isEmpty()) {
-					continue;
+			} else {
+				for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+					String name = line.trim();
+					if(name.isEmpty()) {
+						continue;
+					}
+					// Accept both the bare class name and the entry path: the index first shipped as entry
+					// paths, and the target factory then received 'Foo.class' as a class name, so no target
+					// ever matched and the transformer was silently never called.
+					if(name.endsWith(".class")) {
+						name = name.substring(0, name.length() - ".class".length());
+					}
+					targets.add(name.replace('/', '.'));
 				}
-				// Accept both the bare class name and the entry path: the index first shipped as entry
-				// paths, and the target factory then received 'Foo.class' as a class name, so no target
-				// ever matched and the transformer was silently never called.
-				if(name.endsWith(".class")) {
-					name = name.substring(0, name.length() - ".class".length());
-				}
-				targets.add(name.replace('/', '.'));
 			}
 		} catch(IOException e) {
 			LOGGER.warn("could not read " + INDEX + ": " + e);
 		}
-		LOGGER.info("Patched-class targets: " + targets.size());
+		int swapped = targets.size();
+		addFirstField(targets, KEEP_RUNTIME);
+		addFirstField(targets, RUNTIME_INTERFACES);
+		addFirstField(targets, STUBS);
+		LOGGER.info("Patched-class targets: " + swapped + " to swap, " + targets.size() + " in all");
 		return Set.copyOf(targets);
+	}
+
+	/** Adds the owner column of a tab separated plan file, dotted, to {@code targets}. */
+	private static void addFirstField(Set<String> targets, String resource) {
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(resource)) {
+			if(stream == null) {
+				return;
+			}
+			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+				String text = line.trim();
+				if(text.isEmpty() || text.startsWith("#")) {
+					continue;
+				}
+				String owner = text.split("\t")[0].trim();
+				if(!owner.isEmpty()) {
+					targets.add(owner.replace('/', '.'));
+				}
+			}
+		} catch(IOException e) {
+			LOGGER.warn("could not read " + resource + ": " + e);
+		}
 	}
 
 	@Override
@@ -411,6 +447,14 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		//   NoSuchMethodError: 'void net.minecraft.client.gui.screens.LoadingOverlay.update()'
 		// Giving the runtime's overlay that one method keeps both halves working.
 		stubMissing(input);
+		// And the runtime interfaces, before anything decides whether this class is swapped at all. They
+		// cannot be read off the class being handed over, and that is measured rather than cautious: on
+		// 1.21.8 OptiFine's transformation service registers before this one, its patch of a class is its
+		// own compilation of that class, and its compilation never heard of NeoForge's extension
+		// interfaces - so a class arriving here has lost them whether or not this transformer replaces it.
+		// What that cost, on the line it was measured: the runtime's own ModelWrapper calls
+		// UnbakedGeometry.bake(..., ContextMap), a method only UnbakedGeometryExtension declares.
+		injectPlannedInterfaces(input);
 		ClassNode patched;
 		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(PREFIX + input.name + ".class")) {
 			if(stream == null) {
@@ -420,6 +464,18 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 			new ClassReader(stream.readAllBytes()).accept(patched, 0);
 		} catch(IOException e) {
 			LOGGER.warn("could not read the patched " + input.name + ": " + e);
+			return input;
+		}
+
+		// The keep plan's blunt form, and it comes before every other decision about this class for that
+		// reason: a class listed here cannot be repaired member by member, so nothing below should be
+		// reached for it. See KEEP_RUNTIME_CLASSES for the measurement that put ModelDiscovery$ModelWrapper
+		// on the list. The runtime stubs above have already been applied, and they must be - the payload is
+		// not installed, but this class as the runtime has it is still the one OptiFine's classes call.
+		if(KEEP_RUNTIME_CLASSES.contains(input.name)) {
+			LOGGER.info("Left " + input.name.replace('/', '.') + " alone: the keep plan keeps this runtime's"
+					+ " copy whole, because a constant the payload inlined into its own bodies does not match"
+					+ " the one here");
 			return input;
 		}
 
@@ -560,6 +616,10 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 				injected++;
 			}
 		}
+		// The plan's interfaces are already on `input` - injectPlannedInterfaces ran before the payload was
+		// even looked at, and it has to, because the class that needs them is not always a swapped one. The
+		// loop above therefore keeps them without knowing it, which is the point: one place decides, and
+		// the swap cannot undo it.
 		input.interfaces = kept;
 		if((patched.access & Opcodes.ACC_INTERFACE) == 0 && injected > 0) {
 			LOGGER.info("Kept the runtime's " + injected + " interface(s) on " + input.name.replace('/', '.')
@@ -627,8 +687,7 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 
 	private static final Set<String> RESTORED_CLASSES = loadRestoredClasses();
 
-	private static Set<String> loadRestoredClasses() {
-		Set<String> result = new HashSet<>();
+	private static Set<String> loadRestoredClasses() {		Set<String> result = new HashSet<>();
 		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(MEMBER_RESTORES)) {
 			if(stream == null) {
 				return Set.of();
@@ -646,7 +705,73 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		return Set.copyOf(result);
 	}
 
+	/** Adds the interfaces the plan requires of {@code input}, and says so when it changes anything. */
+	private static void injectPlannedInterfaces(ClassNode input) {
+		List<String> wanted = RUNTIME_INTERFACES_BY_CLASS.get(input.name);
+		if(wanted == null) {
+			return;
+		}
+		List<String> interfaces = input.interfaces == null ? new ArrayList<>() : new ArrayList<>(input.interfaces);
+		int added = 0;
+		for(String name : wanted) {
+			if(!interfaces.contains(name)) {
+				interfaces.add(name);
+				added++;
+			}
+		}
+		if(added > 0) {
+			input.interfaces = interfaces;
+			LOGGER.info("Injected " + added + " runtime interface(s) on " + input.name.replace('/', '.')
+					+ " from the interface plan: " + wanted);
+		}
+	}
+
 	private static boolean loggedModules;
+
+	/**
+	 * The interfaces each swapped class must implement, taken from the runtime's copy of it rather than
+	 * from the class this transformer is handed.
+	 *
+	 * <p>One line per interface, {@code owner<TAB>interface}, both internal names; {@code #} comments and
+	 * blank lines are ignored. Written by {@code PayloadDrift}, which reads it straight out of the runtime
+	 * jar. See the injection site in {@link #transform} for why the class handed over is not a safe source
+	 * for this list - it is the measured reason a class the runtime's own code casts to an extension
+	 * interface ended up not implementing it.</p>
+	 */
+	private static final String RUNTIME_INTERFACES = "/optifineoforge/runtime-interfaces.txt";
+
+	/** {@code owner} to the runtime interfaces that must be present on it. */
+	private static final Map<String, List<String>> RUNTIME_INTERFACES_BY_CLASS = loadRuntimeInterfaces();
+
+	private static Map<String, List<String>> loadRuntimeInterfaces() {
+		Map<String, List<String>> result = new LinkedHashMap<>();
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(RUNTIME_INTERFACES)) {
+			if(stream == null) {
+				return Map.of();
+			}
+			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+				String text = line.trim();
+				if(text.isEmpty() || text.startsWith("#")) {
+					continue;
+				}
+				String[] parts = text.split("\t");
+				if(parts.length != 2) {
+					LOGGER.warn("Ignoring a " + RUNTIME_INTERFACES + " line that is not 'owner interface': "
+							+ text);
+					continue;
+				}
+				result.computeIfAbsent(parts[0].trim(), key -> new ArrayList<>()).add(parts[1].trim());
+			}
+		} catch(IOException e) {
+			LOGGER.warn("could not read " + RUNTIME_INTERFACES + ": " + e);
+		}
+		int count = result.values().stream().mapToInt(List::size).sum();
+		if(count > 0) {
+			LOGGER.info("Runtime interfaces from the plan: " + count + " across " + result.size()
+					+ " class(es)");
+		}
+		return Map.copyOf(result);
+	}
 
 	/**
 	 * Members whose bodies must stay the game's own, even though OptiFine's copy declares them too.
@@ -658,31 +783,82 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	 * are ever set, every lookup returns null, and the first model that asks for a child dies with
 	 * "this.head is null" while {@code minecraft:skull} is being built. Keeping the game's plain
 	 * {@code children.get(name)} is the repair, and it is enough: the callers only want the child.</p>
+	 *
+	 * <p>Two line forms, tab separated: {@code owner name desc} keeps one method's body,
+	 * {@code owner *} keeps the whole class. Lines starting with {@code #} are comments. An owner is an
+	 * internal name, with slashes. The file is optional and absent on every line with nothing to say.</p>
 	 */
 	private static final String KEEP_RUNTIME = "/optifineoforge/keep-runtime.txt";
 
-	/** {@code owner|name|desc} for each member that keeps the game's body. */
-	private static final Set<String> KEEP_RUNTIME_MEMBERS = loadKeepRuntime();
+	/** Two forms of the same decision: {@code owner|name|desc} per member, and whole classes by name. */
+	private record KeepPlan(Set<String> members, Set<String> classes) {
+	}
 
-	private static Set<String> loadKeepRuntime() {
-		Set<String> result = new HashSet<>();
+	private static final KeepPlan KEEP_PLAN = loadKeepRuntime();
+
+	/** {@code owner|name|desc} for each member that keeps the game's body. */
+	private static final Set<String> KEEP_RUNTIME_MEMBERS = KEEP_PLAN.members();
+
+	/**
+	 * Classes the plan keeps whole: the runtime's copy is installed and the payload's is dropped.
+	 *
+	 * <p>The member form above repairs one body. This form exists for a class where no member-level repair
+	 * can work, and the mechanism that puts it out of reach is a constant <em>inlined</em> into the
+	 * payload's bytecode. Measured on 1.21.8, {@code ModelDiscovery$ModelWrapper}: the payload carries
+	 * {@code private static final int SLOT_COUNT = 7} and the runtime 8, because NeoForge adds an eighth
+	 * slot to the seven vanilla has ({@code KEY_ADDITIONAL_PROPERTIES}, read by
+	 * {@code getTopAdditionalProperties()}). {@code SLOT_COUNT} is inlined into {@code slot(int)}, which
+	 * guards with {@code Objects.checkIndex(index, SLOT_COUNT)}, so the restored field's own initialiser -
+	 * the plan restores {@code KEY_ADDITIONAL_PROPERTIES = slot(7)}, inlined into the class's static
+	 * initialiser - dies inside the class it was restored into:</p>
+	 *
+	 * <pre>ExceptionInInitializerError
+	 *   at ModelDiscovery$ModelWrapper.slot(ModelDiscovery.java:212)   &lt;- the payload's, bound 7
+	 *   at ModelDiscovery$ModelWrapper.&lt;clinit&gt;(ModelDiscovery.java:200)</pre>
+	 *
+	 * <p>and the same 7 sizes the class's {@code AtomicReferenceArray fixedSlots}, so the restored slot has
+	 * nowhere to live even once the guard is repaired. The two copies cannot be reconciled member by member;
+	 * the runtime's class is the one NeoForge's own callers are compiled against, so it is the one that is
+	 * loaded. What the payload adds to it - {@code context} and {@code getContext()} - is dropped with it,
+	 * and that is measured to cost nothing: a scan of all 2578 payload classes found that pair referenced
+	 * only inside that class, while the runtime reaches the same behaviour through
+	 * {@code UnbakedGeometryExtension.bake(..., ContextMap)}, which is the route the rest of the game calls.
+	 * The keep plan is written by {@code PayloadDrift}, which reports this disagreement offline.</p>
+	 */
+	private static final Set<String> KEEP_RUNTIME_CLASSES = KEEP_PLAN.classes();
+
+	private static KeepPlan loadKeepRuntime() {
+		Set<String> members = new HashSet<>();
+		Set<String> classes = new HashSet<>();
 		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(KEEP_RUNTIME)) {
 			if(stream == null) {
-				return Set.of();
+				return new KeepPlan(Set.of(), Set.of());
 			}
 			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
-				String[] parts = line.split("\t");
+				String text = line.trim();
+				if(text.isEmpty() || text.startsWith("#")) {
+					continue;
+				}
+				String[] parts = text.split("\t");
 				if(parts.length == 3) {
-					result.add(parts[0] + "|" + parts[1] + "|" + parts[2]);
+					members.add(parts[0] + "|" + parts[1] + "|" + parts[2]);
+				} else if(parts.length == 2 && "*".equals(parts[1].trim())) {
+					classes.add(parts[0].trim());
+				} else {
+					LOGGER.warn("Ignoring a " + KEEP_RUNTIME + " line that is neither 'owner name desc' nor"
+							+ " 'owner *': " + text);
 				}
 			}
 		} catch(IOException e) {
 			LOGGER.warn("could not read " + KEEP_RUNTIME + ": " + e);
 		}
-		if(!result.isEmpty()) {
-			LOGGER.info("Members keeping the game's body: " + result.size());
+		if(!members.isEmpty()) {
+			LOGGER.info("Members keeping the game's body: " + members.size());
 		}
-		return Set.copyOf(result);
+		if(!classes.isEmpty()) {
+			LOGGER.info("Classes keeping the game's copy whole: " + classes.size());
+		}
+		return new KeepPlan(Set.copyOf(members), Set.copyOf(classes));
 	}
 
 	/** Puts the game's own version of the listed members back over the swapped-in ones. */
