@@ -73,7 +73,8 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 		}
 		for(MethodNode method : input.methods) {
 			if((RELOAD.equals(method.name) || RESOURCE_MANAGER_RELOAD.equals(method.name)
-					|| PREPARE.equals(method.name)) && LISTENERS_TO_MARK.contains(input.name)) {
+					|| PREPARE.equals(method.name))
+					&& LISTENERS_TO_MARK.contains(input.name)) {
 				InsnList call = new InsnList();
 				call.add(new LdcInsnNode(input.name.replace('/', '.')));
 				call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "reloadEntered", "(Ljava/lang/String;)V", false));
@@ -201,6 +202,16 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 	 * class method nothing overrides. Adding this name is what should take the marking from 4 to 22.</p>
 	 */
 	private static final String PREPARE = "prepare";
+
+	/**
+	 * The fourth entry point, and the other half of {@code SimplePreparableReloadListener}.
+	 *
+	 * <p>Measured after prepare was added: the marking went from 4 to 10, and twelve listeners still
+	 * declared none of reload, onResourceManagerReload or prepare. Those are the ones implementing only the
+	 * apply side of SimplePreparableReloadListener, leaving prepare to the base class - the mirror of the
+	 * listeners prepare already covered.</p>
+	 */
+	private static final String APPLY = "apply";
 
 
 
