@@ -24,6 +24,7 @@ import java.util.zip.ZipFile;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.FieldVisitor;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
@@ -197,10 +198,48 @@ public final class ForgeApiShims {
 		Map<String, byte[]> stubs = new LinkedHashMap<>();
 		// The shape of a type is decided from how it is used first; see Shape.mustBeClass(). Only when
 		// nothing in the handover shows a class-only use does the older rule apply - reading OptiFine's
-		// own copy, which for a Forge type never exists - and then the interface fallback stands.
+		// own copy - and then the interface fallback stands.
 		try(ZipFile zip = new ZipFile(jars.get(jars.size() - 1).toFile())) {
-			for(String name : names) {
+			// Every Forge API type OptiFine ships goes in, whether or not a reference scan saw it. The scan
+			// only sees names written into descriptors and instructions, and that is not the whole need:
+			// ModLauncher walks a class's superclasses and interfaces while transforming it, and that walk
+			// needs the type present even when no bytecode names it. Measured on 1.21.8, after the shapes
+			// and the members were already right:
+			//
+			//   RuntimeException: Cannot find class net/minecraftforge/common/extensions/IForgeEntity
+			//     at cpw.mods.modlauncher.TransformerClassWriter.computeHierarchyFromFile
+			//
+			// IForgeEntity is in OptiFine's own jar under notch/net/minecraftforge/**, and it was in
+			// neither the scan's 60 types nor the synthesised set.
+			java.util.Set<String> wanted = new java.util.LinkedHashSet<>(names);
+			for(Enumeration<? extends ZipEntry> entries = zip.entries(); entries.hasMoreElements();) {
+				String entryName = entries.nextElement().getName();
+				if(entryName.startsWith(OPTIFINE_COPY + FORGE_PACKAGE) && entryName.endsWith(".class")) {
+					wanted.add(entryName.substring(OPTIFINE_COPY.length(), entryName.length() - ".class".length()));
+				}
+			}
+			for(String name : wanted) {
+				// When OptiFine does ship its own copy of the type, that copy is where the members come
+				// from: it is the Forge API OptiFine was compiled against, and synthesising from call sites
+				// alone loses every member it declares that OptiFine's own calls do not name on the type
+				// itself, because a call can be written against a subtype and still resolve through here.
+				// Measured on 1.21.8, where the gap cost a launch: IForgeGpuTexture.isStencilEnabled is
+				// called as GpuTexture.isStencilEnabled, so the synthesised interface had no such method
+				// and the client died with
+				//
+				//   NoSuchMethodError: 'boolean com.mojang.blaze3d.textures.GpuTexture.isStencilEnabled()'
+				//
+				// out of GlCommandEncoder.clearColorTexture - with OptiFine's own GpuTexture installed.
+				//
+				// The copy's members are taken, not its bytes: its own signatures are written in OptiFine's
+				// obfuscated game namespace, and shipping it whole fails the other way round, measured as
+				// "NoClassDefFoundError: avs" once a class that implements one of these is defined. So only
+				// the members whose signatures name a packaged type are copied.
 				Shape shape = shapes.getOrDefault(name, new Shape());
+				byte[] own = readOwnCopy(zip, name);
+				if(own != null) {
+					addOwnMembers(own, shape);
+				}
 				boolean asInterface = (shape.mustBeClass() || declaresItself(shape, name)) ? false : isInterface(zip, name);
 				stubs.put(name + ".class", stub(name, asInterface, shape));
 			}
@@ -226,6 +265,90 @@ public final class ForgeApiShims {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Adds the members OptiFine's own copy of a Forge type declares, skipping the ones written against its
+	 * obfuscated game namespace.
+	 *
+	 * <p>Only declarations are read, never method bodies: the shell this feeds declares the same methods as
+	 * abstract, so nothing of the copy's own code travels, and a signature naming {@code avs} - OptiFine's
+	 * name for a game class inside {@code notch/} - is dropped rather than reproduced.</p>
+	 */
+	private static void addOwnMembers(byte[] classBytes, Shape shape) {
+		new ClassReader(classBytes).accept(new ClassVisitor(Opcodes.ASM9) {
+			@Override
+			public FieldVisitor visitField(int access, String name, String desc, String signature, Object value) {
+				if(cleanDescriptor(desc)) {
+					shape.fields.putIfAbsent(name + " " + desc,
+							new FieldReference(name, desc, (access & Opcodes.ACC_STATIC) != 0));
+				}
+				return null;
+			}
+
+			@Override
+			public MethodVisitor visitMethod(int access, String name, String desc, String signature, String[] exceptions) {
+				// Constructors and the static initialiser are the shell's own business, not members to
+				// reproduce: it writes a constructor and, when it has fields to fill, a static initialiser.
+				if(("<init>".equals(name) || "<clinit>".equals(name)) && cleanDescriptor(desc)) {
+					return null;
+				}
+				if(cleanDescriptor(desc)) {
+					shape.methods.putIfAbsent(name + " " + desc,
+							new MethodReference(name, desc, (access & Opcodes.ACC_STATIC) != 0));
+				}
+				return null;
+			}
+		}, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+	}
+
+	/**
+	 * Whether a descriptor names only types this jar can resolve.
+	 *
+	 * <p>The test is whether the type is in a package at all: OptiFine's obfuscated game classes are single
+	 * segments ({@code avs}, {@code fmk}), while everything this jar can reach - {@code java/lang},
+	 * {@code net/minecraft}, {@code net/minecraftforge}, {@code com/mojang} - has a slash in it.</p>
+	 */
+	private static boolean cleanDescriptor(String desc) {
+		if(desc == null) {
+			return true;
+		}
+		for(int index = 0; index < desc.length(); index++) {
+			if(desc.charAt(index) != 'L') {
+				continue;
+			}
+			int end = desc.indexOf(';', index);
+			if(end < 0) {
+				return false;
+			}
+			String type = desc.substring(index + 1, end);
+			if(!type.contains("/")) {
+				return false;
+			}
+			index = end;
+		}
+		return true;
+	}
+
+	/**
+	 * OptiFine's own copy of a Forge API type, when it ships one, or null.
+	 *
+	 * <p>It ships them under the same {@code notch/} prefix as its game classes, which is why they are easy
+	 * to miss: the prefix suggests obfuscated game bytecode, but a Forge API type keeps its real package
+	 * there. Measured on 1.21.8, five classes name {@code isStencilEnabled} and one of them is
+	 * {@code notch/net/minecraftforge/client/extensions/IForgeGpuTexture.class} inside OptiFine's own jar.
+	 * Taking that copy is both more complete and more honest than guessing at the interface.</p>
+	 */
+	private static byte[] readOwnCopy(ZipFile zip, String name) {
+		ZipEntry own = zip.getEntry(OPTIFINE_COPY + name + ".class");
+		if(own == null) {
+			return null;
+		}
+		try(InputStream stream = zip.getInputStream(own)) {
+			return readAll(stream);
+		} catch(IOException e) {
+			return null;
+		}
 	}
 
 	/** Whether OptiFine's own copy of this type is an interface. */
@@ -279,6 +402,13 @@ public final class ForgeApiShims {
 			}
 		}
 		for(MethodReference method : shape.methods.values()) {
+			if("<clinit>".equals(method.name)) {
+				// The shell writes its own static initialiser when it has fields to fill, so a recorded one
+				// would be a second copy of the same method - rejected rather than warned about, measured on
+				// 1.21.8: "ClassFormatError: Duplicate method name "<clinit>" with signature "()V" in class
+				// file net/minecraftforge/client/model/ForgeFaceData".
+				continue;
+			}
 			if("<init>".equals(method.name)) {
 				if(!isInterface) {
 					writeConstructor(writer, internalName, method.desc, tracksEmptiness);
