@@ -246,6 +246,19 @@ stderr 14 141 字节、`Setting user` 通过、本次运行无崩溃报告、`So
 这也意味着更早那句"线程转储显示它在空闲渲染循环里,所以不是卡住"**下得太宽松**:加载遮罩的渲染循环同样是空闲的,
 `glfwWaitEventsTimeout` 说明的是"没有待处理的输入",不是"已经到标题界面"。**区分这两者只能靠截图**,这一点已经写进上面的复现清单。
 
+**卡在哪一步也量出来了:不是死锁,是"没人干活"。** 在这个状态下再抓一次线程转储:线程状态分布是 *runnable 25 / waiting on
+condition 45 / Object.wait 1*,**没有任何 BLOCKED 线程**,也**没有任何线程的栈落在资源重载相关代码里**
+(`PreparableReloadListener`/`SimpleReloadInstance`/`CachedSupplier`/`ProfiledReloadInstance` 全无命中);`Render thread` 停在
+`Minecraft.runTick(Minecraft.java:1220)` 的 `limitDisplayFPS` 上 —— 也就是游戏主循环还活着,而**重载这件事没有任何在飞的活**。
+这更像"某个 future 永远不会被完成",而不是死锁或某个 worker 卡住。
+
+顺着这条线,加载器里本来就有针对这块的诊断:`ReloadProbe` + `ReloadProbeFix`(把重载监听器列表按顺序打出来,
+回答"是不是顺序问题"),开关是 `-Doptifineoforge.debug.reload=true`(已核对常量名,就是这个)。**但打开它跑了一遍,输出是空的**:
+探针没有触发。这个结果本身有用 —— 说明探针插桩的那个方法(`ReloadableResourceManager.createReload`)**并不是这条线上真正跑重载的那个**
+(日志里 OptiFine 的 `Reloading ResourceManager` 与 CTM 解析证明重载确实发生了)。下一轮从这里开始:先确认这条线上
+`createReload` 的**声明者/调用者到底是谁**(OptiFine 的替换类、还是另一个同名方法),再决定探针该插在哪里。
+
+
 
 
 
