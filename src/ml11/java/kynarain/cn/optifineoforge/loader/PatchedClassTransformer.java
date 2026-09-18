@@ -154,8 +154,10 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 			return "the plan says to re-parent it but its copy extends " + forgeSuper + ", not a Forge type";
 		}
 		// The plan was made from the same jars, so a disagreement means the plan and the runtime are not
-		// from the same build: the runtime's class has to be the one the plan was measured against.
-		if(!plannedSuper.equals(runtime.superName)) {
+		// from the same build: the runtime's class has to be the one the plan was measured against. A null
+		// reference means the caller established that what it holds is not the runtime's copy at all - see
+		// the caller's note - and then there is nothing here to disagree with.
+		if(runtime != null && !plannedSuper.equals(runtime.superName)) {
 			return "the plan re-parents it onto " + plannedSuper + " while the runtime's copy extends "
 					+ runtime.superName + ", so the plan and the runtime do not match";
 		}
@@ -458,19 +460,33 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		// "optifine -> minecraft: reads it = false" and the swap still resolves every shim it names).
 		// So the payload's superclass is rewritten onto the runtime's instead, and {@link #reparent}
 		// does that, including the constructor's super call.
-		// A class the plan means to move is worth one line, because the guard below can skip the whole block
-		// without leaving a trace: no "Re-parented" and no "Left ... alone" being absent at the same time is
-		// the same signature as a plan that was never consulted, and telling those apart cost a round.
-		// Measured on 1.21.8: BlockEntity produced neither line, so this is what says why.
-		if(REPARENTS_BY_CLASS.containsKey(input.name)) {
+		// A class the plan means to move is attempted even when the two supers already agree, because
+		// agreement does not mean the reference is the runtime's copy. Where OptiFine's own transformer has
+		// already replaced the class, what arrives here carries the Forge superclass too - measured on
+		// 1.21.8, where the guard that used to be here skipped the whole block on that basis and left
+		// BlockEntity on a Forge superclass, so NeoForge's own code failed verification against it:
+		//
+		//   VerifyError: Bad type on operand stack
+		//     Type 'net/minecraft/world/level/block/entity/BlockEntity' is not assignable to
+		//     'net/neoforged/neoforge/attachment/AttachmentHolder'
+		//
+		// HierarchyPlan measured the plan from these same jars, so when the reference cannot be used the
+		// plan is applied on its own measurement. The reference is unusable exactly when it already extends
+		// the Forge type the payload extends, which is the only way the two can agree while the runtime's
+		// own copy does not, and each outcome is logged rather than inferred from two silences.
+		boolean planned = REPARENTS_BY_CLASS.containsKey(input.name);
+		boolean referenceIsRuntime = !planned || !sameName(patched.superName, input.superName);
+		if(planned) {
 			LOGGER.info("Reparent plan covers " + input.name.replace('/', '.') + ": the payload extends "
 					+ patched.superName + ", the class handed over extends " + input.superName
-					+ (sameName(patched.superName, input.superName)
-							? " - equal, so nothing is rewritten and the copy is installed as it is" : ""));
+					+ (referenceIsRuntime
+							? " - so the plan is checked against that copy"
+							: " - equal, so that copy is not the runtime's and the plan is applied on its own"
+									+ " measurement"));
 		}
-		if(!sameName(patched.superName, input.superName)) {
-			String problem = reparent(patched, input);
-			if(problem == null) {
+		if(planned || !referenceIsRuntime) {
+			String problem = reparent(patched, referenceIsRuntime ? input : null);
+			if(problem == null && referenceIsRuntime) {
 				problem = hierarchyProblem(patched.superName, input.superName);
 			}
 			if(problem != null) {
