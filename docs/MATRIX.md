@@ -3351,3 +3351,88 @@ loader 的类实现 `cpw.mods.modlauncher.api.ITransformationService`,但**没�
   都在贴图拼接这条路上,值得下一个回合从这里查。
 - 本轮**没有**跑其它 14 条线,也**没有**发布任何东西。
 
+## 2026-09-19(下半):1.21.4 通过了,而卡住它的不是加载器而是 shim 的形状
+
+上一节的结尾把 1.21.4 的停滞归给"还原计划是从离线产物算的",并说下一回合从贴图拼接那条路查。**那个猜测是错的**:
+问题不在计划,在**我们自己的 `ForgeApiShims` 生成的 Forge API stub 是接口而不是类**。
+
+### 一、这一刻的证据
+
+1.21.4 / NeoForge 21.4.149 / OptiFine `OptiFine_1.21.4_HD_U_J3`,rig 的判定:
+
+```
+===== VERDICT: STARTED =====
+  Setting user         : True
+  Sound engine started : True     ← L353,[net.minecraft.client.sounds.SoundEngine/]: Sound engine started
+  new crash reports    : 0
+  stderr bytes         : 0
+```
+
+日志里同一个目录还有:**232 行 `[OptiFine]`**、**14 条 `Created: minecraft:textures/atlas/…`**(停滞时是 0 条)、
+`Caught error loading resourcepacks` 0 次、`NoSuchFieldError` / `NoSuchMethodError` /
+`IncompatibleClassChangeError` / `InstantiationError` 各 0 次。本次运行没有崩溃报告(目录里那两份是 00:48 与 00:57 的,
+都在这个修好之前)。`FATAL/ERROR` 只剩两条,都是离线测试账号必然的:Realms 401 与 `Failed to fetch user properties`,
+对照跑里一模一样。
+
+**232 行、stderr 0 字节、无崩溃报告** —— 与本文件更早为 1.21.4 记下的那一行逐项相同,所以这条线的实机判据这一轮
+是**被独立复现**了一次,而不是照抄。
+
+### 二、三个失败,一个根因:shape
+
+装上 OptiFine 与本项目的 loader 之后,失败是**一次一个**地往前走,每修掉一个就露出下一个:
+
+| # | 症状 | 根因 | 处置 |
+|---|---|---|---|
+| 1 | `NoSuchMethodError: 'void net.minecraft.client.gui.Gui.initModdedOverlays()'` ← `ClientHooks.initClientHooks` | OptiFine 用它自己编译的游戏类顶替运行时那份,而它编译时没有 NeoForge 后加的成员 | 用仓库自己的 `OptifinePipeline` + `MemberRestorePlan` 生成还原计划(**316 行、83 个类、83 个 donor**),装进 loader jar |
+| 2 | `NoSuchFieldError: net.minecraftforge.client.RenderTypeGroup 没有成员 EMPTY`,于是 `Caught error loading resourcepacks`,再是 `Failed to wait for future Registration events` | stub 只从 **OptiFine jar** 扫出来,而 OptiFine jar 只点出 **3** 个成员;被顶替的**补丁类**还点出 **51** 个,`EMPTY` 就在里面 | 生成 stub 时把**补丁 jar 一起**喂进去(实测 3 → **54** 个成员) |
+| 3 | `IncompatibleClassChangeError: BlockEntity 以接口 CapabilityProvider 作为父类`;修掉后 `InstantiationError: RenderTypeGroup`;再修掉后 `InstantiationError` 出自 stub 自己的 `<clinit>` | `ForgeApiShims` 用"OptiFine 自己那份拷贝"判断类型是接口还是类,而它找的是 `notch/<Forge 类型>.class` —— **Forge 类型在 OptiFine 里根本不可能有这份拷贝**(OptiFine 发的是游戏类,不是 Forge 的),所以查找永远落空,接口这个兜底永远生效,**每个 stub 都成了接口** | 改成**按用法**决定(见第三节) |
+
+第 3 条里"`new` 一个接口"的那一步最容易被误读:报错栈顶是
+`at net.minecraftforge.client.RenderTypeGroup.<clinit>`,也就是说崩的不是调用方,而是 **stub 自己的静态初始化器** ——
+它要给 `EMPTY` 赋值就得构造一个实例,而接口不能构造。
+
+### 三、`ForgeApiShims` 的修法(已提交,`1.21.x` `f6eeec2`)
+
+形状改为在**读引用类的时候**记录下来,只认两种"只有类才允许"的用法:
+
+- 有类**继承**它(`ClassVisitor.visit` 的 `superName`);
+- 有类**构造**它(`visitTypeInsn` 的 `NEW`,或 `visitMethodInsn` 的 `<init>`);
+- 以及**自己声明了自己类型的字段**(`declaresItself`)—— 因为给这种字段赋值就要构造实例,而接口不能。
+  `RenderTypeGroup.EMPTY` 正是这一种。
+
+老的那条查找留着,只作为"没有任何这类用法"时的兜底。改完实测:`CapabilityProvider` 与 `RenderTypeGroup` 变成
+**class**,而真的该是接口的 `RenderType`、`ChunkRenderTypeSet` 仍然是 **interface**。
+
+另外两条不在这轮的代码改动里、但属于同一个 rig 缺口的:
+
+- stub 的扫描范围要包含**补丁类**(见上表第 2 条),这是调用方的事,rig 现在两边都喂。
+- **`HierarchyPlan` 的 `reparent.txt` 在 1.21.4 上不起作用**,原因值得单独记:`OptiFineTransformer` 与本项目的
+  `PatchedClassTransformer` **各自都声明了同一批 474 个目标**,而 OptiFine 的排在前面 —— 于是我们的
+  `reparent(patched, input)` 拿到的是**已经被 OptiFine 换过的** `input`,它的 `superName` 与 payload 的相同,
+  `sameName` 判真,整段 reparent 被跳过。**结论:在 1.21.4 这条线上,离线载荷与 OptiFine 自己的 transformer 不能同时用**
+  —— 这与本分支 README 早就写下的"1.21.4 走 OptiFine 自己的运行期补丁"一致。上面那次通过的运行就是**不带载荷**的:
+  loader jar 只有 0.28 MB(计划 + donor + 55 个 stub),游戏类由 OptiFine 的 transformer 顶替。
+
+### 四、另外两次"看起来像卡死"其实各有原因
+
+- **`IllegalStateException: Already building.`**(`fml_earlydisplay.SimpleBufferBuilder.begin` ←
+  `DisplayWindow.paintFramebuffer` ← `NeoForgeLoadingOverlay.render`):本文件为 1.20.4 记过的那个 early window 重入,
+  这一轮在 **21.4.149** 上也量到了。它还是**竞态**:同一份配置有一次崩、有一次没崩。
+- **换成 `earlyWindowProvider = "none"` 之后不再是崩,而是停在加载界面**。两次 `jstack` 相隔约 40 秒形状相同:
+  Render 线程在 `Minecraft.runTick → RenderSystem.limitDisplayFPS → glfwWaitEventsTimeout` 里空转,**不是**卡住;
+  16 个 `Worker-Main-*` 全部 `WAITING (parking)`、ForkJoinPool 队列为空。窗口截图与对照跑对比是**判定性的**:
+  对照跑(标题画面)整幅均值 RGB 是 (78,78,75) 的灰、布局是标志在上/按钮居中;停滞那次整幅 **94% 是平的 (224,64,64) 红**,
+  中间一块文字加一条横向进度条 —— 那是 NeoForge 的加载界面,不是标题画面。**注意窗口标题不能当判据**:
+  对照跑和停滞跑都叫 `Minecraft NeoForge* 1.21.4`,那个星号与加载无关。
+- 顺带:`-WindowStyle Minimized` 加垂直同步会让 Render 线程死在 `glfwSwapBuffers`;不最小化并把
+  `enableVsync:false` 写进 `options.txt` 之后消失。这与 `OptiFabric` 那份 DEVELOPMENT 记的成因一致。
+
+### 五、边界
+
+- 这一轮只让 **1.21.4 一条线**通过,其余 14 条**没有跑**。它们各自走的路不同(1.21.1 / 1.21.3 / 1.21.8 离线换类、
+  1.20.x 的 SRG 重映射、1.21.9 – 1.21.11 的 FML 10 挂载点、26.1.2 的 OptiFine 自带 `ClassProcessor`),
+  不能由这一条外推。
+- **没有发布任何东西**,已发布的 10 个 jar 也没有重新构建。
+- 通过的是**判定标准**(标题画面 + 声音引擎 + 无崩溃报告 + stderr 0 字节),不是"功能完备":光影包、抗锯齿、
+  进世界这些都还没测。
+
