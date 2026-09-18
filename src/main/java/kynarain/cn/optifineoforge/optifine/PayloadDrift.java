@@ -80,6 +80,7 @@ public final class PayloadDrift {
 		List<Path> runtimeJars = new ArrayList<>();
 		Path plan = null;
 		Path interfacePlan = null;
+		Path accessPlan = null;
 		Path payload = null;
 		for(int index = 0; index < args.length; index++) {
 			if("--plan".equals(args[index])) {
@@ -94,6 +95,12 @@ public final class PayloadDrift {
 					System.exit(2);
 				}
 				interfacePlan = Path.of(args[index]);
+			} else if("--access".equals(args[index])) {
+				if(++index >= args.length) {
+					System.err.println("--access needs a file");
+					System.exit(2);
+				}
+				accessPlan = Path.of(args[index]);
 			} else if(payload == null) {
 				payload = Path.of(args[index]);
 			} else {
@@ -117,6 +124,7 @@ public final class PayloadDrift {
 		Map<String, List<String>> constantDrift = new TreeMap<>();
 		Map<String, List<String>> signatureDrift = new TreeMap<>();
 		Map<String, List<String>> hierarchyDrift = new TreeMap<>();
+		Map<String, List<String>> accessDrift = new TreeMap<>();
 		Map<String, Integer> missingFromPayload = new TreeMap<>();
 		int compared = 0;
 		int payloadOnly = 0;
@@ -162,6 +170,20 @@ public final class PayloadDrift {
 						constantDrift.computeIfAbsent(node.name, key -> new ArrayList<>())
 								.add(field.name + ": payload=" + show(field.value) + " runtime=" + show(mine));
 					}
+				}
+				// Members this runtime has widened and the payload has not. NeoForge's access transformers
+				// run on the runtime's copy, and its own code then compiles against the wider one, so a
+				// payload member that is narrower fails at the first access:
+				//   IllegalAccessError: class NeoForgeRenderTypes$Internal tried to access protected field
+				//     RenderStateShard.RENDERTYPE_ENTITY_SOLID_SHADER
+				// The loader's own rule takes the wider of the payload and of the class it was handed, and
+				// on a line where OptiFine's transformer replaced that class first, both are the payload's
+				// - which is why this list has to come from the runtime jar offline.
+				for(org.objectweb.asm.tree.MethodNode method : node.methods) {
+					checkVisibility(method.access, was, method.name, method.desc, accessDrift, node.name);
+				}
+				for(FieldNode field : node.fields) {
+					checkVisibility(field.access, was, field.name, field.desc, accessDrift, node.name);
 				}
 				for(Map.Entry<String, Set<String>> entry2 : was.descriptors.entrySet()) {					Set<String> mine = descriptorsOf(node, entry2.getKey());
 					if(mine.isEmpty()) {
@@ -254,6 +276,32 @@ public final class PayloadDrift {
 			System.out.println("interface plan: " + interfacePlan + " (" + lines + " line(s) across "
 					+ classes + " class(es))");
 		}
+		System.out.println("access drift: " + accessDrift.size() + " class(es) with a member this runtime"
+				+ " widened and the payload did not - inaccessible from NeoForge's own code without a plan");
+		int shownAccess = 0;
+		for(Map.Entry<String, List<String>> entry : accessDrift.entrySet()) {
+			for(String detail : entry.getValue()) {
+				if(shownAccess++ >= 10) {
+					break;
+				}
+				System.out.println("  " + entry.getKey() + "  " + detail);
+			}
+		}
+		if(accessPlan != null) {
+			StringBuilder text = new StringBuilder();
+			int lines = 0;
+			for(Map.Entry<String, List<String>> entry : accessDrift.entrySet()) {
+				for(String detail : entry.getValue()) {
+					// "<name>\t<descriptor>\t<access>\t<note>" -> owner, name, descriptor, access.
+					String[] parts = detail.split("\t");
+					text.append(entry.getKey()).append('\t').append(parts[0]).append('\t')
+							.append(parts[1]).append('\t').append(parts[2]).append('\n');
+					lines++;
+				}
+			}
+			Files.writeString(accessPlan, text.toString());
+			System.out.println("access plan: " + accessPlan + " (" + lines + " line(s))");
+		}
 	}
 
 	/** What the drift check needs from one copy of a class. */
@@ -263,6 +311,22 @@ public final class PayloadDrift {
 		final Map<String, Set<String>> descriptors = new LinkedHashMap<>();
 		final List<String> interfaces = new ArrayList<>();
 		String superName;
+		/** {@code name desc} to the access word, for the visibility comparison. */
+		final Map<String, Integer> memberAccess = new LinkedHashMap<>();
+	}
+
+	/** public 3, protected 2, package 1, private 0 - what "wider" means, as in the loader. */
+	private static int rank(int access) {
+		if((access & Opcodes.ACC_PUBLIC) != 0) {
+			return 3;
+		}
+		if((access & Opcodes.ACC_PROTECTED) != 0) {
+			return 2;
+		}
+		if((access & Opcodes.ACC_PRIVATE) != 0) {
+			return 0;
+		}
+		return 1;
 	}
 
 	private static Set<String> descriptorsOf(ClassNode node, String name) {
@@ -301,13 +365,28 @@ public final class PayloadDrift {
 				}
 				for(org.objectweb.asm.tree.MethodNode method : node.methods) {
 					shape.descriptors.computeIfAbsent(method.name, key -> new LinkedHashSet<>()).add(method.desc);
+					shape.memberAccess.put(method.name + " " + method.desc, method.access);
 				}
 				shape.superName = node.superName;
 				if(node.interfaces != null) {
 					shape.interfaces.addAll(node.interfaces);
 				}
+				for(FieldNode field : node.fields) {
+					shape.memberAccess.put(field.name + " " + field.desc, field.access);
+				}
 			}
 		}
+	}
+
+	/** Records one member whose runtime copy is more visible than the payload's, if it is. */
+	private static void checkVisibility(int payloadAccess, Shape runtime, String name, String desc,
+			Map<String, List<String>> drift, String owner) {
+		Integer theirs = runtime.memberAccess.get(name + " " + desc);
+		if(theirs == null || rank(theirs) <= rank(payloadAccess)) {
+			return;
+		}
+		drift.computeIfAbsent(owner, key -> new ArrayList<>())
+				.add(name + "\t" + desc + "\t" + theirs + "\tpayload " + payloadAccess + " runtime " + theirs);
 	}
 
 	/** A constant, with the string form quoted so 7 and "7" cannot be confused. */

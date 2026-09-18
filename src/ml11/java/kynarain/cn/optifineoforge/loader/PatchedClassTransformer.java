@@ -671,6 +671,33 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		for(MethodNode method : methods) {
 			method.access = wider(method.access, wasMethods.get(method.name + method.desc));
 		}
+		// And the runtime's own widened word, which the two lines above cannot see when OptiFine replaced
+		// the class before this transformer ran. See RUNTIME_ACCESS.
+		int floored = 0;
+		for(FieldNode field : fields) {
+			Integer floorWord = runtimeAccessOf(input.name, field.name, field.desc);
+			if(floorWord != null) {
+				int before = field.access;
+				field.access = wider(field.access, floorWord);
+				if(field.access != before) {
+					floored++;
+				}
+			}
+		}
+		for(MethodNode method : methods) {
+			Integer floorWord = runtimeAccessOf(input.name, method.name, method.desc);
+			if(floorWord != null) {
+				int before = method.access;
+				method.access = wider(method.access, floorWord);
+				if(method.access != before) {
+					floored++;
+				}
+			}
+		}
+		if(floored > 0) {
+			LOGGER.info("Widened " + floored + " member(s) of " + input.name.replace('/', '.')
+					+ " to the runtime's access from the plan");
+		}
 		input.fields = fields;
 		input.methods = methods;
 		keepRuntimeBodies(input, originalMethods);
@@ -727,6 +754,64 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	}
 
 	private static boolean loggedModules;
+
+	/**
+	 * Members whose runtime copy this line's access transformers widened, {@code owner name desc access}.
+	 *
+	 * <p>The visibility rule in {@link #transform} takes the wider of the payload's own member and of the
+	 * one on the class it was handed - and on a line where OptiFine's transformer replaced that class
+	 * first, both of those are the payload's. The runtime's widened copy is then nowhere in reach, and
+	 * NeoForge's own code, which was compiled against the wider one, fails at the first access. Measured on
+	 * 1.21:</p>
+	 *
+	 * <pre>IllegalAccessError: class NeoForgeRenderTypes$Internal tried to access protected field
+	 *   RenderStateShard.RENDERTYPE_ENTITY_SOLID_SHADER</pre>
+	 *
+	 * <p>{@code PayloadDrift} writes this list from the runtime jar, offline, which is the only place that
+	 * copy is available. The field is a floor, not a replacement: the payload's own flags still win where
+	 * they are wider.</p>
+	 */
+	private static final String RUNTIME_ACCESS = "/optifineoforge/runtime-access.txt";
+
+	/** {@code owner|name|desc} to the access word the runtime's copy carries. */
+	private static final Map<String, Integer> RUNTIME_ACCESS_BY_MEMBER = loadRuntimeAccess();
+
+	private static Map<String, Integer> loadRuntimeAccess() {
+		Map<String, Integer> result = new LinkedHashMap<>();
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(RUNTIME_ACCESS)) {
+			if(stream == null) {
+				return Map.of();
+			}
+			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+				String text = line.trim();
+				if(text.isEmpty() || text.startsWith("#")) {
+					continue;
+				}
+				String[] parts = text.split("\t");
+				if(parts.length != 4) {
+					LOGGER.warn("Ignoring a " + RUNTIME_ACCESS + " line that is not 'owner name desc"
+							+ " access': " + text);
+					continue;
+				}
+				try {
+					result.put(parts[0] + "|" + parts[1] + "|" + parts[2], Integer.parseInt(parts[3].trim()));
+				} catch(NumberFormatException e) {
+					LOGGER.warn("Ignoring an access word that is not a number: " + text);
+				}
+			}
+		} catch(IOException e) {
+			LOGGER.warn("could not read " + RUNTIME_ACCESS + ": " + e);
+		}
+		if(!result.isEmpty()) {
+			LOGGER.info("Runtime access from the plan: " + result.size() + " member(s)");
+		}
+		return Map.copyOf(result);
+	}
+
+	/** The plan's access word for this member, or null when it is not listed. */
+	private static Integer runtimeAccessOf(String owner, String name, String desc) {
+		return RUNTIME_ACCESS_BY_MEMBER.get(owner + "|" + name + "|" + desc);
+	}
 
 	/**
 	 * The interfaces each swapped class must implement, taken from the runtime's copy of it rather than

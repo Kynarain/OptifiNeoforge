@@ -118,9 +118,24 @@ IllegalAccessError: class net.neoforged.neoforge.client.NeoForgeRenderTypes$Inte
 
 这是加载器注释里已经写过的那类"访问权限谁更宽"的问题,只是这次踩在字段上:规则取"负载与交上来的那份里更宽的",而这条线上
 OptiFine 自己的转换器**先**替掉了 `RenderStateShard`(本行日志里能看到它被换掉),于是交上来的那份就是 OptiFine 的,
-两边都是 `protected`,运行时的 AT 加宽结果看不到 —— 和 1.21.8 上"接口计划为什么必须存在"是同一个根因。**还差一步**:
-把这个"运行时更宽"的清单也做成离线计划(或让转换器真正拿到运行时的那份类),这一步没做,所以 1.21 仍然是**未通过**,
-但不再是"未跑":它现在有明确的、可复现的失败点。
+两边都是 `protected`,运行时的 AT 加宽结果看不到 —— 和 1.21.8 上"接口计划为什么必须存在"是同一个根因。
+
+**于是加了第三条计划(access plan),它解决了一类问题,但没解决这一处。** 做法与另外两条一样,由 `PayloadDrift` 离线量:
+`owner<TAB>name<TAB>desc<TAB>access`,取"负载的可见性比运行时的窄"的成员,加载器把它当作可见性下限(负载自己的 flags 更宽时
+仍以负载为准)。这条线上它量到 **15 个类、81 个成员**,日志里确实生效了(`Widened 63 member(s) of RenderType`,
+`ParticleEngine.register` 等),**但 `RenderStateShard` 不在名单里** —— 原因查清了:
+
+- 运行时 jar 里 `RenderStateShard.RENDERTYPE_ENTITY_SOLID_SHADER` 就是 `protected static final`,所以离线比对看不到任何分歧;
+- 真正把它变宽的是 **NeoForge 自己的 AT 配置**:`neoforge-21.0.167-universal.jar` 的 `META-INF/accesstransformer.cfg` 里有
+  `public net.minecraft.client.renderer.RenderStateShard *`,由 FML 在加载期应用,而不是烘进那个 jar。
+
+所以下一步要把 **AT 配置**当成第三个来源(`PayloadDrift` 现在只比两个 jar),或者让转换器真正拿到 AT 之后的运行时类。
+这一轮没做,1.21 因此仍然是**未通过**:四个判据里 `Setting user` 与 stderr 为通过、`Sound engine started` 为不通过、本次运行有 1 份崩溃报告。
+
+**另一处 rig 侧的坑**:`add-line.ps1` 每次都会用**原始** OptiFine jar 重新生成 prepared jar,所以对 prepared jar 做过的改写会被
+它覆盖 —— 实测第一次重跑就退回到 `NoSuchFieldError: Direction.f_122346_`。这条线上正确的顺序是:prepare-line → 改写补丁游戏类 →
+build-jars(生成 prepared jar)→ **再改写 prepared jar** → 启动。
+
 
 
 ### 复现一次启动需要什么(本轮量出来的 rig 要求)
