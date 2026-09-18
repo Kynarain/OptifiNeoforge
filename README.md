@@ -48,22 +48,28 @@
 所以这三条的实机判据仍然只有 `docs/MATRIX.md` 里那一份。发布本身也仍是独立的一步(需要一条启动记录与
 Release 正文),尚未做。
 
-**1.21.1:四项判据在本机复现通过(`[OptiFine]` 232 行,记录为 223)。** 同一条 rig 流程(离线换类 + 计划)在这条线上重跑,
-量到三件事:
+### 本轮本机复现的四条线(2026-09-19)
 
-- **重定父类那条修正在这条线上也是必需的,而且是它救回来的**。第一次跑挂在 NeoForge 自己的 `AttachmentSync.onChunkSent`:
-  `VerifyError: Type 'BlockEntity' is not assignable to 'AttachmentHolder'` —— 这正是加载器注释里记的那种失败。原因不是计划错,
-  而是本轮的加载器 jar 一开始是从一份**旧的** Gradle 产物装出来的(那份产物早于上一轮的重定父类修正)。用当前代码重建后日志里出现
-  `Reparent plan covers ...: ... equal, so that copy is not the runtime's and the plan is applied on its own measurement`,并通过 ——
-  说明"两份父类字符串相同不代表交上来的就是运行时的副本"这一判断在 1.21.1 上同样成立。
-- **接口计划在这条线上也生效**:13 个类被补回运行时的扩展接口(如 `BlockState` 的 `IBlockStateExtension`、`Font` 的
-  `IFontExtension`)。它是通过的必要条件与否**没有单独测**:只测到它确实运行、且整条线通过。
-- **这条线的 OptiFine 构建(J1)在空游戏目录上会自己崩**:`Options.loadOfOptions` 抛
-  `ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1`,位置是 OptiFine 自己加的方法(1.21.4 / 1.21.8 两版
-  在同样空的目录上不会)。放入一份有效的 `optionsof.txt` 后即通过。这是 OptiFine 侧的行为,不是加载器的判据,记在这里是为了
-  下次复现时不必再查一遍。
+同一条 rig 流程(离线换类 + 成员回填 + 重定父类 + 运行时 stub + 接口计划)在这四条线上各跑了一遍。判据是
+`Setting user` + `Sound engine started` + 本次运行无新崩溃报告 + stderr;`[OptiFine]` 行数是 `latest.log` 里的原始条数:
 
-本机实测:四项判据通过、新增崩溃报告 0、stderr 0 字节、`[OptiFine]` **232 行**、图集 `Created:` 14。同样**没有重新发布**。
+| 线 | NeoForge | OptiFine | 四项判据 | `[OptiFine]` 行数 | README 记录 | 图集 `Created:` |
+|---|---|---|---|---|---|---|
+| 1.21.1 | `21.1.250` | `OptiFine_1.21.1_HD_U_J1` | 通过 | 232 | 223 | 14 |
+| 1.21.3 | `21.3.97` | `OptiFine_1.21.3_HD_U_J2` | 通过 | **225** | 225(一致) | 14 |
+| 1.21.4 | `21.4.149` | `OptiFine_1.21.4_HD_U_J3` | 通过 | **232** | 232(一致) | — |
+| 1.21.8 | `21.8.54` | `preview_OptiFine_1.21.8_HD_U_J6_pre16` | 通过 | 344 | 337 | 13 |
+
+1.21.4 那一行是用**本轮改动后的加载器代码**重建并复跑的,目的是确认共用的加载器代码没有被改坏 —— 行数与记录逐字一致。
+四条线都**没有重新发布**,表里的"已发布"仍指原有产物。
+
+**一条 OptiFine 侧的坑,记下来免得下次再查**:1.21.1 与 1.21.3 这两个构建(J1 / J2)在**没有 `optionsof.txt`** 的游戏目录上会自己崩 ——
+`Options.loadOfOptions` 抛 `ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1`,堆栈整个落在 OptiFine 自己加的方法里,
+`Minecraft.<init>` 就停住,之后的错误界面又会在 `Font.ellipsize` 上二次崩,现场只剩两次崩溃报告。放入一份有效的
+`optionsof.txt`(这两条线用的是从 1.21.4 目录拿来的同一份,1826 字节)后即通过。1.21.4 / 1.21.8 的游戏目录里本来就有这个文件,
+所以它们的 `-Fresh` 复跑没有暴露这一点。这是 OptiFine 的行为,不是加载器的判据,但如果要给别人复现步骤,这一步要写进去。
+
+### 1.21.8 的根因:负载与运行时的结构性冲突
 
 **1.21.8:四项判据在本机复现通过(`[OptiFine]` 344 行,记录为 337)。** 本轮按**离线换类**路线
 重建了这一版(`preview_OptiFine_1.21.8_HD_U_J6_pre16` + NeoForge `21.8.54`),第一次跑停在 `Setting user` 之后:模型重载抛
@@ -89,24 +95,9 @@ Release 正文),尚未做。
 `BlockModelPart.layer()` —— 少了它模型烘焙在 `SingleVariant.<init>` 就崩;补出来的 payload 才是要交给加载器的那一个。
 ② 转换器的 `targets` 不能只取负载索引,否则不在负载里的类根本不会被它看到,接口计划与运行时 stub 会静默失效。
 
-本机实测(本机 rig,`-Fresh`、`earlyWindowProvider=none`、200 秒):
-
-| 判据 | 结果 |
-|---|---|
-| `Setting user` | 通过 |
-| `Sound engine started` | 通过 |
-| 本次运行新增崩溃报告 | **0** |
-| stderr | **0 字节** |
-| 图集 `Created:` | 13 |
-| `[OptiFine]` 行数 | **344**(记录为 337,相差 7 行;口径是 `latest.log` 里 `[OptiFine]` 的出现次数) |
-
 口径说明:rig 的 harness 打印的 `[OptiFine] lines` 是 stdout、stderr 与 `latest.log` 三个来源**合并后**的匹配数,同一批行
-会被计两次,所以它显示的是上表这个数的两倍(本轮 1.21.8 显示 688、1.21.4 显示 464);表里所有版本记录的都是 `latest.log` 的
+会被计两次,所以它显示的是上面那个数的两倍(1.21.8 显示 688、1.21.4 显示 464);文档里所有版本记录的都是 `latest.log` 的
 原始条数。688 与 337 曾经看起来像两倍关系,核实后不是:原始条数为 344,与 337 只差 7 行。
-
-**没有回归**:本轮改的是 1.21.x 共用的加载器代码,所以用同一份代码重建了已验证的 1.21.4(`OptiFine_1.21.4_HD_U_J3` +
-`21.4.149`,同样的 rig 命令)并复跑:**四项判据通过、新增崩溃报告 0、stderr 0 字节、`[OptiFine]` 232 行**,与表里记录的
-232 行完全一致。这一版 1.21.8 **没有重新发布**,表里的"已发布"仍指原有产物。
 
 那一轮 1.21.8 还截图确认了"确实有画面":窗口标题 `Minecraft NeoForge* 1.21.8`(标题在两版都一样,不是判据),
 `PrintWindow` 抓到的帧均值 RGB 85,83,81、量化色桶 125、最常见颜色只占 15%;对照组(标题界面)是 79,80,76 / 99 桶,
