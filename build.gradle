@@ -134,6 +134,14 @@ if(!(targetModLauncher in ['10', '11'])){
     throw new GradleException("unknown ModLauncher generation '${targetModLauncher}': expected 10 or 11")
 }
 sourceSets.main.java.srcDir "src/ml${targetModLauncher}/java"
+// The registration, without which the adapter above is never called. ModLauncher finds a transformation
+// service only through META-INF/services/cpw.mods.modlauncher.api.ITransformationService, and this
+// repository had no such file on any branch - checked with git ls-tree across main, 1.20.x, 1.21.x and
+// 26.x, and confirmed by building: the jars carried zero META-INF/services entries. A jar that implements
+// the interface but never declares it is inert, so every released 1.20.x loader jar was. Both ModLauncher
+// generations carry the same service class, so this is one source root per generation, beside the one
+// holding the adapter.
+sourceSets.main.resources.srcDir "src/ml${targetModLauncher}/resources"
 
 // Which package the mod skeleton is written against. This is a source-root switch for the same
 // reason the adapter is one: no single source file can bridge it, because the difference is in the

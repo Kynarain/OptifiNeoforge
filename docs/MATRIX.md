@@ -3240,3 +3240,113 @@ Gradle 报 `Task '.20.6' not found in root project`(`cmd.exe` 下不加引号也
 **边界,如实写下**:本轮**只动了构建**。这台机器上没有 `optifineoforge-test` 这个 rig,所以**没有重跑任何
 一次实机启动** —— 上表十五行的实机判据仍然只有本文件更早那些记录,五条原本"没发"的线也仍然**没有发布**
 (发布是独立的一步,需要一条启动记录与 Release 正文)。构建通过不等于能跑,这一条不变。
+
+## 2026-09-19:把 rig 从零建起来,以及 1.21.4 的第一次真机对照
+
+上一节的边界是"这台机器上没有 rig,所以没有重跑实机启动"。这一轮先把 rig 建起来,然后跑第一条线。
+
+### 一、rig 是重建的,不是找回来的
+
+`optifineoforge-test` 在这台机器上不存在(按名字搜过 C:/D:/E:,也搜过 `build-rig-jar.ps1`、`*-chain.ps1`、
+`launch*.ps1`),git 历史里也没有:`git log --all --diff-filter=A --name-only` 里只有 `release/version.ps1`。
+所以下面这些是这一轮**新写的**,放在 `C:\Users\kynar\IdeaProjects\optifineoforge-test\`(仓库外):
+
+| 脚本 | 作用 |
+|---|---|
+| `fetch-libraries.ps1` | 读 `versions\*\*.json`,按 Mojang 的 rules 取本机该用的库,缺的用 `curl -6` 下到 `libraries\`,并把 `:natives-windows` 那类解到 `natives\` |
+| `seed-installer-toolchain.ps1` | 把 NeoForge 安装器自己要用的 NeoForm 工具链(neoform zip、binarypatcher、AutoRenamingTool、SpecialSource、installertools、jarsplitter)先下好 |
+| `build-jars.ps1` | 用仓库自己的离线工具装配两个 jar:给 loader 的 OptiFine jar,和带服务注册 + 成员还原计划的 loader jar |
+| `launch.ps1` | 按 profile JSON 合并父子、展开带 rules 的参数、替换占位符、去重 classpath、启动、限时、然后判 `Setting user` / `Sound engine started` / 本次崩溃报告 / stderr 字节数 |
+
+**安装器为什么必须先喂饱**:NeoForge 的安装器不只是下一个 profile JSON —— 它在本地跑 NeoForm 流水线,
+把 `libraries\net\neoforged\neoforge\21.4.149\neoforge-21.4.149-client.jar`(1637 个类)造出来,那才是运行时
+那份被 NeoForge 改过的游戏类。它自己会 `java.net.preferIPv4Stack=true`,于是下载成片超时
+(`SocketTimeoutException: Connect timed out`)——与本文件上一节量到的 IPv4 有损是同一件事。先按日志里的
+52 个坐标用 IPv6 补齐,安装器就一次通过(`Successfully installed client into launcher.`)。
+
+### 二、对照组:不带任何 mod,判定标准必须成立
+
+NeoForge 21.4.149 / 1.21.4,game dir 干净,不带 mod:
+
+```
+===== VERDICT: STARTED =====
+  Setting user         : True
+  Sound engine started : True
+  new crash reports    : 0
+  stderr bytes         : 0
+```
+
+也就是说 rig 本身是能复现本项目判据的:真的起了客户端、真的进了标题画面、声音引擎真的起来了、本次没有崩溃
+报告、stderr 一字未写。下面对照都在这个基础上。
+
+### 三、装上 OptiFine 与本项目的 loader 之后的四步,以及卡在哪
+
+1. **只放两个 jar(OptiFine + Gradle 产出的 loader),崩在 NeoForge 自己的方法上**:
+   `java.lang.NoSuchMethodError: 'void net.minecraft.client.gui.Gui.initModdedOverlays()'`,
+   栈是 `net.neoforged.neoforge.client.ClientHooks.initClientHooks` ← `Minecraft.<init>`。
+   原因是 OptiFine 的 1.21.4 构建用**它自己编译的**游戏类顶替运行时那份,而它编译时没有 NeoForge 后加的成员。
+   这正是本仓库 `MemberRestoreTransformer` 存在的理由 —— **而那份计划(Gradle 产物里没有)必须由 rig 生成**。
+
+2. **用仓库自己的工具生成还原计划**:`OptifinePipeline <mc jar> <optifine jar> <workdir>` 打补丁,
+   再 `MemberRestorePlan <patched jar> <runtime jar> <out> [donor dir]` 出计划。运行时那份游戏类是
+   `client-…-srg.jar` 叠上 `neoforge-…-client.jar`,叠完 8866 项、19928455 字节。实测计划:
+   **316 行、83 个类、83 个 donor**,其中就有出事的 `M Gui initModdedOverlays ()V`。
+   注意 `OptifinePipeline` 必须喂**混淆**的原版客户端:喂 SRG/官方名那份会
+   `OptiFine's patcher failed ... Base resource not found: fdp.class`。
+
+3. **计划装进去之后:`initModdedOverlays` 那个崩溃消失了,服务也真的被注册了**。日志里能读到
+   `OptifiNeoforgeTransformationService.onLoad, alongside [mixin, OptiFine, fml, OptifiNeoforge…]`、
+   `OptiFineTransformer: Targets: 474`、`Member restore plan: 314 members across 82 classes`,
+   以及逐类的 `Restored N members in … from its donor`。本次没有崩溃报告、**stderr 0 字节**、700 行 `[OptiFine]`。
+
+4. **然后卡在 FML 的 early window 上,而且是本项目已经记录过的那一个**:
+   `java.lang.IllegalStateException: Already building.`,栈是
+   `fml_earlydisplay.SimpleBufferBuilder.begin` ← `DisplayWindow.paintFramebuffer` ← `NeoForgeLoadingOverlay.render`
+   ← `GameRenderer.render`。本文件更早的 1.20.4 那条记的正是这个缺陷,并给出 `earlyWindowProvider = "none"`。
+   **这一轮把它的适用范围扩到了 21.4.149**:默认的 `fmlearlywindow` 在这里同样必崩。
+
+5. **而 `none` 在 21.4.149 上不是等价的替代**:换成 `none` 之后不再崩,但客户端**卡在加载界面**。
+   两次线程转储(相隔约 40 秒,`jstack`)都是同一个形状:Render 线程在
+   `Minecraft.runTick → RenderSystem.limitDisplayFPS → glfwWaitEventsTimeout` 里空转,**不是**卡住;
+   16 个 `Worker-Main-*` 全部 `WAITING (parking)`、ForkJoinPool 队列为空、CPU 不再增长;日志停在
+   OptiFine 的 28 行 `Pre-stitch:` 之后不再前进。也就是说重载没有卡在锁上,而是**没有任何人在做事**,
+   加载界面的移除也就永远不发生。`earlyWindowControl = false` 一起设上,结果相同。
+
+### 四、顺带量到的两件与本线无关但会误导的事
+
+- **最小化窗口 + 垂直同步会让 Render 线程死在 `glfwSwapBuffers`**:第一次转储是
+  `Window.updateDisplay → RenderSystem.flipFrame → glfwSwapBuffers`。去掉窗口最小化并把
+  `enableVsync:false` 写进 `options.txt` 之后,那次卡死消失(转储变成上面的 `glfwWaitEventsTimeout`)。
+  这与 `OptiFabric` 那份 DEVELOPMENT 记的成因一致。
+- **`optionsof.txt` 尾随换行会让 OptiFine 自己的解析器抛异常**:
+  `ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1` at `Options.loadOfOptions`。
+  文件非空、88 行、每行都有冒号,唯一异常之处是结尾多一个换行(按 `\r?\n` 切会多出一个空行)。
+  后续几次运行 stderr 是 0 字节,说明这不是每次都有。
+
+### 五、由此发现的一个**已发布产物**的缺陷(本轮已修)
+
+loader 的类实现 `cpw.mods.modlauncher.api.ITransformationService`,但**没有任何东西声明它**:
+四个分支(`main` / `1.20.x` / `1.21.x` / `26.x`)用 `git ls-tree` 都找不到
+`META-INF/services/cpw.mods.modlauncher.api.ITransformationService`,构建出来的 jar 里
+`META-INF/services/**` 条目数是 **0**。ModLauncher 只通过这个文件发现转换服务,所以
+**已发布的 1.20.x 与 1.21.x 那 11 个 loader jar 实际上是惰性的** —— 加载侧根本不会被调用。
+实测对照:手工补上这个文件之后,日志里立刻出现 `OptifiNeoforgeTransformationService.onLoad` 那一行;
+不补,同一份启动里本项目的加载侧一个字都没有。
+
+修法按本线已有的"每个代次一个源码根"的写法:`1.21.x` 上 `-Pmountpoint=modlauncher` 时加
+`src/ml11/resources`,`fml10` 时不加;`1.20.x` 上按 `-Pmodlauncher` 加 `src/ml10/resources` 或
+`src/ml11/resources`。改完实测:`1.21.4` 与 `1.20.4` / `1.20.6` / `1.20.2` 的 jar 里各 **1 条**,
+`1.21.11`(fml10)仍是 **0 条**。
+
+### 六、这一轮的边界(哪些**没有**成立)
+
+- **1.21.4 这一条没有通过**,卡在第三节第 5 步:客户端活着、没崩、stderr 干净、`Setting user` 也到了,
+  但 `Sound engine started` 没出现,加载界面没有移除。**所以本文件更早那条"1.21.4 已实机验证"的记录,
+  这一轮没有复现出来**,而这不是"跑得久一点"的问题(两次 300 秒、一次 450 秒的观察形状相同)。
+- 差异可能与还原计划的**来源**有关:本轮的计划是从**离线**补丁产物算出来的,而 1.21.4 上顶替游戏类的是
+  OptiFine 的**运行期** transformer。运行期那份是打在"NeoForge 已经改过的类"上的,它自带 NeoForge 的成员,
+  而离线那份不带 —— 于是按离线产物算出来的计划会把一批本来就在的成员再补一遍。计划里
+  `Stitcher`(logger 字段 + 两个 lambda)、`TextureAtlas.getTextures`、`SpriteResourceLoader.loadSprite`
+  都在贴图拼接这条路上,值得下一个回合从这里查。
+- 本轮**没有**跑其它 14 条线,也**没有**发布任何东西。
+
