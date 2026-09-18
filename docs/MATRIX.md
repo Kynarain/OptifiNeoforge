@@ -3328,8 +3328,9 @@ NeoForge 21.4.149 / 1.21.4,game dir 干净,不带 mod:
 loader 的类实现 `cpw.mods.modlauncher.api.ITransformationService`,但**没有任何东西声明它**:
 四个分支(`main` / `1.20.x` / `1.21.x` / `26.x`)用 `git ls-tree` 都找不到
 `META-INF/services/cpw.mods.modlauncher.api.ITransformationService`,构建出来的 jar 里
-`META-INF/services/**` 条目数是 **0**。ModLauncher 只通过这个文件发现转换服务,所以
-**已发布的 1.20.x 与 1.21.x 那 11 个 loader jar 实际上是惰性的** —— 加载侧根本不会被调用。
+`META-INF/services/**` 条目数是 **0**。ModLauncher 只通过这个文件发现转换服务,所以**已发布的 9 个 ModLauncher loader jar**
+(`1.20.x` 的 2 个、`1.21.x` 的 7 个)实际上是惰性的 —— 加载侧根本不会被调用(`26.1.2` 那一线不受影响:
+它的 Gradle 产物里没有 loader 类,挂载点是 OptiFine 自己的 `ClassProcessor`)。
 实测对照:手工补上这个文件之后,日志里立刻出现 `OptifiNeoforgeTransformationService.onLoad` 那一行;
 不补,同一份启动里本项目的加载侧一个字都没有。
 
