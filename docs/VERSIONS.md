@@ -145,24 +145,33 @@ curl.exe -s "https://bmclapi2.bangbang93.com/optifine/1.20.5"   # -> []
 
 OptiFine 在 1.20 系列里只发布了 1.20.1、1.20.2、1.20.4、1.20.6 的构建:**1.20.3 与 1.20.5 的构建列表都是空数组**,没有 OptiFine 就没有可移植的对象。NeoForge 侧这两版都有构建,但本项目只支持有 OptiFine 的版本。1.20.2 虽然只有唯一一个 preview,仍然在矩阵里,因为它确实存在构建。
 
-## 这条线内部的三处分界
+## 这条线内部的五处分界(前三处已实测)
 
 1. **NeoForge 坐标**:1.20.1 是 `net.neoforged:forge:1.20.1-47.1.106`,1.20.2 起是 `net.neoforged:neoforge`。
 2. **Java 版本**:1.20.1 / 1.20.2 / 1.20.4 是 17,1.20.6 起是 21。
-3. **元数据文件名**:1.20.4 及更早预期读 `META-INF/mods.toml`,1.20.6 及之后预期读 `META-INF/neoforge.mods.toml` —— 确切切换点待确认。
+3. **元数据文件名**(实测):1.20.1 – 1.20.4 的 FML 只读 `META-INF/mods.toml`,1.20.6 两个名字都读。判据是各版 FML loader jar 里的字面常量,并与各版 NeoForge 自己产物里的文件名一致(见下表)。
+4. **FML 的 API 包名**(实测):1.20.1 是 `net.minecraftforge.fml` + `net.minecraftforge.eventbus.api`;1.20.2 起是 `net.neoforged.fml` + `net.neoforged.bus.api`。判据是各版 FML jar 里的包结构 —— 47.1.106 的 loader jar 里没有 `net/neoforged/**`,20.2.88 的里没有 `net/minecraftforge/fml/**`。这决定了 mod 骨架源码要按哪一套 import 写,所以本分支按目标选源码根(`src/forge` 与 `src/neoforged`)。
+5. **NeoForge 侧登记用的 mod id 与版本**(实测):1.20.1 登记为 `forge` / `47.1.106`(产物坐标却是 `1.20.1-47.1.106`),1.20.2 起是 `neoforge` / 与该版坐标同名。判据是各版 NeoForge 自己产物里的 `META-INF/mods.toml`。依赖块里写错 id 会去要一份该发行里不存在的 mod。
+
+| 目标 | NeoForge 自己的元数据文件 | 登记 mod id | FML loader 读的名字 | OptiFine/ModLauncher |
+|---|---|---|---|---|
+| 1.20.1 | `META-INF/mods.toml` | `forge` | `mods.toml` | ModLauncher 10.0.9、fancymodloader 47.2.2 |
+| 1.20.2 | `META-INF/mods.toml` | `neoforge` | `mods.toml` | ModLauncher 10.0.9、fancymodloader 1.0.16 |
+| 1.20.4 | `META-INF/mods.toml` | `neoforge` | `mods.toml` | ModLauncher 10.0.9、fancymodloader 2.0.17 |
+| 1.20.6 | `META-INF/neoforge.mods.toml` | `neoforge` | 两个名字都读 | ModLauncher 11、fancymodloader 3.0.45 |
 
 因此这条线的四个产物各自独立构建、独立验证,**同一个 jar 不能跨版本使用**。
 
 ## 待确认(骨架阶段的已知缺口)
 
-- **`mods.toml` → `neoforge.mods.toml` 的确切切换点**:1.20.4 及更早是 Forge 时代的 `/NeoForge`(预期读 `META-INF/mods.toml`),1.20.6 及之后预期读 `META-INF/neoforge.mods.toml`;这中间是否有一段两种都认,以及 20.2.x / 20.4.x 是否也已经接受 `neoforge.mods.toml`,都没有实测。
-- **运行期命名空间的确切切换点**:预期 1.20.x 这条线是 **SRG**,官方名大约从 1.20.5/1.21 前后开始。本线的 1.20.6 到底属于哪一侧(还是要同时处理两套)没有核实,`docs/PLAN.md` 里的补丁管线要按这个结论才定得下来。
-- **元数据的字段要求**:各版本 `mods.toml` / `neoforge.mods.toml` 的必填字段(`loaderVersion` 的取值范围、`modLoader` 取值等)需要对着对应 NeoForge 版本的文档核对。
+- **`mods.toml` → `neoforge.mods.toml` 的确切切换点:已结清**(见上"五处分界"第 3 条)。1.20.1 – 1.20.4 只读 `META-INF/mods.toml`,1.20.6 两个名字都读 —— 也就是说 20.2.x / 20.4.x **并不**接受 `neoforge.mods.toml`,原先"预期只读旧名"这一半是对的,而"是否已经两种都认"这一问的答案是否。
+- **运行期命名空间的确切切换点**:预期 1.20.x 这条线是 **SRG**,官方名大约从 1.20.5/1.21 前后开始。本线的 1.20.6 到底属于哪一侧(还是要同时处理两套)没有核实,`docs/PLAN.md` 里的补丁管线要按这个结论才定得下来。**别与"五处分界"第 4 条混起来**:那条查的是 FML 的 **API 包名**(编译期的事),这条是 Minecraft 类的 **运行期名**(补丁负载按哪套命名空间存放),两者互不相干。
+- **元数据的字段要求**:各版本 `mods.toml` / `neoforge.mods.toml` 的必填字段(`loaderVersion` 的取值范围、`modLoader` 取值等)需要对着对应 NeoForge 版本的文档核对。**已核对一部分**:读各版 NeoForge 自己产物里的元数据,`loaderVersion` 分别是 1.20.1 的 `[24,]`、20.2.88 与 20.4.251 的 `[1,]`、20.6.141 的 `[3,]`,`modLoader` 都是 `javafml`,登记的 mod id 见上表。本分支模板写 `loaderVersion = "[1,)"`,对四者都成立 —— 它声明的是"本 mod 接受哪些 FML",不是"本 mod 要求哪个 FML"。
 - **OptiFine 的 ModLauncher 服务是否还会被自动发现**:Forge 时代由 `ModDirTransformerDiscoverer` 从 `mods/` 里发现第三方的 `ITransformationService`。NeoForge 20.2 / 20.4 / 20.6 是否保留这条发现路径、1.20.1 的 `net.neoforged:forge` 是否与之一致,都需要实测;若不再支持,就得改走 NeoForge 自己的转换 API。
 - **OptiFine 侧的补丁负载**:这四个版本的 OptiFine jar 用的是哪种命名空间的补丁,以及 `optifine.Patcher` 在 Forge 时代的客户端 jar 上是否仍按老流程工作,未验证。
 - **1.20.2 的唯一 preview**:`I7_pre1` 是否带上完整补丁负载、能否作为移植对象,未验证;这是本线最薄的一环。
-- **1.20.1 的 `47.1.x` 与 20.x 的差异边界**:`net.neoforged:forge` 与 `net.neoforged:neoforge` 在 ModLauncher 版本、元数据读取与类转换 API 上的差异范围不清楚,可能需要两套实现。
-- **"正式版"不等于"可用"**:构建列表只说明构建存在,不代表能在 NeoForge 上跑通;本线尚无任何实测记录。
+- **1.20.1 的 `47.1.x` 与 20.x 的差异边界:部分结清。** 已实测相同:两者都用 `cpw.mods:modlauncher:10.0.9`,元数据文件名都是 `META-INF/mods.toml`。已实测不同:FML 的 API 包名、事件总线坐标(`net.minecraftforge:eventbus` 对 `net.neoforged:bus`)、登记的 mod id(`forge` 对 `neoforge`)。这三处本分支都已按目标处理(源码根 + 显式类路径 + 元数据占位符)。类转换 API 一侧是否还有别的差异,仍未核实。
+- **"正式版"不等于"可用"**:构建列表只说明构建存在,不代表能在 NeoForge 上跑通。本线四条都已有实机启动记录,逐条见 `docs/MATRIX.md`。
 
 ## 数据来源
 

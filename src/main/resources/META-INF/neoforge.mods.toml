@@ -1,8 +1,8 @@
-# Mod metadata for this line. ModDevGradle expands the placeholders below from
-# gradle.properties at build time (see build.gradle), and NeoForge reads this file from
-# META-INF/neoforge.mods.toml inside the jar.
+# Mod metadata for this line. build.gradle expands the placeholders below at build time, and the
+# name this file is written under inside the jar is chosen per target as well: the 20.2 and 20.4
+# loaders read META-INF/mods.toml and only that, while 20.6 reads either name. See build.gradle.
 #
-# 26.1.2 is a client-side concern only: OptiFine is a client mod and so is this loader.
+# This line is a client-side concern only: OptiFine is a client mod and so is this loader.
 
 modLoader = "javafml"
 # The FancyModLoader version range this mod needs. NeoForge's own FML is always present,
@@ -19,10 +19,16 @@ displayName = "OptifiNeoforge"
 description = '''Loads OptiFine into NeoForge. Put the OptiFine jar for ${minecraft_version} next to this mod; OptifiNeoforge patches and applies it at runtime. OptiFine itself is not bundled or redistributed.'''
 authors = "kynarain"
 
+# Both the id and the version below are the mod's, not the Maven artifact's, and on 1.20.1 the two
+# pairs differ from every other target on this line: NeoForge 47.1.106 declares itself as mod id
+# "forge" (displayName "NeoForge") at version 47.1.106, while its artifact is
+# net.neoforged:forge:1.20.1-47.1.106. Naming "neoforge" there would require a mod that the
+# distribution does not contain. From 20.2.88 onwards the id is "neoforge" and the mod version
+# equals the artifact version.
 [[dependencies.optifineoforge]]
-modId = "neoforge"
+modId = "${neoforge_modid}"
 type = "required"
-versionRange = "[${neoforge_version},)"
+versionRange = "[${neoforge_modversion},)"
 ordering = "NONE"
 side = "CLIENT"
 

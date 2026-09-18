@@ -3123,3 +3123,106 @@ OptiFine jar 合成 —— 上面每一条验收数字都是那样量出来的�
 正文里写该线的验收数字与已接受缺陷。逐个 Release 的 URL、字节数与 SHA-256 见上表
 (Release URL 形如 `https://github.com/Kynarain/OptifiNeoforge/releases/tag/v1.0.0+mc1.21.4`)。
 标签全部是附注标签(`git tag -a`),消息里带产物名、字节数与 SHA-256;`git push origin <tag>` 逐个推送。
+
+## 2026-09-18(下半):五条"构建不出来"的线全部结清
+
+上一节把它们的共同点写成了一句话:"真正属于'构建不出来'的只有 1.20.1、1.20.2 与
+1.21.9/1.21.10/1.21.11 五条"。这一轮把五条都打通了。
+
+### 一、1.21.9 / 1.21.10 / 1.21.11:挂载点源码根按代次分开(`1.21.x`)
+
+复现:`-Pmc=1.21.11 -Pneoforge=21.11.45` 死在 `:compileJava`,**100 个错误**,全部是
+`错误: 程序包cpw.mods.modlauncher.api不存在`,落在实现 ModLauncher 接口的那批类上 —— 那批类放在
+`src/main`,而这三版 NeoForge 已经没有 ModLauncher。
+
+做法与 `1.20.x` 早就用过的 `src/ml10` / `src/ml11` 同形:15 个类移到 `src/ml11/java`,由新的
+`-Pmountpoint` 决定编不编 —— `modlauncher`(1.21 – 1.21.8)编,`fml10`(1.21.9 起)不编;非默认目标
+**必须**给这个开关,与既有的 `-Pneoforge` 同一条规矩。
+
+实测(每条各构建一次):1.21.9(21.9.16-beta)、1.21.10(21.10.64)、1.21.11(21.11.45)全部
+`BUILD SUCCESSFUL`,产物 39 项、109 765 字节(1.21.9 多 4 字节,是元数据里更长的 NeoForge 串),
+`loader/**` **0 个类**、离线工具 32 个类,即"加载器侧工具 + mod 骨架"。默认目标 1.21.4 未受影响:
+161 235 字节、16 个 loader 类,与本轮之前同尺寸。**这批类的移动是纯改名,15 个文件各 0 行改动。**
+
+### 二、1.20.1 与 1.20.2:绕开 ModDevGradle,按显式类路径编译(`1.20.x`)
+
+1.20.1 的结法就在更早两节的候选名单里("an explicit dependency on net.neoforged:forge with the
+plugin's resolver out of the way")。本轮把它做成:这两个目标**不应用** ModDevGradle,由 `java` 插件加一张
+显式 `compileOnly` 清单构建。坐标取自各版自己的元数据 —— 20.2.88 的 POM 与 1.20.1-47.1.106 的 userdev
+`config.json` 都点名 `cpw.mods:modlauncher:10.0.9`,FML 分别是 fancymodloader 1.0.16 与 47.2.2。
+
+**这两个目标不需要 Minecraft**:本分支源码里没有一处 `net.minecraft` / `com.mojang` 的 import。所以既没有
+Minecraft 下载,也没有反编译与 NeoForm,构建 1 – 6 秒完成;代价是没有 `runClient` 开发运行。
+
+清单里有两处是踩出来的:
+- `@Mod` 注解**不在 loader jar 里**,它在 `language-java`(javafml 语言提供者)里,`ModContainer` 在 `core` 里。
+  只列 `loader` 时 `net.neoforged.fml.common.Mod` 找不到 —— 是逐个 jar 查了才定下来的。
+- `DonorVerifier` 用了 `CheckClassAdapter`,即 **`asm-util`**。在 ModDevGradle 目标上它是从 NeoForge 发行
+  传递进来的、从来没被点名过,在这条显式清单里必须写出来(否则 `程序包org.objectweb.asm.util不存在`)。
+  这一条对四条线都成立,已经补进 `build.gradle` 的公共依赖。
+
+### 三、新查出来的第三处分界:登记用的 mod id 随版本变
+
+1.20.1 的 NeoForge 47.1.106 在自己的 `META-INF/mods.toml` 里登记为 **mod id `forge`**(displayName 仍是
+"NeoForge")、版本 `47.1.106`,而它的产物坐标是 `net.neoforged:forge:1.20.1-47.1.106`。20.2.88 起才是
+`neoforge` 且与坐标同名。依赖块照抄别的版本写 `neoforge`,在 1.20.1 上会去要一份那份发行里**根本没有**的 mod。
+
+同一轮把**元数据文件名**的切换点量清了(`docs/VERSIONS.md` 挂着的"待确认"之一):
+
+| 目标 | 该版 NeoForge 自己的元数据文件 | 登记 mod id | FML loader 读的名字 |
+|---|---|---|---|
+| 1.20.1 (47.1.106) | `META-INF/mods.toml` | `forge` | `mods.toml` |
+| 1.20.2 (20.2.88) | `META-INF/mods.toml` | `neoforge` | `mods.toml` |
+| 1.20.4 (20.4.251) | `META-INF/mods.toml` | `neoforge` | `mods.toml` |
+| 1.20.6 (20.6.141) | `META-INF/neoforge.mods.toml` | `neoforge` | 两个名字都读 |
+
+两路判据一致:各版 FML loader jar 里的字面常量,**以及**各版 NeoForge 自己产物里的文件名。两个 NeoForge
+universal jar 里两种字面量都没有,所以做决定的确实是 loader jar,不是它。
+
+**顺带改正一处**:1.20.4 的 jar 以前带的是 `neoforge.mods.toml`,而 20.4.251 的 FML 只读 `mods.toml`,
+那份元数据对它等于不存在。现在四个版本写出的名字都与该版自己的产物一致。这是**构建层面**的改正,
+**没有重跑实机启动**,所以已发布 jar 的正文说明没有跟着动。
+
+还有一处本轮量了、但**不是元数据而是源码**的分界:FML 的 API 包名 —— 1.20.1 是 `net.minecraftforge.fml` +
+`net.minecraftforge.eventbus.api`,1.20.2 起是 `net.neoforged.fml` + `net.neoforged.bus.api`。一份源码跨不过去,
+所以按目标选源码根(`src/forge` 与 `src/neoforged`),与 `src/ml10`/`src/ml11` 同形。实测:1.20.1 的
+`OptifiNeoforge.class` 常量池里只有 `net/minecraftforge/**`,没有一处 `net/neoforged`。
+
+### 四、这一轮的网络实况:坏的是 IPv4 那一侧
+
+上一节把构建失败归给"网络成段断连",这一轮量到了更具体的原因:
+
+`maven.neoforged.net` 在 CDN77 后面,同时有 AAAA 与 A 记录。在这台机器上 **IPv4 那一侧是有损的**:
+`curl -4` 连发五次,两次握手直接失败、两次成功、一次 20 秒超时(成功那两次各约 15 – 17 秒);同一 URL
+`curl -6` **1.7 秒 200**。Java 的 HttpClient(NeoForm 的下载器)走的正是坏的那一侧,所以报的是
+`SSLHandshakeException: Remote host terminated the handshake` 与 `ConnectException`。
+
+三处具体表现:
+- `mergetool-2.0.3-fatjar.jar` 反复取不下来,报"服务器可能不支持客户端请求的 TLS 版本",而 curl 一取就有;
+- `asm-commons-9.8.jar` 更隐蔽:缓存目录
+  `~/.gradle/caches/neoformruntime/artifacts/org/ow2/asm/asm-commons/9.8/` **存在但是空的**,于是每次构建
+  都死在同一个文件上。按该路径用 IPv6 补种后构建立刻通过;
+- 1.20.4 的 `minecraft_1.20.4_client_mappings.txt` 下到 2 390 577 字节后**彻底停住**(连续 35 秒字节数不变),
+  同样 IPv6 取回(8 897 012 字节)后重试成功。
+
+处置:`JAVA_TOOL_OPTIONS=-Djava.net.preferIPv6Addresses=true`(对所有 JVM 生效,包括 NeoForm fork 出来的
+那个 `java.exe`),以及对停住的下载按缓存路径直接补种。**结论:这类报错先看 IPv4/IPv6,再谈"重试"。**
+
+另一条与网络无关但同样费时间的:PowerShell 里 `-P` 参数**必须加引号**。裸写 `-Pmc=1.20.6` 会被拆开,
+Gradle 报 `Task '.20.6' not found in root project`(`cmd.exe` 下不加引号也可以)。文档示例已改成带引号。
+
+### 五、这一轮的结果与边界
+
+| 分支 | 目标 | 结果 | 产物 |
+|---|---|---|---|
+| `1.21.x` | 1.21.9 / 21.9.16-beta | `BUILD SUCCESSFUL` | 39 项、109 769 字节、0 个 loader 类 |
+| `1.21.x` | 1.21.10 / 21.10.64 | `BUILD SUCCESSFUL` | 39 项、109 765 字节、0 个 loader 类 |
+| `1.21.x` | 1.21.11 / 21.11.45 | `BUILD SUCCESSFUL` | 39 项、109 765 字节、0 个 loader 类 |
+| `1.20.x` | 1.20.1 / 1.20.1-47.1.106 | `BUILD SUCCESSFUL` | 57 项、159 735 字节、18 个 loader 类 |
+| `1.20.x` | 1.20.2 / 20.2.88 | `BUILD SUCCESSFUL` | 57 项、159 741 字节、18 个 loader 类 |
+| `1.20.x` | 1.20.4 / 20.4.251(默认) | `BUILD SUCCESSFUL` | 57 项、159 744 字节、18 个 loader 类 |
+| `1.20.x` | 1.20.6 / 20.6.141 | `BUILD SUCCESSFUL` | 57 项、159 959 字节、18 个 loader 类 |
+
+**边界,如实写下**:本轮**只动了构建**。这台机器上没有 `optifineoforge-test` 这个 rig,所以**没有重跑任何
+一次实机启动** —— 上面七条的实机判据仍然只有本文件更早那些记录,五条线也仍然**没有发布**(发布是独立的一
+步,需要一条启动记录与 Release 正文)。构建通过不等于能跑,这一条不变。

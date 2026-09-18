@@ -1,13 +1,15 @@
 plugins {
-    // NeoForge's own Gradle plugin (see settings.gradle for its repository). It resolves
-    // Minecraft and NeoForge, wires the development runs and builds the mod jar.
-    id 'net.neoforged.moddev'
+    // `java` is always needed; ModDevGradle (NeoForge's own Gradle plugin, see settings.gradle for
+    // its repository) is applied further down, and only for the targets it can actually resolve.
+    // Two of this line's four targets cannot use it at all - see the legacy block below.
+    id 'java'
+    id 'net.neoforged.moddev' apply false
 }
 
-// The 1.21.x line covers several Minecraft versions, so the target is switchable:
+// The 1.20.x line covers several Minecraft versions, so the target is switchable:
 //
 //   .\gradlew build                        -> the default target from gradle.properties
-//   .\gradlew build -Pmc=1.21.8 -Pneoforge=21.8.52
+//   .\gradlew build -Pmc=1.20.6 -Pneoforge=20.6.141 -Pmodlauncher=11 -Ptarget_java_version=21
 //
 // NeoForge changes with the Minecraft version, and no table of those pairings is baked in here:
 // a version that has not been verified on this line would otherwise look supported. When -Pmc
@@ -25,6 +27,81 @@ if(targetNeoForge == null){
     }
     targetNeoForge = defaultNeoForge
 }
+
+// Two of this line's four targets cannot be resolved by ModDevGradle at all, and in both cases the
+// reason is in NeoForge's own published metadata rather than in anything this project controls:
+//
+//   * 1.20.1's NeoForge is the Forge-era coordinate net.neoforged:forge:1.20.1-47.1.106. Its POM is
+//     packaging=pom with no dependencies, and the real files are classified (-universal.jar,
+//     -userdev.jar, -installer.jar; there is no plain .jar and no .module). ModDevGradle asks for
+//     net.neoforged:neoforge:<version>, so it has nothing to resolve.
+//   * No 20.2.x build publishes Gradle Module Metadata: measured, 20.2.88 has no .module file while
+//     20.4.251 and 20.6.141 both do. Without that metadata the neoforge-moddev-bundle variant does
+//     not exist for the 20.2 line, so ModDevGradle cannot build its development environment.
+//
+// What neither target needs is Minecraft. Every source in this branch imports only
+// cpw.mods.modlauncher, FML, ASM and log4j - there is not one net.minecraft or com.mojang import in
+// the tree - so their compile classpath is the short explicit list below rather than a whole
+// deobfuscated game, and building them involves no Minecraft download, no decompile and no NeoForm
+// run. The list is what the sources actually name, and each entry was checked to contain it:
+//
+//   cpw.mods:modlauncher                          cpw.mods.modlauncher.api.*
+//   fancymodloader:core                           fml/ModContainer
+//   fancymodloader:language-java                  fml/common/Mod   (the annotation is the javafml
+//                                                 language provider's, not the loader's - measured)
+//   the bus, under whichever name that era uses   the IEventBus the mod constructor takes
+//   org.apache.logging.log4j:log4j-api            LogManager / Logger
+//
+// The versions are the ones each NeoForge version names itself: 20.2.88's POM lists
+// cpw.mods:modlauncher:10.0.9 and fancymodloader 1.0.16, and 1.20.1-47.1.106's userdev config.json
+// lists cpw.mods:modlauncher:10.0.9 and fancymodloader 47.2.2. They are resolved without their own
+// transitive dependencies on purpose: the names above are all that is imported, and following the
+// graph instead drags in com.mojang:* artifacts that live on Mojang's library host rather than on
+// either of the two repositories named below.
+//
+// 1.20.1's entry also has to name the Forge-era event bus, because that is what 47.x uses:
+// net.minecraftforge:eventbus, not net.neoforged:bus. That difference is not cosmetic - it decides
+// the package the mod skeleton is written against - so it is a source-root switch of its own, see
+// `targetModPackage` below.
+def legacyCompileClasspath = [
+    '1.20.1': ['cpw.mods:modlauncher:10.0.9',
+               'net.neoforged.fancymodloader:core:47.2.2',
+               'net.neoforged.fancymodloader:language-java:47.2.2',
+               'net.minecraftforge:eventbus:6.0.5',
+               'org.apache.logging.log4j:log4j-api:2.19.0'],
+    '1.20.2': ['cpw.mods:modlauncher:10.0.9',
+               'net.neoforged.fancymodloader:core:1.0.16',
+               'net.neoforged.fancymodloader:language-java:1.0.16',
+               'net.neoforged:bus:7.2.0',
+               'org.apache.logging.log4j:log4j-api:2.19.0'],
+]
+def legacyTarget = legacyCompileClasspath.containsKey(targetMc)
+
+// Which metadata filename this target's FML actually reads, measured by pulling the literal
+// META-INF constants out of the FML loader jar each NeoForge version depends on:
+//
+//   fancymodloader 1.0.16 (NeoForge 20.2.88)  -> only META-INF/mods.toml
+//   fancymodloader 2.0.17 (NeoForge 20.4.251) -> only META-INF/mods.toml
+//   fancymodloader 3.0.45 (NeoForge 20.6.141) -> both names
+//
+// Neither NeoForge universal jar contains either literal, so the loader jar is where the choice is
+// made. The template in this repository is META-INF/neoforge.mods.toml, which the 20.2 and 20.4
+// loaders do not look for under that name: a jar carrying only the newer name has no mod metadata
+// as far as they are concerned. The name written into the jar therefore follows the target, and
+// 1.20.6 - which reads both - keeps the newer name so its released artifact does not change.
+def targetMetadataFile = (targetMc == '1.20.6') ? 'neoforge.mods.toml' : 'mods.toml'
+
+// The dependency block in that metadata has to name NeoForge by its *mod* id and version, which are
+// not always the artifact's. Measured by reading each distribution's own META-INF/mods.toml:
+//
+//   47.1.106  (1.20.1)               -> modId "forge",    mod version 47.1.106
+//   20.2.88 / 20.4.251 / 20.6.141    -> modId "neoforge", mod version = artifact version
+//
+// So 1.20.1 is the one target where both differ: it is "forge" at 47.1.106 while its artifact is
+// net.neoforged:forge:1.20.1-47.1.106. Requiring a mod named "neoforge" there would ask for
+// something that distribution does not contain.
+def targetNeoForgeModId = (targetMc == '1.20.1') ? 'forge' : 'neoforge'
+def targetNeoForgeModVersion = targetNeoForge.replaceFirst(/^\d+(\.\d+)+-/, '')
 
 version = "${project.mod_version_base}+mc${targetMc}"
 group = project.maven_group
@@ -58,21 +135,58 @@ if(!(targetModLauncher in ['10', '11'])){
 }
 sourceSets.main.java.srcDir "src/ml${targetModLauncher}/java"
 
-neoForge {
-    version = targetNeoForge
+// Which package the mod skeleton is written against. This is a source-root switch for the same
+// reason the adapter is one: no single source file can bridge it, because the difference is in the
+// import statements themselves. Measured from the distributions rather than assumed - NeoForge
+// 47.1.106's FML jar contains net/minecraftforge/fml/** and its bus is net.minecraftforge:eventbus
+// (package net.minecraftforge.eventbus.api), while NeoForge 20.2.88's FML jar contains
+// net/neoforged/fml/** and its bus is net.neoforged:bus. So 1.20.1 is the one target on this line
+// that needs the forge spelling, and it is the only one where `-Pmc=1.20.1` changes this root.
+def targetModPackage = (targetMc == '1.20.1') ? 'forge' : 'neoforged'
+sourceSets.main.java.srcDir "src/${targetModPackage}/java"
 
-    // This mod is client only, so only the client run is set up. `runClient` is for
-    // development; a released jar is a normal mod jar in build/libs.
-    runs {
-        client {
-            client()
+// ModDevGradle is applied here rather than in the plugins block so that the two legacy targets can
+// skip it: it cannot resolve either of their NeoForge versions (see legacyCompileClasspath above).
+// They are built by the Java plugin alone, against the explicit compile classpath.
+if(!legacyTarget){
+    apply plugin: 'net.neoforged.moddev'
+}
+
+if(!legacyTarget){
+    neoForge {
+        version = targetNeoForge
+
+        // This mod is client only, so only the client run is set up. `runClient` is for
+        // development; a released jar is a normal mod jar in build/libs.
+        runs {
+            client {
+                client()
+            }
+        }
+
+        mods {
+            optifineoforge {
+                sourceSet sourceSets.main
+            }
         }
     }
+}
 
-    mods {
-        optifineoforge {
-            sourceSet sourceSets.main
+// The legacy targets take their classpath from Maven directly, so they need the repositories named
+// here; ModDevGradle adds its own for the targets it handles, which is why the rest of this line
+// declares none. maven.minecraftforge.net is on the list for 1.20.1's eventbus only - it is not on
+// maven.neoforged.net, which is where the rest of these coordinates come from.
+if(legacyTarget){
+    repositories {
+        maven {
+            name = 'NeoForged'
+            url = 'https://maven.neoforged.net/releases'
         }
+        maven {
+            name = 'MinecraftForge'
+            url = 'https://maven.minecraftforge.net/'
+        }
+        mavenCentral()
     }
 }
 
@@ -84,6 +198,17 @@ dependencies {
     compileOnly "org.ow2.asm:asm-tree:${project.asm_version}"
     compileOnly "org.ow2.asm:asm-commons:${project.asm_version}"
     compileOnly "org.ow2.asm:asm-analysis:${project.asm_version}"
+    // DonorVerifier uses CheckClassAdapter, so it needs asm-util too. On the ModDevGradle targets
+    // this arrived transitively from the NeoForge distribution and was never named; the legacy
+    // targets resolve a short explicit list, where it has to be. Measured: without it,
+    // ":compileJava" stops with "程序包org.objectweb.asm.util不存在" in DonorVerifier.
+    compileOnly "org.ow2.asm:asm-util:${project.asm_version}"
+
+    // For the two targets ModDevGradle cannot resolve, the same classpath ModDevGradle would have
+    // contributed, named explicitly and narrowed to what this branch's sources actually import.
+    if(legacyTarget){
+        legacyCompileClasspath[targetMc].each { compileOnly(it) { transitive = false } }
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -121,18 +246,29 @@ tasks.named('processResources') {
     inputs.property 'version', project.version
     inputs.property 'minecraft_version', targetMc
     inputs.property 'neoforge_version', targetNeoForge
+    inputs.property 'neoforge_modid', targetNeoForgeModId
+    inputs.property 'neoforge_modversion', targetNeoForgeModVersion
+    inputs.property 'metadata_file', targetMetadataFile
     filteringCharset = 'UTF-8'
 
     filesMatching('META-INF/neoforge.mods.toml') {
         expand 'version': project.version,
                 'minecraft_version': targetMc,
-                'neoforge_version': targetNeoForge
+                'neoforge_version': targetNeoForge,
+                'neoforge_modid': targetNeoForgeModId,
+                'neoforge_modversion': targetNeoForgeModVersion
     }
+
+    // The template keeps its newer name in the source tree; what the jar carries is the name this
+    // target's FML was measured to read. See targetMetadataFile above.
+    rename 'neoforge\\.mods\\.toml', targetMetadataFile
 }
 
 tasks.named('build') {
     doFirst {
+        def legacyNote = legacyTarget ? ', legacy classpath (no ModDevGradle)' : ''
         println "Building ${project.archives_base_name} ${project.version} (Minecraft ${targetMc}, " +
-                "NeoForge ${targetNeoForge}, Java ${targetJavaVersion})"
+                "NeoForge ${targetNeoForge}, Java ${targetJavaVersion}, ModLauncher ${targetModLauncher}, " +
+                "mod package ${targetModPackage}, metadata ${targetMetadataFile}${legacyNote})"
     }
 }
