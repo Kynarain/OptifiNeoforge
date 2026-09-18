@@ -3591,3 +3591,62 @@ Reparent plan covers net.minecraft.world.level.block.entity.BlockEntity:
 **记这一条的原因比它本身重要**:本项目把"`[OptiFine]` 行数"当验收数字之一,而这一次它恰好是唯一能戳破
 假通过的那一列。判据里的每一列都不是装饰。
 
+## 2026-09-19(第五段):reparent 修好了,而它露出的是一条更深的分歧
+
+### 一、reparent 现在真的执行了(`1.21.x` `6f66c27`)
+
+上一节量到"交给 transformer 的那份 `input`,父类已经是 Forge 类型"。据此改掉那个前置判断:计划覆盖的类
+**即使两份的父类相同也照做**,而"这份是不是运行时那份"改由"它是不是已经挂着 Forge 父类"来判定;判定为
+不可用时,`reparent()` 跳过它已经无法做的那次比对(计划本来就是 `HierarchyPlan` 用同一批 jar 量出来的),
+并且**两种结果都各打一行日志**。
+
+实测(1.21.8):
+
+```
+Re-parented net.minecraft.world.level.block.entity.BlockEntity from the Forge type
+  net/minecraftforge/common/capabilities/CapabilityProvider$BlockEntities onto the runtime's …
+```
+
+`VerifyError: Bad type on operand stack` **从日志里消失了**,`Failed to wait for future Mod Construction` 也不再出现。
+这条线**仍未通过**,但卡点换到了下一处。
+
+### 二、新卡点的**根因已经查到数据层**,不是猜的
+
+```
+ClassFormatError: Illegal field modifiers in class
+  net/minecraft/client/renderer/block/model/BlockStateModel$Unbaked: 0x9
+```
+
+`0x9` = `public static`(缺 `final`),而**接口里的字段必须是 `public static final`**。两边的实测:
+
+| | 形态 | 那两个字段 |
+|---|---|---|
+| 运行时的类(`runtime-1.21.8.jar`) | `public interface …` | `public static final … SINGLE_MODEL_CODEC` / `WEIGHTED_MODEL_CODEC` |
+| **donor**(`plan\donors\…BlockStateModel$Unbaked.class`) | `public class … implements …` —— **被写成普通类** | `public static …`(**没有 final**) |
+
+也就是说:**`MemberRestorePlan` 把 donor 写成普通类、并把字段的 `final` 去掉**(去掉是为了让运行时能由
+`optifineoforge$init$…` 填值),而 `MemberRestoreTransformer` **原样**把字段复制进目标类 —— 目标是接口,于是
+`0x9` 非法。`PatchedClassTransformer` 里**有**这条规则(接口字段一律强制 `public static final`,本文件在 26.x 的
+注释里也写过"接口的字段必须是 public static final,否则 JVM 直接以 ClassFormatError 拒绝"),但
+`MemberRestoreTransformer` 里**没有**。
+
+### 三、由此露出的更深一层(下一问)
+
+把三件事并排看:
+
+1. 1.21.8 上 `OptiFineTransformer` **不打印** `Targets:`(1.21.4 上打印 `474`),但那份 `input` 的父类**已经是
+   Forge 类型** —— 说明**先换类的是 OptiFine**,我们的 transformer 拿到的是它换过的那一份;
+2. 因此本文件的判断里,"保持运行时的版本"这一类决定(那 3 个 `Left ... alone`)在 1.21.8 上**并不会真的
+   拿到运行时的版本**,而是留在 OptiFine 的那一份上;
+3. 上面第二节的崩溃正是这一类的后果之一。
+
+**所以下一问不是某个字段的标志位,而是**:loader 需要拿到**真正的运行时类**(它已经捕获了 module layer manager,
+`OptifiNeoforgeTransformationService.layers()` 就是),而不是把 `input` 当成运行时那份。
+
+### 四、边界
+
+- **1.21.4 仍然通过**(这一轮没碰它的路径);**1.21.8 仍未通过**,但它已经越过换装与 mod 构造阶段。
+- 这一轮改了 `PatchedClassTransformer` 的判定与 `reparent` 的空引用容忍;**没有**动 `MemberRestoreTransformer`
+  (第二节那条修法还没做)。
+- 其余 13 条线没有跑,**没有发布任何东西**。
+
