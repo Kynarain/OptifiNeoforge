@@ -66,6 +66,11 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 
 	@Override
 	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
+		if(LISTENERS_TO_MARK.contains(input.name)) {
+			// The delivery half of the pair: this transformer was handed the class at all. Without it an
+			// absent reloadEntered line cannot be told apart from a class that never arrived here.
+			ReloadProbe.saw(input.name.replace('/', '.'));
+		}
 		for(MethodNode method : input.methods) {
 			if((RELOAD.equals(method.name) || RESOURCE_MANAGER_RELOAD.equals(method.name))
 					&& LISTENERS_TO_MARK.contains(input.name)) {
