@@ -167,6 +167,16 @@ Worker 线程都在等活。真正的缺口是**声音引擎没起来**,而原�
 (OptiFine 自身 jar 上剩 4 个),注册阶段踩到的就是这个。所以 1.21 下一步**不是**继续改加载器,而是把映射表换成完整的
 (NeoForm 的 `MERGE_MAPPINGS`,用 installertools),让剩余引用归零 —— `SrgRemap` 的验收口径本来就是"改写正确的负载不剩 SRG 引用"。
 
+**但这条推断有一处对不上,记下来给下一轮。** 栈里的调用点是
+`net.minecraft.client.renderer.texture.atlas.SpriteResourceLoader.lambda$create$0(SpriteResourceLoader.java:32)`,而按字节扫描,
+**两个成品 jar 里都没有 `m_215509_` 这个字符串**:加载器 jar 里那个类的条目(`optifineoforge/patched/.../SpriteResourceLoader.class`)
+含的是 `metadata`(官方名),prepared OptiFine jar 同样为 0。也就是说这条引用不是我们发出去的那份类里的,来源还没查到。
+它对应的映射本身是存在的、也是对的(实测:`joined.tsrg` 的 `f ()Laug; m_215509_` ↔ 自制表里的 `f ()Laug; metadata`,
+官方名 `ResourceMetadata`),所以"表里缺这条"不是原因。下一轮的第一步应该是**把加载期真正被装载的那份类 dump 出来**
+(在转换器里把最终 `ClassNode` 写到临时文件),而不是继续猜;在那之前,这条线的"395 个未改写引用导致注册失败"只是**未被证实的解释**,
+不能当成结论。
+
+
 这一轮 1.21 的实测账: `Setting user` 通过、本次运行崩溃报告 **0**、stderr **14 141 字节(与记录逐字相同)**,`Sound engine started` 不通过,
 `[OptiFine]` 原始 **299** 行(记录 252),图集 `Created:` 0(这条线的日志里本来也没有这一行)。
 
