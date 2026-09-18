@@ -14,7 +14,9 @@
 
 > **状态:15 / 15 条线已实机验证,其中 10 条已发布 `1.0.0`。** 判据是**一次真实启动**,不是"能编译":每种 Minecraft 版本都用自己的 NeoForge 与自己的 OptiFine 构建各跑一次,客户端进到标题画面(`Setting user`)、声音引擎启动(`Sound engine started`)、本次运行**没有写出崩溃报告**,并且 stderr 与记录一致。逐条的实测数字见下面的矩阵,每个已发布的版本附**一个** jar(加载器侧,不含 OptiFine)。
 >
-> **另有 5 条已验证但没有发布,原因是构建而不是验证**(每条都在下文注明):`1.20.1`(那一代 NeoForge 是旧的 `net.neoforged:forge` 坐标,Gradle 插件解析不到)与 `1.20.2`(`20.2.88` 在 Maven 上没有 ModDevGradle 需要的 `neoforge-moddev-bundle` 变体);`1.21.9` / `1.21.10` / `1.21.11`(这三版 NeoForge 已经没有 ModLauncher,`1.21.x` 分支的 `src/main` 编不过 —— 实测 1.21.11 与 1.21.10 都死在 `:compileJava`,报 `程序包cpw.mods.modlauncher.api不存在`;这三条的挂载点是我们自己的 `ClassProcessor`,它由 rig 编译进载荷 jar,而那份 jar 含 OptiFine 的类、不分发)。
+> **另有 5 条已验证但没有发布。** 其中 **2 条仍卡在构建工具**,都在 `1.20.x` 线:`1.20.1`(那一代 NeoForge 是旧的 `net.neoforged:forge` 坐标,Gradle 插件解析不到)与 `1.20.2`(整个 `20.2.x` 系列在 Maven 上都没有 Gradle Module Metadata,ModDevGradle 因此取不到它需要的 `neoforge-moddev-bundle` 变体 —— 实测 `20.2.88` 没有 `.module`,而 `20.4.251` 与 `20.6.141` 有)。
+>
+> 另外 **3 条(`1.21.9` / `1.21.10` / `1.21.11`)的构建阻塞已经解除,但仍未发布**。原来的原因是:`1.21.x` 分支把实现 `cpw.mods.modlauncher.api.ITransformationService` 的那批类放在 `src/main`,而这三版 NeoForge 已经没有 ModLauncher,`:compileJava` 直接失败(实测 1.21.11 报 `程序包cpw.mods.modlauncher.api不存在` 共 100 个错误)。这批类现在移进了自己的源码根,由 `-Pmountpoint` 按代次选择,三条线的构建各实测通过一次。但它们的挂载点是我们自己的 `ClassProcessor`(由 rig 编译进载荷 jar,那份 jar 含 OptiFine 的类、不分发),所以这三条产出的 jar 只是加载器侧工具 + mod 骨架,**发布本身是独立的一步,尚未做**;这次也没有重跑实机启动,实机判据仍是矩阵里那一份。
 
 ## 实测矩阵(2026-09-14 – 2026-09-18)
 
