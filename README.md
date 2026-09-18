@@ -69,6 +69,15 @@ Release 正文),尚未做。
 `optionsof.txt`(这两条线用的是从 1.21.4 目录拿来的同一份,1826 字节)后即通过。1.21.4 / 1.21.8 的游戏目录里本来就有这个文件,
 所以它们的 `-Fresh` 复跑没有暴露这一点。这是 OptiFine 的行为,不是加载器的判据,但如果要给别人复现步骤,这一步要写进去。
 
+**1.21 这一轮没有跑起来,而拦住它的是一条与既有记录不符的实测事实。** 这条线的补丁负载是 **SRG 成员名**(`f_21340_`、
+`m_91087_`),而运行时是官方名(`DATA_MOB_FLAGS_ID`、`runTick`):实测 `Mob` 两侧的字段名逐条对不上,于是 `MissingTargets`
+报出 3281 个"运行时没有的"引用、其中 2094 个只能留给加载器,成员回填计划也从其它线的 293 条涨到 **6251 条** —— 这一版
+**不能**按离线换类直接用。`SrgMemberMap` 的注释把分界线记在 **1.20.6**("OptiFine switched the member names in its payload
+from SRG to Mojang's official names at 1.20.6"),但这台机器上的 `preview_OptiFine_1.21_HD_U_J1_pre9` 仍然是 SRG 名,**这条
+记录至少对 J1_pre9 不成立**。要让这条线能跑,需要把 `SrgRemap` 那一步接进 rig,而它要两张表:MCPConfig 的 `joined.tsrg`
+(本机有)和 NeoForm 的 `-mappings-merged.txt`(本机没有,要用 installertools 的合并步骤生成)。这一步没做,所以 1.21 本轮的
+状态是"未跑",不是"失败",也不是"通过"。
+
 ### 1.21.8 的根因:负载与运行时的结构性冲突
 
 **1.21.8:四项判据在本机复现通过(`[OptiFine]` 344 行,记录为 337)。** 本轮按**离线换类**路线
