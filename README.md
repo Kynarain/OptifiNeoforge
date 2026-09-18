@@ -152,6 +152,25 @@ NoSuchMethodError: SpriteResourceLoader.create(java.util.Collection)
 
 **1.21 本轮结论:仍未通过。** `Setting user` 通过、stderr 0 字节、`Sound engine started` 不通过、本次运行 1 份崩溃报告。
 
+**后来这一处修好了,而"卡住"的读法也纠正了。** 加载器现在会给"被留着的类"补上负载需要的成员(与 `MemberRestorePlan` 相反的方向,
+从负载自己的副本取):实测那一处 `SpriteResourceLoader.create(Collection)` 消失,`[OptiFine]` 行数 74 → **299**,日志一路走到
+`GameRenderer.render`,也就是说**画面已经在渲染**。同时纠正一个误判:先前按"日志不再增长 + 没有图集"读成"卡在资源重载",线程转储
+说明不是 —— `Render thread` 停在 `RenderSystem.limitDisplayFPS` 的 `glfwWaitEventsTimeout` 上,那正是**空闲的渲染循环**,其余
+Worker 线程都在等活。真正的缺口是**声音引擎没起来**,而原因在日志里是独立的一条:
+
+```
+[modloading-worker-0/FATAL] Failed to wait for future Registration events, 1 errors found
+  -> NoSuchMethodError: 'ResourceMetadata Resource.m_215509_()'
+```
+
+**调用点要的是 SRG 名 `m_215509_`** —— 也就是上面那条"表不完整"的直接后果:自制的映射表在这份游戏负载上还剩 **395 个**引用没改写
+(OptiFine 自身 jar 上剩 4 个),注册阶段踩到的就是这个。所以 1.21 下一步**不是**继续改加载器,而是把映射表换成完整的
+(NeoForm 的 `MERGE_MAPPINGS`,用 installertools),让剩余引用归零 —— `SrgRemap` 的验收口径本来就是"改写正确的负载不剩 SRG 引用"。
+
+这一轮 1.21 的实测账: `Setting user` 通过、本次运行崩溃报告 **0**、stderr **14 141 字节(与记录逐字相同)**,`Sound engine started` 不通过,
+`[OptiFine]` 原始 **299** 行(记录 252),图集 `Created:` 0(这条线的日志里本来也没有这一行)。
+
+
 
 **另一处 rig 侧的坑**:`add-line.ps1` 每次都会用**原始** OptiFine jar 重新生成 prepared jar,所以对 prepared jar 做过的改写会被
 它覆盖 —— 实测第一次重跑就退回到 `NoSuchFieldError: Direction.f_122346_`。这条线上正确的顺序是:prepare-line → 改写补丁游戏类 →
