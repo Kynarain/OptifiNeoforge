@@ -203,6 +203,17 @@ public final class ReloadProbe {
 
 	/** How many listener reload methods have been entered in this run. */
 	private static volatile int reloads;
+	/**
+	 * The transformer was handed this class. Paired with {@link #reloadEntered}, this separates the two
+	 * remaining stories about a listener that never gets marked: either it was never delivered to this
+	 * transformer, or it was delivered and the injection found nothing to attach to.
+	 */
+	public static void saw(String owner) {
+		if(!enabled()) {
+			return;
+		}
+		LOGGER.info("delivered: " + owner);
+	}
 	/** Listener tasks in flight, so a reload that stalls with none in flight is visible as such. */
 	private static volatile int running;
 
