@@ -575,3 +575,14 @@ OptiFine 的 Forge 侧入口是一个 ModLauncher 服务:`META-INF/services/cpw.
 - 本项目遵循 **MPL-2.0**(`LICENSE`),加载思路与部分代码移植自 [Chocohead/OptiFabric](https://github.com/Chocohead/OptiFabric)(作者 Modmuss50、Chocohead)。
 - **不包含、也不分发 OptiFine 本体**,OptiFine 版权归 sp614x 所有,请自行获取。
 - 各版本的构建列表、NeoForge 坐标与下载命令见 `docs/VERSIONS.md`,版本号规则见 `docs/VERSIONING.md`,设计与里程碑见 `docs/PLAN.md`。
+
+### 补充记录:第 27 轮那次"投递"测量是空的(2026-09-19)
+
+这一轮给探针加了 `ReloadProbe.saw(String)`(`delivered: <类名>`),并在 `ReloadProbeFix.transform` 开头对计划里的类调用它,
+想看那 18 个监听器到底有没有被交给这个 transformer。实测 `delivered 0` 而 `entered 4` —— 两个数不可能同时为真,于是去查插桩本身:
+**源码里没有那行调用,编译出来的 class 里也没有那个方法引用**(两处都查了)。`ReloadProbe.java` 那半落地了,`ReloadProbeFix.java`
+里调用那半被 PowerShell 的字符串替换**静默吞掉**(锚点没匹配,替换什么也没做,grep 与编译都不会报错)。
+
+所以 `delivered 0` **不是证据**;结论仍是上一轮的:`entered 4` 不变,18 个监听器为什么没被标记**原因未定**。教训具体且已被踩到过近似形态:
+**在把"没有输出"当成结论之前,先确认插桩真的落地**(源码 grep 一次 + class 文件里查一次那个字符串,本轮就是这么查出来的)。
+下一轮第一件事:用真正的编辑(而不是字符串替换)把那行调用放进去,先确认它出现在 class 里,再启动。
