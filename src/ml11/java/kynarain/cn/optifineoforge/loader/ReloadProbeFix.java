@@ -67,7 +67,8 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 	@Override
 	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
 		for(MethodNode method : input.methods) {
-			if(RELOAD.equals(method.name) && LISTENERS_TO_MARK.contains(input.name)) {
+			if((RELOAD.equals(method.name) || RESOURCE_MANAGER_RELOAD.equals(method.name))
+					&& LISTENERS_TO_MARK.contains(input.name)) {
 				InsnList call = new InsnList();
 				call.add(new LdcInsnNode(input.name.replace('/', '.')));
 				call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "reloadEntered", "(Ljava/lang/String;)V", false));
@@ -175,6 +176,16 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 	}
 	/** The per-listener entry point whose future decides when the reload can move on. */
 	private static final String RELOAD = "reload";
+
+	/**
+	 * The other entry point a listener may have instead of reload.
+	 *
+	 * <p>Most listeners implement {@code ResourceManagerReloadListener}, an interface whose default reload
+	 * delegates to the implementor own onResourceManagerReload - so injecting at a method named reload finds
+	 * nothing in eighteen of twenty-two planned classes, which is what the previous run measured. Both names
+	 * are tried; whichever the class declares is the one that gets marked.</p>
+	 */
+	private static final String RESOURCE_MANAGER_RELOAD = "onResourceManagerReload";
 
 
 
