@@ -128,9 +128,29 @@ public final class ForgeApiShims {
 				try {
 					new ClassReader(bytes).accept(new ClassVisitor(Opcodes.ASM9) {
 						@Override
+						public void visit(int version, int access, String name, String signature, String superName,
+								String[] interfaces) {
+							// Extending a Forge type is one of the two uses that force the stub to be a
+							// class: the JVM rejects a class whose superclass is an interface, which is
+							// how the first of the two failures above presented itself.
+							if(superName != null && superName.startsWith(FORGE_PACKAGE)) {
+								record(superName, shapes).extended = true;
+							}
+							super.visit(version, access, name, signature, superName, interfaces);
+						}
+
+						@Override
 						public MethodVisitor visitMethod(int access, String name, String desc, String signature,
 								String[] exceptions) {
 							return new MethodVisitor(Opcodes.ASM9) {
+								@Override
+								public void visitTypeInsn(int opcode, String type) {
+									// `new` on a Forge type is the other: an interface cannot be
+									// instantiated, which is how the second failure presented itself.
+									if(opcode == Opcodes.NEW && type.startsWith(FORGE_PACKAGE)) {
+										record(type, shapes).instantiated = true;
+									}
+								}
 								@Override
 								public void visitFieldInsn(int opcode, String owner, String fieldName, String fieldDesc) {
 									if(!owner.startsWith(FORGE_PACKAGE)) {
@@ -146,6 +166,10 @@ public final class ForgeApiShims {
 										boolean isInterface) {
 									if(!owner.startsWith(FORGE_PACKAGE)) {
 										return;
+									}
+									if("<init>".equals(methodName)) {
+										// A constructor call means an instance was built, so a class.
+										record(owner, shapes).instantiated = true;
 									}
 									record(owner, shapes).methods.put(methodName + " " + methodDesc,
 											new MethodReference(methodName, methodDesc, opcode == Opcodes.INVOKESTATIC));
@@ -171,20 +195,41 @@ public final class ForgeApiShims {
 		Set<String> names = referencedTypes(jars);
 		Map<String, Shape> shapes = referencedMembers(jars);
 		Map<String, byte[]> stubs = new LinkedHashMap<>();
-		// The shape of a type (interface or class) comes from OptiFine's own copy, which ships with
-		// the OptiFine jar rather than with the patched classes.
+		// The shape of a type is decided from how it is used first; see Shape.mustBeClass(). Only when
+		// nothing in the handover shows a class-only use does the older rule apply - reading OptiFine's
+		// own copy, which for a Forge type never exists - and then the interface fallback stands.
 		try(ZipFile zip = new ZipFile(jars.get(jars.size() - 1).toFile())) {
 			for(String name : names) {
 				Shape shape = shapes.getOrDefault(name, new Shape());
-				stubs.put(name + ".class", stub(name, isInterface(zip, name), shape));
+				boolean asInterface = (shape.mustBeClass() || declaresItself(shape, name)) ? false : isInterface(zip, name);
+				stubs.put(name + ".class", stub(name, asInterface, shape));
 			}
 		}
 		return stubs;
 	}
 
+	/**
+	 * Whether the shape declares a field of the type's own type.
+	 *
+	 * <p>Such a field is one the stub has to fill in itself - {@code RenderTypeGroup.EMPTY} is the case
+	 * that found this - and filling it means constructing an instance, which an interface cannot do. It
+	 * failed as the stub's own static initialiser rather than at a call site:</p>
+	 *
+	 * <pre>java.lang.InstantiationError: net.minecraftforge.client.RenderTypeGroup
+	 *   at net.minecraftforge.client.RenderTypeGroup.&lt;clinit&gt;</pre>
+	 */
+	private static boolean declaresItself(Shape shape, String name) {
+		String self = "L" + name + ";";
+		for(FieldReference field : shape.fields.values()) {
+			if(self.equals(field.desc())) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/** Whether OptiFine's own copy of this type is an interface. */
-	private static boolean isInterface(ZipFile zip, String name) {
-		ZipEntry own = zip.getEntry(OPTIFINE_COPY + name + ".class");
+	private static boolean isInterface(ZipFile zip, String name) {		ZipEntry own = zip.getEntry(OPTIFINE_COPY + name + ".class");
 		if(own == null) {
 			// Nothing to go on: an interface is the safer shape, since a class that implements an
 			// empty interface still verifies while the reverse does not hold for every use.
@@ -384,6 +429,32 @@ public final class ForgeApiShims {
 	public static final class Shape {
 		final Map<String, FieldReference> fields = new LinkedHashMap<>();
 		final Map<String, MethodReference> methods = new LinkedHashMap<>();
+
+		/** Set when a class is seen extending this type, which only a class allows. */
+		boolean extended;
+
+		/** Set when a class is seen constructing this type, which only a class allows. */
+		boolean instantiated;
+
+		/**
+		 * Whether this type has to be emitted as a class rather than an interface.
+		 *
+		 * <p>Measured rather than assumed, because the rule before this was neither: the shape used to be
+		 * read from OptiFine's own copy of the type, under {@code notch/} - and for a Forge API type that
+		 * copy cannot exist, since OptiFine ships game classes and not Forge's. The lookup therefore never
+		 * found anything and every stub came out an interface. Two of them then failed in the game, both
+		 * reported from a real launch on 21.4.149:</p>
+		 *
+		 * <pre>IncompatibleClassChangeError: class net.minecraft.world.level.block.entity.BlockEntity
+		 *   has interface net.minecraftforge.common.capabilities.CapabilityProvider as super class
+		 * java.lang.InstantiationError: net.minecraftforge.client.RenderTypeGroup</pre>
+		 *
+		 * <p>Both uses are recorded while the referenced classes are read, so the decision comes from how
+		 * the type is really used instead of from a fallback.</p>
+		 */
+		boolean mustBeClass() {
+			return extended || instantiated;
+		}
 
 		/** How many members are named on this type. */
 		public int size() {
