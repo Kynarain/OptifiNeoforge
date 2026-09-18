@@ -361,6 +361,15 @@ reload 1: 28 listeners
 所以下一轮的做法是把身份**关联**起来而不是去找:离线把实现 `PreparableReloadListener` 的类列成一份计划(从运行时 jar 里扫出来),
 让探针在每个类 `reload` 的入口打一行;27 行里有、28 行里没有的那一个就是答案 —— 与本项目其它计划一样,名单由离线工具量出来。
 
+**这条也搭好了,但第一次跑是 0 命中,原因已查明且很小。** 计划机制本身可用:rig 把上一轮日志里的监听器名字收成 23 个类,
+打成 `optifineoforge/reload-listeners.txt`(实测 build-jars 输出 `listener plan: 23 class(es)`),探针按计划把每个类加进 targets
+并在 `reload` 入口打一行。实测:`started 25, entered 0` —— **一行都没有**。原因是**名字形状对不上**:日志里
+`listener task started ...: LanguageManager` 给的是**简单类名**,而探针比较的是 `input.name`,也就是**内部名**
+`net/minecraft/client/resources/language/LanguageManager`;两边永远不相等,所以计划里的类一个都没被标记。
+这不是机制问题,是那一份名单要**用全限定名** —— 收名字时把每个简单名在运行时 jar 里解析成内部名即可(条目名后缀匹配,不需要新工具)。
+修好这一处之后再跑一次,就能得到"27 个里哪一个没进来"的答案;这一轮到此为止是上下文用尽,不是这条线又断了。
+
+
 
 
 
