@@ -295,6 +295,21 @@ reload 1: 28 listeners
 **下一步很具体**:让探针在**每个监听器的 prepare/apply 完成时**各打一行(或在重载 future 的完成路径上打标记),
 就能点出"卡住的是哪一个监听器",而不是继续从"没有输出"反推。
 
+**做了,而结果比"某一个监听器卡住"更强:28 个任务全部开始,一个都没有结束。** 探针现在也插桩
+`SimpleReloadInstance.lambda$of$0`(每个监听器的那次任务;它是静态方法、监听器是第 4 个参数,所以注入读 local 3),
+在任务入口与每个 `RETURN` 前各打一行。实测:`listener task started` **28** 行,`listener task finished` **0** 行,
+日志里最后几条是"27、28 in flight"。
+
+这解释了为什么线程转储里"看不到任何线程在重载代码里":28 个任务**全都停在同一个地方**,而那个地方的栈是
+`CompletableFuture`/`LockSupport` 的内部帧,不含 `PreparableReloadListener` 这类名字 —— 我上一轮按类名去找,自然是空的;
+"45 个 waiting on condition"里就有它们。vanilla 的重载给每个监听器一个 `PreparationBarrier`,**每个都必须到齐**,只要有一个
+永远不调用它,其余全部原地等待 —— 这正是"全部 started、零 finished"的形状。
+
+**所以卡点不在"哪个监听器算得慢",而在"哪一个监听器没有到达那一次 barrier"**。下一步因此变成了一个很小的插桩:
+在 `lambda$of$0` 里对 `PreparableReloadListener$PreparationBarrier.wait(...)` 的调用**之后**再打一行,列出**已经到达 barrier** 的监听器;
+28 个里缺的那一个就是答案。这一轮到此为止是因为上下文用尽,不是因为这条线查不动了。
+
+
 
 
 

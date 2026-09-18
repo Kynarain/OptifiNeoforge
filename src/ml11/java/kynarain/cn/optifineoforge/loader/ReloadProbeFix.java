@@ -47,11 +47,27 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 	private static final String UPDATE = "updateListenersFrom";
 	private static final String PROBE = "kynarain/cn/optifineoforge/loader/ReloadProbe";
 
+	/**
+	 * The reload's own per-listener task, which is where a reload stops when one listener never finishes.
+	 *
+	 * <p>Called {@code lambda$of$0} in {@code SimpleReloadInstance}, and static with the listener as its
+	 * fourth parameter - which is why the injection loads local 3. Instrumenting it is what turns "the reload
+	 * never completes" into "this listener's task started and never returned", which is the difference
+	 * between a diagnosis and a guess: on 1.21 the reload starts with its 28 listeners, the log's last
+	 * activity is OptiFine's connected-texture parsing, and every thread is idle afterwards.</p>
+	 */
+	private static final String LISTENER_TASK = "lambda$of$0";
+
+	/** {@code SimpleReloadInstance}, the class that owns the per-listener task. */
+	private static final String SIMPLE_RELOAD = "net/minecraft/server/packs/resources/SimpleReloadInstance";
+
 	@Override
 	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
 		for(MethodNode method : input.methods) {
 			if(CREATE_RELOAD.equals(method.name)) {
 				probeCreateReload(input, method);
+			} else if(LISTENER_TASK.equals(method.name) && SIMPLE_RELOAD.equals(input.name)) {
+				probeListenerTask(method);
 			} else if(REGISTER.equals(method.name)) {
 				// Who is registered, and when - the list ends up holding some of them twice.
 				InsnList call = new InsnList();
@@ -70,6 +86,23 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 			}
 		}
 		return input;
+	}
+
+	/** Marks one listener's task as started, and as finished when it returns. */
+	private static void probeListenerTask(MethodNode method) {
+		method.instructions.insert(taskCall("started"));
+		for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if(insn.getOpcode() == Opcodes.RETURN) {
+				method.instructions.insertBefore(insn, taskCall("finished"));
+			}
+		}
+	}
+
+	private static InsnList taskCall(String probeMethod) {
+		InsnList call = new InsnList();
+		call.add(new VarInsnNode(Opcodes.ALOAD, 3));
+		call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, probeMethod, "(Ljava/lang/Object;)V", false));
+		return call;
 	}
 
 	/** Hands the list the reload will actually run to the probe. */
@@ -113,7 +146,7 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 
 	@Override
 	public Set<Target<ClassNode>> targets() {
-		return Set.of(Target.targetClass(RELOADABLE));
+		return Set.of(Target.targetClass(RELOADABLE), Target.targetClass(SIMPLE_RELOAD));
 	}
 
 	@Override

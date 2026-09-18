@@ -101,6 +101,34 @@ public final class ReloadProbe {
 		LOGGER.info("value " + label + ": " + describe(value));
 	}
 
+	/**
+	 * One listener's reload task has begun, paired with {@link #finished}.
+	 *
+	 * <p>The pair is what names the listener a reload stops on. A task that reports started and never
+	 * finishes is the one holding the reload open - and that is a thing no thread dump can show once the
+	 * task's thread has gone idle, which is exactly the state 1.21 settles into: 28 listeners, no thread in
+	 * the reload code, everything parked.</p>
+	 */
+	public static void started(Object listener) {
+		if(!enabled()) {
+			return;
+		}
+		running++;
+		LOGGER.info("listener task started (" + running + " in flight): " + describe(listener));
+	}
+
+	/** The same task returned. */
+	public static void finished(Object listener) {
+		if(!enabled()) {
+			return;
+		}
+		running--;
+		LOGGER.info("listener task finished (" + running + " in flight): " + describe(listener));
+	}
+
+	/** Listener tasks in flight, so a reload that stalls with none in flight is visible as such. */
+	private static volatile int running;
+
 	/** How many entries a map holds, for the registry the sort builds its graph from. */
 	public static void count(java.util.Map<?, ?> map, String label) {
 		if(!enabled()) {
