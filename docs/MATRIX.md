@@ -3436,3 +3436,59 @@ loader 的类实现 `cpw.mods.modlauncher.api.ITransformationService`,但**没�
 - 通过的是**判定标准**(标题画面 + 声音引擎 + 无崩溃报告 + stderr 0 字节),不是"功能完备":光影包、抗锯齿、
   进世界这些都还没测。
 
+## 2026-09-19(第三段):往第二条线走 —— 1.21.8 走到最后一道坎
+
+1.21.4 通过之后按同样的路数做 **1.21.8**(NeoForge 21.8.54,OptiFine `J6_pre16`,同样是**不带离线载荷**的配置:
+游戏类由 OptiFine 的 transformer 顶替,loader jar 只带计划、donor、stub、reparent)。这一轮为了不再靠手敲命令,
+把每个线都要重复的那一段写成了 rig 里的 `prepare-line.ps1`(叠运行时视图 → 打补丁 → 还原计划 → stub → 分层计划),
+其余仍旧是 `build-jars.ps1` + `launch.ps1`。它一次跑通,产出:运行时视图 9498 项、补丁类 **516**(441 net/minecraft)、
+还原计划 **353 行 / 88 个 donor**、**60 个 stub**、reparent 1 条。
+
+### 一、又踩到 `ForgeApiShims` 的两个形状缺陷(都已修并推送)
+
+1. **同一个构造器写了两遍**。stub 先无条件写一个 `()V`,后面那个"把记录到的成员都写出来"的循环又写一遍,于是:
+
+   ```
+   ClassFormatError: Duplicate method name "<init>" with signature "()V" in class file
+     net/minecraftforge/common/capabilities/CapabilityProvider$BlockEntities
+   ```
+
+   现在只有当记录里没有 `<init> ()V` 时才写默认那个。这是这个生成器**第四个**靠"真的把 shim 放进客户端跑"才
+   暴露出来的形状缺陷(前三个是接口/类的判断、自己类型的字段、以及扫描范围)。
+
+2. 顺带把上一段的接口/类修正**移植到 `1.20.x` 与 `26.x`**:这两个分支的 `ForgeApiShims.java` 与 1.21.x 修之前
+   是逐字节相同的副本,所以用 `git diff` 出的补丁直接 `git apply`(实测 `--check` 通过),不做手改。
+
+### 二、1.21.8 上量到的两件事
+
+- **`optionsof.txt` 不在时的第一次启动会抛异常**:
+  `ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1` at `Options.loadOfOptions`
+  (1.21.8 是 `Options.java:3108`,1.21.4 上是 3071,两版同一个缺陷)。文件存在且内容合法时不再出现 ——
+  也就是说这是 **OptiFine 自己在"文件还不存在"这一支上的问题**,不是我们换类换坏的。实机表现:第一次 stderr
+  2268 字节,第二次 **0 字节**,而 `[OptiFine]` 行数从 58 变成 56(没有别的变化)。rig 因此可以照
+  `OptiFabric` 那份 launch 脚本的做法,在建 game dir 时先写一份合法的 `optionsof.txt`。
+- **`GpuTexture.isStencilEnabled()` 缺失**(当前的坎):
+
+  ```
+  java.lang.NoSuchMethodError: 'boolean com.mojang.blaze3d.textures.GpuTexture.isStencilEnabled()'
+    at com.mojang.blaze3d.opengl.GlCommandEncoder.clearColorTexture(GlCommandEncoder.java:196)
+    at net.minecraft.client.renderer.LightTexture.<init>(LightTexture.java:79)
+    at net.minecraft.client.renderer.GameRenderer.<init>(GameRenderer.java:181)
+    at net.minecraft.client.Minecraft.<init>(Minecraft.java:599)
+  ```
+
+  这是**反方向**的缺失:调用方是 OptiFine 换过的类,而被调用的 `GpuTexture` 是**运行时自己的**类 ——
+  所以 `member-restores.txt` 帮不上(它只往被换掉的类里补成员),要靠 loader 的 `stubs.txt`(往运行时类里补)。
+  `MissingTargets --stub` 这一轮**已经跑通并产出 804 条**,但这一次崩溃没有被它覆盖,原因是它自己也把
+  **载荷**索引进去了:它的文档写得很清楚 —— OptiFine 会给它替换的类**加**成员,所以"运行时没有、而载荷有"的引用
+  被认为是可满足的。这里 `GpuTexture` 的情形是:载荷里有这个成员,但**真正被加载的那份没有**(这一类在 1.21.8 上
+  没有被换装),于是工具没报、也就没进 `stubs.txt`。**下一问**:对"调用方被换、被调用方没被换"的引用单独走一遍,
+  或者把 `--stub` 的跳过前缀／载荷索引按"实际会被换装的类集合"给定,而不是按补丁产物的全集。
+
+### 三、这一段的边界
+
+- **1.21.8 还没有通过**:它到了 `Setting user`、stderr 0 字节,但 `Sound engine started` 没出现,并且写了一份
+  崩溃报告(`GpuTexture.isStencilEnabled`)。**1.21.4 的通过没有受到影响**(那一轮之后没有再动过它)。
+- 三条分支的这一轮改动都已提交并推送:`1.21.x` 三个提交(服务注册、shim 形状、构造器重复)、`1.20.x` 三个提交
+  (元数据/构建 + 形状修正移植 + 本文件)。**没有发布任何东西。**
+
