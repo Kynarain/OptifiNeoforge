@@ -60,6 +60,16 @@ if(!(targetMountPoint in ['modlauncher', 'fml10'])){
 }
 if(targetMountPoint == 'modlauncher'){
     sourceSets.main.java.srcDir 'src/ml11/java'
+    // The registration, without which the classes above are never called. ModLauncher finds a
+    // transformation service by the service file
+    // META-INF/services/cpw.mods.modlauncher.api.ITransformationService, and this repository had no
+    // such file on any branch - checked with git ls-tree across main, 1.20.x, 1.21.x and 26.x, and
+    // confirmed by building: the jars carried zero META-INF/services entries. A jar that implements the
+    // interface but never declares it is inert, so every released 1.20.x and 1.21.x loader jar was, and
+    // the loader's transformations could only ever run for whoever reassembled the jar by hand. This
+    // file lives under the mount-point source root rather than in src/main because the fml10 targets
+    // have no ModLauncher to register with.
+    sourceSets.main.resources.srcDir 'src/ml11/resources'
 }
 
 version = "${project.mod_version_base}+mc${targetMc}"
