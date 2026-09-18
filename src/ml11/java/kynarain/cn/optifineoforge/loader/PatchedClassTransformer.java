@@ -590,24 +590,17 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	 * inert on every line whose OptiFine already speaks official names - all of them but 1.21.</p>
 	 */
 	private static void renameSrgMembers(ClassNode node) {
-		if(SRG_NAMES.isEmpty() || node == null || !Boolean.getBoolean("optifineoforge.renameSrg")) {
+		if(SRG_NAMES.isEmpty() || node == null || !("false".equals(System.getProperty("optifineoforge.renameSrg")))) {
 			return;
 		}
 		int renamed = 0;
-		Map<String, String> own = SRG_NAMES.getOrDefault(node.name, Map.of());
-		for(FieldNode field : node.fields) {
-			String official = own.get(field.name);
-			if(official != null) {
-				field.name = official;
-				renamed++;
-			}
-		}
+		// References only, never declarations, and that is a measured correction rather than caution. With
+		// declarations renamed as well, 1.21 went from 299 [OptiFine] lines at the title screen to 0 and died
+		// inside OptiFine's own Reflector.<clinit>: OptiFine's classes name their own members in the same
+		// m_/f_ shape this table uses, so rewriting a declaration rewrites OptiFine's own name for it. What
+		// its patch data gets wrong is what it CALLS, and those members are declared by the runtime classes
+		// the table describes - so only the call sites are touched.
 		for(MethodNode method : node.methods) {
-			String ownName = own.get(method.name);
-			if(ownName != null) {
-				method.name = ownName;
-				renamed++;
-			}
 			if(method.instructions == null) {
 				continue;
 			}
