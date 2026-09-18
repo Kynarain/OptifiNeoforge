@@ -324,6 +324,24 @@ reload 1: 28 listeners
 ② **`SimpleReloadInstance` 不在负载里**(payload 里 0 个条目),也就是说跑的是运行时那份,我们的插桩确实生效
 (否则不会有那 28 行)。
 
+**把插桩挪到真正的 barrier 上之后,答案缩到了"一个监听器"。** 实测(同一套 jar、同一个属性):
+
+| 计数 | 值 |
+|---|---|
+| `listener task started` | **28** |
+| `barrier reached` | **27** |
+| `listener task finished` | **0** |
+
+也就是说 **28 个监听器里有 27 个到达了 barrier,只有 1 个从未到达**,其余全部在等它 —— 这正是"全部 started、零 finished"的成因,
+而且把嫌疑范围从一个集合缩到了一个监听器。**但"是哪一个"还没定下来**:我试着在 `barrierReached()` 里走栈、取第一个非 JDK、
+非本工程的帧当调用者,结果拿到的是 `com.mojang.blaze3d.systems.RenderSystem`、`net.minecraft.server.packs.resources.ResourceManagerReloadListener`
+和一次 `?` —— 重载路径上有一层包装/lambda,栈帧里出现的不是真正的监听器类,所以这个办法**不足以点名**,不能当结论用。
+
+下一轮定这一个监听器有两条现成的路:① 在 27 次到达里把**整个栈**打出来,与已有的 28 个 `listener task started` 名字做差集,
+没出现过的那个就是它;② 换个插桩点 —— 例如在 `SimpleReloadInstance.lambda$of$0` 里,对 `listener.reload(...)` 返回的 future
+挂一个 `whenComplete`(不是改逻辑,只是加日志),谁没有走到 complete 就是谁。两条都不需要猜。
+
+
 
 
 

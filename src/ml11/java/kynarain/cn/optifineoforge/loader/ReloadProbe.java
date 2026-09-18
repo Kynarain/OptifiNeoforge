@@ -114,7 +114,8 @@ public final class ReloadProbe {
 			return;
 		}
 		running++;
-		LOGGER.info("listener task started (" + running + " in flight): " + describe(listener));
+		LOGGER.info("listener task started (" + running + " in flight, " + Thread.currentThread().getName()
+				+ "): " + describe(listener));
 	}
 
 	/** The same task returned. */
@@ -143,6 +144,33 @@ public final class ReloadProbe {
 	/** How many listeners have reached the barrier in this reload. */
 	private static volatile int reached;
 
+	/**
+	 * A listener task has reached the reload barrier, reported with the thread it runs on.
+	 *
+	 * <p>The barrier wait receives the value the listener hands over, not the listener, so naming the
+	 * listener that never arrives takes the thread instead: the started lines carry both the listener and
+	 * its thread, and the thread that started a task and never appears here is the one holding the reload
+	 * open.</p>
+	 */
+	public static void barrierReached() {
+		if(!enabled()) {
+			return;
+		}
+		// The barrier is called by the listener itself, so the caller is on the stack - which is the only
+		// way to name it, since wait(T) receives the listener value and not the listener. Skipping the JDK
+		// frames and this class reaches the listener's own class directly.
+		String caller = "?";
+		for(StackTraceElement frame : Thread.currentThread().getStackTrace()) {
+			String name = frame.getClassName();
+			if(name.startsWith("java.") || name.startsWith("jdk.") || name.startsWith("kynarain.")
+					|| name.startsWith("net.minecraft.server.packs.resources.SimpleReloadInstance")) {
+				continue;
+			}
+			caller = name;
+			break;
+		}
+		LOGGER.info("barrier reached on " + Thread.currentThread().getName() + " for " + caller);
+	}
 	/** Listener tasks in flight, so a reload that stalls with none in flight is visible as such. */
 	private static volatile int running;
 

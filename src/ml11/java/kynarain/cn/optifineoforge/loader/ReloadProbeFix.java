@@ -61,11 +61,18 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 	/** {@code SimpleReloadInstance}, the class that owns the per-listener task. */
 	private static final String SIMPLE_RELOAD = "net/minecraft/server/packs/resources/SimpleReloadInstance";
 
+	/** The barrier itself: SimpleReloadInstance$1 implements PreparationBarrier, wait(T). Verified with javap. */
+	private static final String BARRIER_IMPL = "net/minecraft/server/packs/resources/SimpleReloadInstance$1";
+
 	@Override
 	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
 		for(MethodNode method : input.methods) {
 			if(CREATE_RELOAD.equals(method.name)) {
 				probeCreateReload(input, method);
+			} else if("wait".equals(method.name) && BARRIER_IMPL.equals(input.name)) {
+				InsnList call = new InsnList();
+				call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "barrierReached", "()V", false));
+				method.instructions.insert(call);
 			} else if(LISTENER_TASK.equals(method.name) && SIMPLE_RELOAD.equals(input.name)) {
 				probeListenerTask(method);
 			} else if(REGISTER.equals(method.name)) {
@@ -175,7 +182,8 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 
 	@Override
 	public Set<Target<ClassNode>> targets() {
-		return Set.of(Target.targetClass(RELOADABLE), Target.targetClass(SIMPLE_RELOAD));
+		return Set.of(Target.targetClass(RELOADABLE), Target.targetClass(SIMPLE_RELOAD),
+				Target.targetClass(BARRIER_IMPL));
 	}
 
 	@Override
