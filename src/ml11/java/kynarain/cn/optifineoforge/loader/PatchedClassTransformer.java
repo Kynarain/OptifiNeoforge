@@ -8,6 +8,8 @@ package kynarain.cn.optifineoforge.loader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Map;
@@ -18,6 +20,7 @@ import java.util.Set;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
@@ -509,6 +512,38 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 
 	@Override
 	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
+		ClassNode result = decide(input, context);
+		dump(result);
+		return result;
+	}
+
+	/**
+	 * Writes the class this transformer hands back, when {@code -Doptifineoforge.dump=<dir>} is set.
+	 *
+	 * <p>Added because reading the jars on disk stopped being enough: on 1.21 a run failed with
+	 * {@code NoSuchMethodError: Resource.m_215509_()} thrown from
+	 * {@code SpriteResourceLoader.lambda$create$0}, and a byte scan of both shipped jars found the string
+	 * {@code m_215509_} in neither - so the offending copy is made at load time, somewhere between the jar
+	 * and the class the JVM verifies. Guessing which step did it was a mistake worth not repeating; this
+	 * answers it by writing the final bytes out.</p>
+	 */
+	private static void dump(ClassNode node) {
+		String directory = System.getProperty("optifineoforge.dump");
+		if(directory == null || node == null || node.name == null) {
+			return;
+		}
+		try {
+			Path target = Path.of(directory, node.name + ".class");
+			Files.createDirectories(target.getParent());
+			ClassWriter writer = new ClassWriter(0);
+			node.accept(writer);
+			Files.write(target, writer.toByteArray());
+		} catch(Exception e) {
+			LOGGER.warn("could not dump " + node.name + ": " + e);
+		}
+	}
+
+	private ClassNode decide(ClassNode input, ITransformerVotingContext context) {
 		logModulesOnce();
 		// Stubs first and unconditionally, because some belong to runtime classes that are never swapped -
 		// the case that used to fall through the gap. OptiFine's GameRenderer calls
