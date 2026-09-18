@@ -79,9 +79,16 @@ public class OptifiNeoforgeTransformationService implements ITransformationServi
 		// MemberRestoreTransformer rather than in a transformer of its own: ModLauncher consults one
 		// transformer per target, so a second one declaring a class this pass already declares is built
 		// and then never invoked.
+		// ReloadProbeFix is last, after MemberRestoreTransformer, and that position is the whole reason it
+		// works at all on 1.21: it instruments ReloadableResourceManager.createReload, OptiFine's payload
+		// copy of that class declares no createReload at all (only the leftover lambda body), and the method
+		// only appears once the member restore has put the runtime's version back. Ahead of the restore it
+		// found nothing to instrument and stayed silent - measured, with the property verified against the
+		// constant that enables it. It is a diagnostic and silent unless that property is set, so its
+		// position costs nothing on the lines that do not use it.
 		return List.of(new PatchedClassTransformer(), new RenderTargetFix(), new ReloadableResourceManagerFix(),
 				new TagHelperFix(),
-				new PackRootsFix(), new ReloadProbeFix(), new ModelProbeFix(), new NativeImageProbeFix(),
-				new SortProbeFix(), new MemberRestoreTransformer());
+				new PackRootsFix(), new ModelProbeFix(), new NativeImageProbeFix(),
+				new SortProbeFix(), new MemberRestoreTransformer(), new ReloadProbeFix());
 	}
 }

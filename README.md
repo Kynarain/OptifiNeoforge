@@ -270,6 +270,32 @@ condition 45 / Object.wait 1*,**没有任何 BLOCKED 线程**,也**没有任何�
 之前量到的 84% 单色红与 1.21.8 那次加载遮罩是同一个特征)。下一轮第一件事就是**把这两种可能分开**:在重载的 future 完成路径上加一条日志
 (或在探针里补上对"补回来的 createReload"的插桩),这是判定性的,不需要再猜。
 
+**探针的沉默本身是个加载器缺陷,修好之后它直接把范围缩到了一个监听器。** 原因是**顺序**:`ReloadProbeFix` 在转换器列表里排在
+`MemberRestoreTransformer` **前面**,而它插桩的 `createReload` 恰恰是**被回填之后才存在**的方法 —— 排在前面时它找不到目标,于是静默。
+把 `ReloadProbeFix` 移到 `MemberRestoreTransformer` **之后**(它只是诊断,不打开属性就不产生任何改动)以后,同一套 jar、同一个属性,
+探针开始输出:
+
+```
+reload 1: 28 listeners
+0  net.neoforged.neoforge.client.loading.ClientModLoader$$Lambda/...
+1  net.neoforged.neoforge.internal.BrandingControl$$Lambda/...
+2  net.minecraft.client.resources.language.LanguageManager
+3  net.minecraft.client.renderer.texture.TextureManager
+4  net.minecraft.client.sounds.SoundManager
+5  net.minecraft.client.resources.SplashManager
+6  net.minecraft.client.gui.font.FontManager
+...
+```
+
+(每一行后面的 `vanillaName=?ClassNotFoundException(...VanillaClientListeners)` 是探针自己的取名逻辑在报错,与本次失败无关。)
+
+于是上一轮那两种可能里的第一种被证实:**重载确实被创建、确实带着 28 个监听器开始跑了**(`reload 1: 28 listeners`),
+`SoundManager` 也在名单里(它的 `SoundEngine` 是在自己的 apply 步骤里建的,那一步显然没轮到),
+而日志的最后一段活动正是 OptiFine 的 `ConnectedTextures` 解析,之后再无输出 —— 判据仍是 `Setting user` 通过、`Sound engine started` 与图集为 0。
+**下一步很具体**:让探针在**每个监听器的 prepare/apply 完成时**各打一行(或在重载 future 的完成路径上打标记),
+就能点出"卡住的是哪一个监听器",而不是继续从"没有输出"反推。
+
+
 
 
 
