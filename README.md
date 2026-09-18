@@ -94,12 +94,34 @@ from SRG to Mojang's official names at 1.20.6"),但这台机器上的 `preview_O
    `NoSuchMethodError: 'void org.objectweb.asm.commons.Remapper.<init>(int)'` —— 源码注释里写了这件事(`super(Opcodes.ASM9)`
    正是为 9.10.1 写的,而 Gradle 侧用解析策略拿 9.10.1)。按这个版本另建一份 classpath 后它就跑起来了。
 2. 第二张表可以从 Mojang 的 `minecraft_1.21_client_mappings.txt`(proguard 形状)转出来,转换脚本在 rig 里
-   (`proguard-to-tsrg.ps1`,实测产出 8269 类 / 37906 字段 / 73419 方法)。但把它与 MCPConfig 的 `joined.tsrg` 做联接时,
-   **54084 个成员在另一侧没有对应**(`SrgMemberMap` 自己的报告),于是 `SrgRemap` 的改写结果是:改写 4588 个方法名、
-   17527 个字段名,而 **17620 个无法解析**(16636 个方法是"表里没有这条",253 个字段同理,731 个是"成员换了形状")。
-3. `SrgRemap` 的注释给出的验收口径是"改写正确的负载应当剩下 **0** 个 SRG 引用",17 620 离它太远,所以这份表**不能用**,
-   拿它跑出来的 1.21 也不算证据。正确的下一步是让 NeoForm 的 `MERGE_MAPPINGS` 步骤本身产出 `-mappings-merged.txt`
-   (用 installertools),而不是自己从 proguard 拼一份。
+   (`proguard-to-tsrg.ps1`)。第一版转出来联接失败:与 MCPConfig 的 `joined.tsrg` 做联接时 **54084 个成员在另一侧没有对应**,
+   `SrgRemap` 于是只改写 4588 个方法名、17527 个字段名,**17620 个无法解析**。查出两个原因,都是转换脚本自己的:
+   ① 两侧的描述符**不在同一个命名空间** —— `joined.tsrg` 写的是混淆类型(`a (Lakr;)Lgql;`),从 proguard 的 Java 类型直接
+   转出来的是官方类型(`()Lnet/minecraft/resources/ResourceLocation;`),而 `SrgMemberMap` 的键包含描述符,于是永远对不上;
+   ② 更隐蔽的一处:脚本里把形参表存进了 `$args`,那是 PowerShell 自己的自动变量,赋值被吞掉,于是表里**每个方法都变成无参**。
+   两处修好后,联接的落空数从 54084 降到 **82**,改写变成 21803 个方法名 + 17527 个字段名,**无法解析的只剩 395**
+   (253 个字段"表里没有"、113 个方法同因、29 个"成员换了形状")。
+3. **要改写两个 jar,不是一个**。只改写补丁游戏类不够:OptiFine 自己的类(最终进 OptiFine jar 的那些)同样用 SRG 成员名,
+   实测第一次启动死在 `srg/net/optifine/render/RenderEnv.<init>` 的
+   `NoSuchFieldError: ... Direction does not have member field 'net.minecraft.core.Direction[] f_122346_'`。对
+   **prepared OptiFine jar** 再跑一次 `SrgRemap` 后,那一步的改写是 3528 个方法名 + 1537 个字段名,无法解析 4 个。
+4. 改写之后这条线的规模立刻回到正常:成员回填计划从 **6251 条 / 356 类**降到 **363 条 / 97 类**,"运行时没有的引用"从
+   **3281** 降到 **62**(其中 46 条补进 payload、12 条留给加载器),`PayloadDrift` 的常量分歧为 0(不需要 keep plan)。
+
+**1.21 现在的实测进度:到标题界面,但没过判据。** 用上面这条链跑起来后,`Setting user` 为 True、stderr 0 字节,但
+`Sound engine started` 为 False,并在 `Minecraft.<init>` 里崩了一次:
+
+```
+IllegalAccessError: class net.neoforged.neoforge.client.NeoForgeRenderTypes$Internal tried to access
+  protected field net.minecraft.client.renderer.RenderStateShard.RENDERTYPE_ENTITY_SOLID_SHADER
+```
+
+这是加载器注释里已经写过的那类"访问权限谁更宽"的问题,只是这次踩在字段上:规则取"负载与交上来的那份里更宽的",而这条线上
+OptiFine 自己的转换器**先**替掉了 `RenderStateShard`(本行日志里能看到它被换掉),于是交上来的那份就是 OptiFine 的,
+两边都是 `protected`,运行时的 AT 加宽结果看不到 —— 和 1.21.8 上"接口计划为什么必须存在"是同一个根因。**还差一步**:
+把这个"运行时更宽"的清单也做成离线计划(或让转换器真正拿到运行时的那份类),这一步没做,所以 1.21 仍然是**未通过**,
+但不再是"未跑":它现在有明确的、可复现的失败点。
+
 
 ### 复现一次启动需要什么(本轮量出来的 rig 要求)
 
