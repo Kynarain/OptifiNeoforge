@@ -185,6 +185,24 @@ public final class ReloadProbe {
 		future.whenComplete((value, error) -> LOGGER.info("listener future completed: " + name
 				+ (error == null ? "" : " with " + error)));
 	}
+	/**
+	 * One listener has entered its own reload method, named by the class the plan listed.
+	 *
+	 * <p>This is the listener side of the correlation, and it exists because the barrier side carries no
+	 * identity: the arrival stack is wrappers all the way down and the barrier wait receives only the value
+	 * the listener hands over. The class list comes from a previous run - the started lines name every
+	 * listener - so the one whose reload entry is missing here is the one that never arrives.</p>
+	 */
+	public static void reloadEntered(String owner) {
+		if(!enabled()) {
+			return;
+		}
+		reloads++;
+		LOGGER.info("reload entered (" + reloads + "): " + owner);
+	}
+
+	/** How many listener reload methods have been entered in this run. */
+	private static volatile int reloads;
 	/** Listener tasks in flight, so a reload that stalls with none in flight is visible as such. */
 	private static volatile int running;
 

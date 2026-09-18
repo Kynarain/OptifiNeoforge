@@ -67,7 +67,12 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 	@Override
 	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
 		for(MethodNode method : input.methods) {
-			if(CREATE_RELOAD.equals(method.name)) {
+			if(RELOAD.equals(method.name) && LISTENERS_TO_MARK.contains(input.name)) {
+				InsnList call = new InsnList();
+				call.add(new LdcInsnNode(input.name.replace('/', '.')));
+				call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "reloadEntered", "(Ljava/lang/String;)V", false));
+				method.instructions.insert(call);
+			} else if(CREATE_RELOAD.equals(method.name)) {
 				probeCreateReload(input, method);
 			} else if("wait".equals(method.name) && BARRIER_IMPL.equals(input.name)) {
 				InsnList call = new InsnList();
@@ -138,8 +143,40 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 
 	private static final String BARRIER_WAIT = "wait";
 
+	/**
+	 * The classes that implement PreparableReloadListener, harvested offline.
+	 *
+	 * <p>A transformer has to declare its targets before any of them runs, and a listener class cannot be
+	 * discovered from inside one - so the list is measured instead: a previous run's "listener task started"
+	 * lines name every listener the reload uses, and the rig turns those names into this file. This is the
+	 * listener side of the correlation; the barrier side has no identity to give, which two attempts
+	 * established.</p>
+	 */
+	private static final String LISTENER_PLAN = "/optifineoforge/reload-listeners.txt";
+
+	private static final java.util.Set<String> LISTENERS_TO_MARK = loadListenerPlan();
+
+	private static java.util.Set<String> loadListenerPlan() {
+		java.util.Set<String> result = new java.util.LinkedHashSet<>();
+		try(java.io.InputStream stream = ReloadProbeFix.class.getResourceAsStream(LISTENER_PLAN)) {
+			if(stream == null) {
+				return java.util.Set.of();
+			}
+			for(String line : new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).split("\\R")) {
+				String text = line.trim();
+				if(!text.isEmpty() && !text.startsWith("#")) {
+					result.add(text);
+				}
+			}
+		} catch(java.io.IOException e) {
+			return java.util.Set.of();
+		}
+		return java.util.Set.copyOf(result);
+	}
 	/** The per-listener entry point whose future decides when the reload can move on. */
 	private static final String RELOAD = "reload";
+
+
 
 	private static InsnList barrierCall() {
 		InsnList call = new InsnList();
@@ -196,8 +233,14 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 
 	@Override
 	public Set<Target<ClassNode>> targets() {
-		return Set.of(Target.targetClass(RELOADABLE), Target.targetClass(SIMPLE_RELOAD),
-				Target.targetClass(BARRIER_IMPL));
+		Set<Target<ClassNode>> result = new java.util.LinkedHashSet<>();
+		result.add(Target.targetClass(RELOADABLE));
+		result.add(Target.targetClass(SIMPLE_RELOAD));
+		result.add(Target.targetClass(BARRIER_IMPL));
+		for(String owner : LISTENERS_TO_MARK) {
+			result.add(Target.targetClass(owner));
+		}
+		return result;
 	}
 
 	@Override
