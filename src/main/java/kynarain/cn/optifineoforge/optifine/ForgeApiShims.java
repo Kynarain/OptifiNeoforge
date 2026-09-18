@@ -253,7 +253,15 @@ public final class ForgeApiShims {
 			// OptiFine calls means a group it built itself.
 			writer.visitField(Opcodes.ACC_PRIVATE, EMPTY_FLAG, "Z", null, null).visitEnd();
 		}
-		if(!isInterface) {
+		// The no-argument constructor is written only when the recorded uses do not already name one: the
+		// loop below emits every recorded method, and a recorded "<init> ()V" would be a second copy of the
+		// same method. That is not a warning but a rejection, measured on 1.21.8:
+		//
+		//   ClassFormatError: Duplicate method name "<init>" with signature "()V" in class file
+		//     net/minecraftforge/common/capabilities/CapabilityProvider$BlockEntities
+		boolean recordedNoArgConstructor = shape.methods.values().stream()
+				.anyMatch(method -> "<init>".equals(method.name) && "()V".equals(method.desc));
+		if(!isInterface && !recordedNoArgConstructor) {
 			writeConstructor(writer, internalName, "()V", tracksEmptiness);
 		}
 		java.util.List<String> selfTypedConstants = new java.util.ArrayList<>();
