@@ -258,6 +258,19 @@ condition 45 / Object.wait 1*,**没有任何 BLOCKED 线程**,也**没有任何�
 (日志里 OptiFine 的 `Reloading ResourceManager` 与 CTM 解析证明重载确实发生了)。下一轮从这里开始:先确认这条线上
 `createReload` 的**声明者/调用者到底是谁**(OptiFine 的替换类、还是另一个同名方法),再决定探针该插在哪里。
 
+**查清了,而且它把问题从"重载实现"移到了别处。** 运行时那份 `ReloadableResourceManager` **有** `createReload`
+(描述符 `(Executor,Executor,CompletableFuture,List)ReloadInstance`),而**负载里那份根本没有这个方法** ——
+`javap` 出来的成员里只剩一个 `lambda$createReload$0(List)`,也就是 OptiFine 的编译把 `createReload` 弄丢了、只留下它的 lambda 体。
+于是装上之后真正跑的 `createReload` 是**从 donor(运行时那份)补回来的**;探针之所以没输出,也就可以理解了:探针插桩时匹配的是名字,
+而它插的是**负载那份**(那个方法不存在),补回来的那份是另一个 transformer 后来才写进去的。
+
+这条事实把结论收紧了一步:**这条线上跑的重载实现是运行时的,不是 OptiFine 的**,所以"重载永远不完成"不可能来自 OptiFine 的重载代码;
+而线程转储又显示没有任何线程在重载代码里 —— 两者合起来只剩两种可能:要么某个监听器以某种方式既不完成也不占线程(例如它提交的任务
+从未被某个 executor 执行),要么重载其实**已经完成**、只是 NeoForge 的加载界面没有被撤下(红屏本身就是它的加载/错误界面,
+之前量到的 84% 单色红与 1.21.8 那次加载遮罩是同一个特征)。下一轮第一件事就是**把这两种可能分开**:在重载的 future 完成路径上加一条日志
+(或在探针里补上对"补回来的 createReload"的插桩),这是判定性的,不需要再猜。
+
+
 
 
 
