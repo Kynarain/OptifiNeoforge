@@ -88,6 +88,19 @@ from SRG to Mojang's official names at 1.20.6"),但这台机器上的 `preview_O
 (本机有)和 NeoForm 的 `-mappings-merged.txt`(本机没有,要用 installertools 的合并步骤生成)。这一步没做,所以 1.21 本轮的
 状态是"未跑",不是"失败",也不是"通过"。
 
+**试着把这一步补上时,又量到三件事**(都记在这里,因为下一步从这里开始):
+
+1. `SrgRemap` 要在 **ASM 9.10.1** 上跑,rig 的工具 classpath 是 9.8,在 9.8 上它直接抛
+   `NoSuchMethodError: 'void org.objectweb.asm.commons.Remapper.<init>(int)'` —— 源码注释里写了这件事(`super(Opcodes.ASM9)`
+   正是为 9.10.1 写的,而 Gradle 侧用解析策略拿 9.10.1)。按这个版本另建一份 classpath 后它就跑起来了。
+2. 第二张表可以从 Mojang 的 `minecraft_1.21_client_mappings.txt`(proguard 形状)转出来,转换脚本在 rig 里
+   (`proguard-to-tsrg.ps1`,实测产出 8269 类 / 37906 字段 / 73419 方法)。但把它与 MCPConfig 的 `joined.tsrg` 做联接时,
+   **54084 个成员在另一侧没有对应**(`SrgMemberMap` 自己的报告),于是 `SrgRemap` 的改写结果是:改写 4588 个方法名、
+   17527 个字段名,而 **17620 个无法解析**(16636 个方法是"表里没有这条",253 个字段同理,731 个是"成员换了形状")。
+3. `SrgRemap` 的注释给出的验收口径是"改写正确的负载应当剩下 **0** 个 SRG 引用",17 620 离它太远,所以这份表**不能用**,
+   拿它跑出来的 1.21 也不算证据。正确的下一步是让 NeoForm 的 `MERGE_MAPPINGS` 步骤本身产出 `-mappings-merged.txt`
+   (用 installertools),而不是自己从 proguard 拼一份。
+
 ### 复现一次启动需要什么(本轮量出来的 rig 要求)
 
 上面每个数字都出自同一套流程,而流程自身这一轮也被量出几条硬性要求 —— 写在这里,免得下一个人或下一轮重新踩:
