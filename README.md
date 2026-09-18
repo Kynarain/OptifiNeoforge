@@ -193,6 +193,21 @@ net/minecraft/server/packs/resources/Resource.m_215509_()Lnet/minecraft/server/p
 随加载器 jar 发布),或者更窄地把这一类类的补丁条目去掉(keep plan 那套工具)。前者更合适:它一次覆盖所有"OptiFine 自己打出来"
 的类,而不是逐个列。
 
+**这条路线已经搭起来了,但第一次实测是失败的,因此默认关着。** 三样东西落地:① 离线工具 `SrgNameTable`
+(从 SRG 负载的**声明与引用**两侧收集,落到 `owner<TAB>srg<TAB>official`;实测 1.21:9918 条 / 1027 个 owner,另有 3422 条表里无解,
+嵌入加载器 jar 的是 8391 行);② 加载器在读表后在转换时改写(字段/方法**声明**、`FieldInsn`/`MethodInsn` 引用、
+以及 `invokedynamic` 引导参数里的 `Handle`);③ rig 侧自动生成并随 jar 打包。
+
+**打开它(`-Doptifineoforge.renameSrg=true`)以后这条线反而退回去了**:`[OptiFine]` 行数从 299 掉到 **0**,并且死在
+OptiFine 自己的 `Reflector.<clinit>` 里(模块类加载器找不到类)。原因事后看很清楚:**OptiFine 自己的类也用 `m_`/`f_` 这个名字形状
+命名自己的成员**,于是"连声明一起改写"把 OptiFine 自己的名字也改掉了。所以现在它默认关闭,下一次尝试应当是**只改写引用**
+(补丁数据打错的是它**调用**的名字,而那些成员由表里描述的游戏类声明)。关闭后这条线回到了改动前的状态(原始 299 行、
+stderr 14 141 字节、`Setting user` 通过、本次运行无崩溃报告、`Sound engine started` 仍不通过)。
+
+这条记录的意义是把"下一步"从猜想变成了一个**已经被证伪过的具体做法**:表是对的(它确实包含 `Resource.m_215509_ → metadata`),
+错的是改写范围。
+
+
 
 
 这一轮 1.21 的实测账: `Setting user` 通过、本次运行崩溃报告 **0**、stderr **14 141 字节(与记录逐字相同)**,`Sound engine started` 不通过,

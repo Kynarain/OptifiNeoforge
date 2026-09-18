@@ -20,6 +20,7 @@ import java.util.Set;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Handle;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
@@ -27,6 +28,7 @@ import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
@@ -513,8 +515,137 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	@Override
 	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
 		ClassNode result = decide(input, context);
+		renameSrgMembers(result);
 		dump(result);
 		return result;
+	}
+
+	/**
+	 * The SRG names the loader has to rewrite while transforming, {@code owner name official}.
+	 *
+	 * <p>Rewriting the jars cannot do this, and that is measured rather than assumed. On a line whose
+	 * OptiFine build predates OptiFine's switch to official member names, OptiFine's transformation service
+	 * patches classes <em>at load time</em> from the {@code patch/srg/*.xdelta} data inside its jar - binary
+	 * deltas, which rewriting the jar's {@code .class} entries cannot reach. Its output therefore still
+	 * carries SRG names, and the loader is the only place left to fix them. On 1.21 the class the JVM
+	 * verified contained</p>
+	 *
+	 * <pre>net/minecraft/server/packs/resources/Resource
+	 *   .m_215509_()Lnet/minecraft/server/packs/resources/ResourceMetadata;</pre>
+	 *
+	 * <p>while no entry of the shipped loader jar contained that string at all; the run died with
+	 * {@code NoSuchMethodError: 'ResourceMetadata Resource.m_215509_()'} and the sound engine never started.
+	 * {@code SrgNameTable} writes this table offline, limited to the owners the payload's own classes
+	 * declare or reference - which is what keeps it a few hundred kilobytes instead of the whole mapping.</p>
+	 */
+	private static final String SRG_TABLE = "/optifineoforge/srg-to-official.txt";
+
+	/** The shape of an SRG member name, the same one the offline tools look for. */
+	private static final java.util.regex.Pattern SRG_NAME = java.util.regex.Pattern.compile("[fm]_\\d+_");
+
+	/** {@code owner} to its {@code srg} to {@code official} member names. */
+	private static final Map<String, Map<String, String>> SRG_NAMES = loadSrgNames();
+
+	private static Map<String, Map<String, String>> loadSrgNames() {
+		Map<String, Map<String, String>> result = new LinkedHashMap<>();
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(SRG_TABLE)) {
+			if(stream == null) {
+				return Map.of();
+			}
+			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+				String text = line.trim();
+				if(text.isEmpty() || text.startsWith("#")) {
+					continue;
+				}
+				String[] parts = text.split("\t");
+				if(parts.length != 3) {
+					continue;
+				}
+				result.computeIfAbsent(parts[0], key -> new LinkedHashMap<>()).put(parts[1], parts[2]);
+			}
+		} catch(IOException e) {
+			LOGGER.warn("could not read " + SRG_TABLE + ": " + e);
+		}
+		int names = result.values().stream().mapToInt(Map::size).sum();
+		if(names > 0) {
+			LOGGER.info("SRG names to rewrite while transforming: " + names + " across " + result.size()
+					+ " owner(s)");
+		}
+		return Map.copyOf(result);
+	}
+
+	/** The official name for an SRG-shaped member of {@code owner}, or null when the table has none. */
+	private static String officialName(String owner, String name) {
+		if(!SRG_NAME.matcher(name).matches()) {
+			return null;
+		}
+		Map<String, String> names = SRG_NAMES.get(owner);
+		return names == null ? null : names.get(name);
+	}
+
+	/**
+	 * Rewrites the SRG-shaped member names a class declares and references, where the table knows them.
+	 *
+	 * <p>Only names of that shape are touched, and only where the table answers for the owner, so this is
+	 * inert on every line whose OptiFine already speaks official names - all of them but 1.21.</p>
+	 */
+	private static void renameSrgMembers(ClassNode node) {
+		if(SRG_NAMES.isEmpty() || node == null || !Boolean.getBoolean("optifineoforge.renameSrg")) {
+			return;
+		}
+		int renamed = 0;
+		Map<String, String> own = SRG_NAMES.getOrDefault(node.name, Map.of());
+		for(FieldNode field : node.fields) {
+			String official = own.get(field.name);
+			if(official != null) {
+				field.name = official;
+				renamed++;
+			}
+		}
+		for(MethodNode method : node.methods) {
+			String ownName = own.get(method.name);
+			if(ownName != null) {
+				method.name = ownName;
+				renamed++;
+			}
+			if(method.instructions == null) {
+				continue;
+			}
+			for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+				if(insn instanceof MethodInsnNode call) {
+					String official = officialName(call.owner, call.name);
+					if(official != null) {
+						call.name = official;
+						renamed++;
+					}
+				} else if(insn instanceof FieldInsnNode fieldInsn) {
+					String official = officialName(fieldInsn.owner, fieldInsn.name);
+					if(official != null) {
+						fieldInsn.name = official;
+						renamed++;
+					}
+				} else if(insn instanceof InvokeDynamicInsnNode dynamic) {
+					// A lambda's target travels as a handle in the bootstrap arguments, so a name there
+					// needs the same treatment as a call instruction - and a lambda body is exactly where
+					// 1.21's failure came from.
+					for(int index = 0; index < dynamic.bsmArgs.length; index++) {
+						if(dynamic.bsmArgs[index] instanceof Handle handle
+								&& SRG_NAME.matcher(handle.getName()).matches()) {
+							String official = officialName(handle.getOwner(), handle.getName());
+							if(official != null) {
+								dynamic.bsmArgs[index] = new Handle(handle.getTag(), handle.getOwner(), official,
+										handle.getDesc(), handle.isInterface());
+								renamed++;
+							}
+						}
+					}
+				}
+			}
+		}
+		if(renamed > 0) {
+			LOGGER.info("Rewrote " + renamed + " SRG name(s) in " + node.name.replace('/', '.')
+					+ ": OptiFine's patch data emits them");
+		}
 	}
 
 	/**
