@@ -458,6 +458,16 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		// "optifine -> minecraft: reads it = false" and the swap still resolves every shim it names).
 		// So the payload's superclass is rewritten onto the runtime's instead, and {@link #reparent}
 		// does that, including the constructor's super call.
+		// A class the plan means to move is worth one line, because the guard below can skip the whole block
+		// without leaving a trace: no "Re-parented" and no "Left ... alone" being absent at the same time is
+		// the same signature as a plan that was never consulted, and telling those apart cost a round.
+		// Measured on 1.21.8: BlockEntity produced neither line, so this is what says why.
+		if(REPARENTS_BY_CLASS.containsKey(input.name)) {
+			LOGGER.info("Reparent plan covers " + input.name.replace('/', '.') + ": the payload extends "
+					+ patched.superName + ", the class handed over extends " + input.superName
+					+ (sameName(patched.superName, input.superName)
+							? " - equal, so nothing is rewritten and the copy is installed as it is" : ""));
+		}
 		if(!sameName(patched.superName, input.superName)) {
 			String problem = reparent(patched, input);
 			if(problem == null) {
