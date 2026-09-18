@@ -3492,3 +3492,69 @@ loader 的类实现 `cpw.mods.modlauncher.api.ITransformationService`,但**没�
 - 三条分支的这一轮改动都已提交并推送:`1.21.x` 三个提交(服务注册、shim 形状、构造器重复)、`1.20.x` 三个提交
   (元数据/构建 + 形状修正移植 + 本文件)。**没有发布任何东西。**
 
+## 2026-09-19(第四段):1.21.8 的 shim 补齐,以及卡住它的那一步不是换类而是分层
+
+上一段把 1.21.8 停在"`GpuTexture.isStencilEnabled` 缺失",并猜 `MissingTargets` 没覆盖到它。这一轮把 shim
+这一层补齐了(`1.21.x` `5bbe9dd`),**`[OptiFine]` 行数从 62 变成 442**,但那条线仍未通过 —— 而卡住它的东西换了。
+
+### 一、`ForgeApiShims` 又补了两处,都是"跑起来才知道"
+
+1. **成员不能只从调用点推**。原来的壳只声明"OptiFine 的类在这个类型上点名的成员",但**调用可以写在子类型上、
+   经过父类型解析** —— 于是壳不完整。实测:`IForgeGpuTexture.isStencilEnabled` 是以
+   `GpuTexture.isStencilEnabled` 的形式被调用的,所以壳里没有它,而 **OptiFine 自带的 `GpuTexture` 已经装上了**
+   也照样崩。现在把 OptiFine 自带那份拷贝的**声明**读进来。
+   注意**不搬字节**:第一版就是照搬,结果栽在另一头 —— OptiFine 自带的签名写在它自己的**混淆**命名空间里,
+   于是 `NoClassDefFoundError: avs`。判据是"描述符里的类型是否在包内":混淆的游戏类是单段名(`avs`、`fmk`),
+   而能解析到的都有斜杠。
+2. **类型的集合不能只靠引用扫描**。扫描只看见写进描述符和指令的名字,而 ModLauncher 在变换一个类时**要走它的
+   父类与接口链**,那个类型必须存在、哪怕没有一处字节码点名它。实测:`Cannot find class
+   net/minecraftforge/common/extensions/IForgeEntity` ← `TransformerClassWriter.computeHierarchyFromFile`,
+   而这个类型既不在扫描出的 60 个里,也不在壳里。现在**OptiFine 自带的 Forge 类型全部纳入**,集合从 60 变成 **89**。
+3. 顺带:记录到的 `<clinit>` 会和壳自己写的那份撞车(`ClassFormatError: Duplicate method name "<clinit>"`),
+   现在构造器与静态初始化器都不再从拷贝里记。
+
+### 二、1.21.8 现在停在哪:分层,而且**那一步根本没跑**
+
+新的崩溃不再是缺成员,而是:
+
+```
+java.lang.VerifyError: Bad type on operand stack
+  Location: net/neoforged/neoforge/client/network/ClientPayloadHandler.handle(...)
+  Reason: Type 'net/minecraft/world/level/block/entity/BlockEntity' is not assignable to
+          'net/neoforged/neoforge/attachment/AttachmentHolder'
+```
+
+**这正是本仓库 `PatchedClassTransformer` 自己的注释里记过的那一条**(注释里连 `AttachmentSync.onChunkSent`
+@82 的原文都抄了),也就是说它属于 `reparent.txt` 要处理的情形。这一轮量到的事实:
+
+| 事实 | 判据 |
+|---|---|
+| 运行时 `BlockEntity` 继承 `net.neoforged.neoforge.attachment.AttachmentHolder` | `javap` 运行时视图 |
+| OptiFine 的 `BlockEntity` 继承的是 **`net.minecraftforge.common.capabilities.CapabilityProvider$BlockEntities`**(嵌套类,不是 `CapabilityProvider`) | `javap` 补丁产物 |
+| 计划的第 3 个字段与运行时一致(`()V`),计划本身正确 | `reparent.txt` 内容 + `Hierarchy rewrites planned: 1` |
+| shim 齐全(`CapabilityProvider$BlockEntities.class` 在 loader jar 里) | 资源检查 |
+| **reparent 一次也没成功执行** | 日志里 `Re-parented` **0 行** |
+| 也**不是被拒绝** | 日志里 `Left ... BlockEntity alone` **0 行**(另有 3 个类被拒,都不是它) |
+
+两件事都为零,只剩一种解释:`if(!sameName(patched.superName, input.superName))` 这个**前置判断没成立** ——
+也就是 transformer 收到的 `input`(它认为的"运行时那份")的父类,**已经等于** payload 的父类,即那个 Forge 类型。
+所以整段 reparent 被跳过,装进去的 `BlockEntity` 仍然挂着 Forge 的父类,VerifyError 随之而来。
+
+另一处值得并排看的事实:**1.21.8 上 `OptiFineTransformer` 没有打印 `Targets:`**(1.21.4 上打印 `Targets: 474`),
+本项目的 `Patched-class targets: 516` 是唯一的。所以这一条线上并不存在"两个 transformer 抢同一批类"的问题,
+`input` 为什么已经是 Forge 版本,是**下一问**。
+
+### 三、rig 的一条操作事实(省下一次同样的困惑)
+
+新建的 game dir 里 `config/fml.toml` 是**默认的 `fmlearlywindow`**,于是会撞上本文件记过的
+`IllegalStateException: Already building.`(1.21.8 上这次出现在 `PerformanceElement.render` → 进度条)。
+`launch.ps1` 的 `-EarlyWindowProvider skip` 是"别动这个文件",所以新目录第一次跑要么不传这个开关、要么先写
+`earlyWindowProvider = "none"`。
+
+### 四、边界
+
+- **1.21.8 仍未通过**;`[OptiFine]` 442 行说明它已经走到很后面(1.21.4 通过与它同量级)。**1.21.4 的通过不受影响。**
+- 这一轮只动了生成 shim 的工具,没有碰 loader 的换类逻辑;**reparent 那一问没有结论**,只把"它没跑"与
+  "为什么没跑"的边界量清楚了。
+- 其余 13 条线没有跑,**没有发布任何东西**。
+
