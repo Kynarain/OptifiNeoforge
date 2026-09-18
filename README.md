@@ -14,16 +14,18 @@
 
 > **状态:15 / 15 条线已实机验证,其中 10 条已发布 `1.0.0`。** 判据是**一次真实启动**,不是"能编译":每种 Minecraft 版本都用自己的 NeoForge 与自己的 OptiFine 构建各跑一次,客户端进到标题画面(`Setting user`)、声音引擎启动(`Sound engine started`)、本次运行**没有写出崩溃报告**,并且 stderr 与记录一致。逐条的实测数字见下面的矩阵,每个已发布的版本附**一个** jar(加载器侧,不含 OptiFine)。
 >
-> **另有 5 条已验证但没有发布。** 其中 **2 条仍卡在构建工具**,都在 `1.20.x` 线:`1.20.1`(那一代 NeoForge 是旧的 `net.neoforged:forge` 坐标,Gradle 插件解析不到)与 `1.20.2`(整个 `20.2.x` 系列在 Maven 上都没有 Gradle Module Metadata,ModDevGradle 因此取不到它需要的 `neoforge-moddev-bundle` 变体 —— 实测 `20.2.88` 没有 `.module`,而 `20.4.251` 与 `20.6.141` 有)。
+> **另有 5 条已验证但没有发布,而它们的构建阻塞现在都已解除**(每条都实测过一次)。`1.20.1` 与 `1.20.2` 原来都解不出依赖:前者那一代 NeoForge 是旧的 `net.neoforged:forge` 坐标,产物文件的 POM 是 `packaging=pom` 且没有依赖、真正带分类符,而插件要的是 `net.neoforged:neoforge`;后者整个 `20.2.x` 系列在 Maven 上都没有 Gradle Module Metadata(实测 `20.2.88` 没有 `.module`,`20.4.251` 与 `20.6.141` 有),所以 ModDevGradle 取不到它需要的 `neoforge-moddev-bundle` 变体。这两条现在**绕开该插件**,按一张取自各版自身元数据的显式类路径编译 —— 本线源码里没有一处 `net.minecraft` / `com.mojang` 的 import,所以既不用下载也不用反编译 Minecraft,构建以秒计。`1.21.9` / `1.21.10` / `1.21.11` 原来死在 `:compileJava`:实现 `cpw.mods.modlauncher.api.ITransformationService` 的那批类放在 `src/main`,而这三版 NeoForge 已经没有 ModLauncher(实测 1.21.11 报 `程序包cpw.mods.modlauncher.api不存在` 共 100 个错误);那批类现在移进自己的源码根,由 `-Pmountpoint` 按代次选择编不编。
 >
-> 另外 **3 条(`1.21.9` / `1.21.10` / `1.21.11`)的构建阻塞已经解除,但仍未发布**。原来的原因是:`1.21.x` 分支把实现 `cpw.mods.modlauncher.api.ITransformationService` 的那批类放在 `src/main`,而这三版 NeoForge 已经没有 ModLauncher,`:compileJava` 直接失败(实测 1.21.11 报 `程序包cpw.mods.modlauncher.api不存在` 共 100 个错误)。这批类现在移进了自己的源码根,由 `-Pmountpoint` 按代次选择,三条线的构建各实测通过一次。但它们的挂载点是我们自己的 `ClassProcessor`(由 rig 编译进载荷 jar,那份 jar 含 OptiFine 的类、不分发),所以这三条产出的 jar 只是加载器侧工具 + mod 骨架,**发布本身是独立的一步,尚未做**;这次也没有重跑实机启动,实机判据仍是矩阵里那一份。
+> **但"能构建"不等于"可发布",这五条仍未发布。** `1.20.1` / `1.20.2` 的产物与已发布的 `1.20.4` / `1.20.6` 同类(含 ModLauncher 转换服务,但不含载荷);`1.21.9` – `1.21.11` 的产物只有加载器侧工具 + mod 骨架,因为那三条的挂载点是我们自己的 `ClassProcessor`,由 rig 编译进含 OptiFine 类的载荷 jar(与 `26.x` 为 26.1.2 发布的产物同类)。**发布本身是独立的一步,尚未做**,而这一轮**没有重跑任何一次实机启动**(这台机器上没有 rig),所以这五条的实机判据仍然只有矩阵里那一份。
+>
+> 顺带记录一处**构建层面的改正**:`1.20.x` 线的元数据文件名分界已经量清(1.20.1 – 1.20.4 只读 `META-INF/mods.toml`,1.20.6 两个名字都读),而此前四个版本一律写 `neoforge.mods.toml` —— 也就是说已发布的 1.20.4 产物里那份元数据,对 20.4.251 的 FML 等于不存在。现在写出的名字与各版自己的产物一致;发布说明与已上传的资产没有改动。
 
 ## 实测矩阵(2026-09-14 – 2026-09-18)
 
 | 分支 | Minecraft | NeoForge | `VERDICT` | `Setting user` | `[OptiFine]` 行数 | stderr | 本次崩溃报告 | 产物 |
 |---|---|---|---|---|---|---|---|---|
 | 1.20.x | 1.20.1 | 47.1.106 | `STARTED (40s, Sound engine started)` | ✓ | 157 | 27 字节 | 无 | 未发布(见上) |
-| 1.20.x | 1.20.2 | 20.2.88 | `STARTED (40s, Sound engine started)` | ✓ | 239 | 14 625 字节¹ | 无 | 未发布(构建工具解析不到 `20.2.88` 的 moddev 变体) |
+| 1.20.x | 1.20.2 | 20.2.88 | `STARTED (40s, Sound engine started)` | ✓ | 239 | 14 625 字节¹ | 无 | 未发布(见上) |
 | 1.20.x | 1.20.4 | 20.4.251 | `STARTED (40s, Sound engine started)` | ✓ | 241 | 14 481 字节¹ | 无 | [1.0.0+mc1.20.4](../../releases/tag/v1.0.0+mc1.20.4) |
 | 1.20.x | 1.20.6 | 20.6.141 | `STARTED (40s, Sound engine started)` | ✓ | 222 | 0 字节 | 无 | [1.0.0+mc1.20.6](../../releases/tag/v1.0.0+mc1.20.6) |
 | 1.21.x | 1.21 | 21.0.167 | `STARTED (40s, Sound engine started)` | ✓ | 252 | 14 141 字节¹ | 无 | [1.0.0+mc1.21](../../releases/tag/v1.0.0+mc1.21) |
