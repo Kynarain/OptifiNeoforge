@@ -156,21 +156,18 @@ public final class ReloadProbe {
 		if(!enabled()) {
 			return;
 		}
-		// The barrier is called by the listener itself, so the caller is on the stack - which is the only
-		// way to name it, since wait(T) receives the listener value and not the listener. Skipping the JDK
-		// frames and this class reaches the listener's own class directly.
-		String caller = "?";
+		// The whole stack, not a guessed caller: the reload path runs through wrappers and lambdas, so the
+		// first useful frame is not the listener - measured, and it is why this logs every frame instead.
+		// The listener whose class appears in no arrival is the one that never got here.
+		StringBuilder frames = new StringBuilder();
 		for(StackTraceElement frame : Thread.currentThread().getStackTrace()) {
 			String name = frame.getClassName();
-			if(name.startsWith("java.") || name.startsWith("jdk.") || name.startsWith("kynarain.")
-					|| name.startsWith("net.minecraft.server.packs.resources.SimpleReloadInstance")) {
+			if(name.startsWith("java.") || name.startsWith("jdk.") || name.startsWith("kynarain.")) {
 				continue;
 			}
-			caller = name;
-			break;
+			frames.append(name).append('|');
 		}
-		LOGGER.info("barrier reached on " + Thread.currentThread().getName() + " for " + caller);
-	}
+		LOGGER.info("barrier stack on " + Thread.currentThread().getName() + ": " + frames);	}
 	/**
 	 * Watches the future one listener's reload returns, naming it when the future completes.
 	 *
