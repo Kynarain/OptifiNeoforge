@@ -171,6 +171,23 @@ public final class ReloadProbe {
 		}
 		LOGGER.info("barrier reached on " + Thread.currentThread().getName() + " for " + caller);
 	}
+	/**
+	 * Watches the future one listener's reload returns, naming it when the future completes.
+	 *
+	 * <p>The way to name the listener a reload stops on: every listener's task is started by the reload, so
+	 * the started lines already carry all the names, and the one whose future never completes is missing
+	 * from these lines. Walking the stack instead does not work - the reload path goes through wrappers and
+	 * lambdas, so the frames there are RenderSystem and ResourceManagerReloadListener rather than the
+	 * listener, which was measured before this was written.</p>
+	 */
+	public static void watching(java.util.concurrent.CompletableFuture<?> future, Object listener) {
+		if(!enabled()) {
+			return;
+		}
+		String name = describe(listener);
+		future.whenComplete((value, error) -> LOGGER.info("listener future completed: " + name
+				+ (error == null ? "" : " with " + error)));
+	}
 	/** Listener tasks in flight, so a reload that stalls with none in flight is visible as such. */
 	private static volatile int running;
 

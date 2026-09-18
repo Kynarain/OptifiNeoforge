@@ -341,6 +341,17 @@ reload 1: 28 listeners
 没出现过的那个就是它;② 换个插桩点 —— 例如在 `SimpleReloadInstance.lambda$of$0` 里,对 `listener.reload(...)` 返回的 future
 挂一个 `whenComplete`(不是改逻辑,只是加日志),谁没有走到 complete 就是谁。两条都不需要猜。
 
+**第 ② 条做了,结果把第 ① 条变成唯一可行的那条。** 在 `lambda$of$0` 里给每个 `listener.reload(...)` 返回的 future 挂上
+`whenComplete` 之后,实测:**完成数 0**(而 started 仍是 28、barrier 到达仍是 27)。这个 0 是**全局的**:到达 barrier 的 27 个监听器
+都在等"全部到齐"才被放行,所以它们的 future 一个都不会完成 —— 于是"started 减去 completed"这个差集**等于全部 28 个**,
+一个名字都点不出来(实测正是如此:28 个名字原样列出来)。换句话说:**用"完成了没有"来筛是筛不动的,因为卡点是全局的**,
+能筛的只有"到没到 barrier",而到达那一侧的身份拿不到。
+
+所以只剩第 ① 条:**在 27 次到达时把整个栈打出来**,与 28 个 `listener task started` 名字求差 —— 没有在任何一次到达栈里出现过的
+那个监听器就是答案。(另有一条同样干净、但要动 rig 的路:离线把人实现 `PreparableReloadListener` 的类列出来做成一份计划,
+让探针在每个类的 `reload` 入口打一行 —— 那是本项目一贯的做法:名单由离线工具量出来,而不是在运行期猜。)
+
+
 
 
 

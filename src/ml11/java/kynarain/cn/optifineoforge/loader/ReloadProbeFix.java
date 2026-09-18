@@ -97,7 +97,18 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 
 	/** Marks one listener's task as started, and as finished when it returns. */
 	private static void probeListenerTask(MethodNode method) {
-		method.instructions.insert(taskCall("started"));
+		// Every listener's future is watched, so the one that never completes is the one missing from the
+		// completion lines - see ReloadProbe.watching for why the stack cannot answer this instead.
+		for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if(insn instanceof MethodInsnNode call && RELOAD.equals(call.name) && call.desc.endsWith(")Ljava/util/concurrent/CompletableFuture;")) {
+				InsnList hook = new InsnList();
+				hook.add(new InsnNode(Opcodes.DUP));
+				hook.add(new VarInsnNode(Opcodes.ALOAD, 3));
+				hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "watching",
+						"(Ljava/util/concurrent/CompletableFuture;Ljava/lang/Object;)V", false));
+				method.instructions.insert(insn, hook);
+			}
+		}		method.instructions.insert(taskCall("started"));
 		probeBarrier(method);
 		for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
 			if(insn.getOpcode() == Opcodes.RETURN) {
@@ -126,6 +137,9 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 	private static final String BARRIER = "net/minecraft/server/packs/resources/PreparableReloadListener$PreparationBarrier";
 
 	private static final String BARRIER_WAIT = "wait";
+
+	/** The per-listener entry point whose future decides when the reload can move on. */
+	private static final String RELOAD = "reload";
 
 	private static InsnList barrierCall() {
 		InsnList call = new InsnList();
