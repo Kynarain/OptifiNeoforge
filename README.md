@@ -391,6 +391,16 @@ reload 1: 28 listeners
 **下一轮第一件事就是这个**:把这 22 个名字按点分写进计划再跑一次,看 `entered` 是否从 4 变多。在此之前,这一段的结论保持为
 "插桩没有覆盖到大多数监听器,原因未定"。
 
+**点分这个假设也被证伪了 —— `entered` 仍然是 4,命中集合一模一样。** 计划改成 `Target.targetClass(owner.replace('/','.'))`
+(与仓库里 `PatchedClassTransformer` 自己的写法一致)之后重跑,结果不变:只有 `TextureManager`、`FontManager`、`ModelManager`、
+`ParticleEngine` 四个被标记,其余 18 个一行都没有。所以"名字形状"不是原因,**这一点现在是实测而不是推测**。
+
+到这一步为止,关于这 18 个**被排除**的解释有三个,而且都是被实测排除的:① 完成度不是判据(全局阻塞,28 个 future 全不完成);
+② 到达栈里没有身份(整栈都是包装类);③ 名字形状(点分/内部名,两种都试过,结果一样)。剩下**没有**被验证的是"类到底有没有被交给这个
+transformer":下一个动作不该再猜,而应当**直接量**——在 `PatchedClassTransformer` 与 `ReloadProbeFix` 里对同一批类各打一行
+"我看到了这个类",一次运行就能看出是被别的 transformer 先接走(与 `Nickname` 式的顺序问题一致),还是根本没被交给任何人。
+
+
 
 
 

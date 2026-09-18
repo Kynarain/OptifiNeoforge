@@ -249,7 +249,10 @@ public final class ReloadProbeFix implements ITransformer<ClassNode> {
 		result.add(Target.targetClass(SIMPLE_RELOAD));
 		result.add(Target.targetClass(BARRIER_IMPL));
 		for(String owner : LISTENERS_TO_MARK) {
-			result.add(Target.targetClass(owner));
+			// Dotted, which is the convention this repository already uses for targets - PatchedClassTransformer
+			// builds its own set with name.replace('/', '.'). The plan carries internal names, and passing
+			// them through unchanged is why only four of twenty-two planned listeners were ever marked.
+			result.add(Target.targetClass(owner.replace('/', '.')));
 		}
 		return result;
 	}
