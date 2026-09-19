@@ -1047,3 +1047,63 @@ OptiFine 正式版 jar 已在 rig 里(`OptiFine_1.21.11_HD_U_J9.jar`,8 045 116 �
 FML 自己的 `SimpleBufferBuilder "Already building"`(与 OptiFine 的贴图工作抢同一个 GL 上下文);
 启动入口用 `DiagnosticClientAny`(不引用任何 FML API、全反射,因此同时适配 loader 10.0.14 与 10.0.32,
 后者的 `startup` 返回 `Entrypoint$StartupResult` 而不是 `FMLLoader`)。
+## 26.1.2 在重建后的 rig 上的进度(这一节关于 `26.x` 线,记在这里是因为工作发生在本轮的 rig 上)
+
+GitHub 上 `26.x` 的 README 早就写着 26.1.2"实机验证"(`[OptiFine]` 3478 行、`processClass` 795 次)。
+本轮在**重建后的 rig** 上第一次真的去复现它,得到的是一个诚实的中间状态:
+
+**已经量到的**
+
+* rig 装上了 Minecraft 26.1.2 与 NeoForge `26.1.2.109`(FML **11.0.15**、Java **25**),
+  原版客户端 `versions\26.1.2\26.1.2.jar` 38,113,927 字节;
+  启动入口仍是 `net.neoforged.fml.startup.Client`,所以 `launch-fml10.ps1` 用得起来——
+  为它加了 `-JavaExe`(这一线要 JDK 25,1.21.x 要 21)。
+* **基线**(mods 里只有修过元数据的 OptiFine):`VERDICT: STARTED` + `Setting user` + `Sound engine started`
+  + 无崩溃报告 + stderr 107 字节。也就是说这一版的**实例本身没问题**。
+* OptiFine 的 `K1_pre2` 自带 `OptiFineClassProcessor`(同时是 `IModFileCandidateLocator`),
+  但它的 `META-INF/mods.toml` 是 Forge 时代的,必须换成 `neoforge.mods.toml`;
+  **`optifine/Patcher`、`optifine/xdelta/**`、`optifine/json/**` 绝对不能删**——
+  第一次删了它们,`OptiFineBaseTransformer.<init>` 立刻
+  `NoClassDefFoundError: optifine/Patcher`,处理器整个实例化不出来
+  (`ServiceConfigurationError: Provider optifine.OptiFineClassProcessor could not be instantiated`)。
+* 处理器要的"基底类"在 NeoForge 生产运行时里拿不到:不把成品类放进它的 jar 时,它对每个目标都报
+  `java.io.IOException: Base resource not found: net/minecraft/…`(一次跑 866,068 字节 stderr),
+  于是 OptiFine 全程不生效(0 行 `[OptiFine]`)。把仓库离线流水线产出的 `srg/**` 成品类
+  (566 个,其中 net/minecraft 486)并进 OptiFine 的 jar 之后,处理器才开始真正安装它们。
+
+**一条与 1.21.9 那轮同源的、新的加载器陷阱**
+
+`optifine-own-classes.jar`(OptiFine 自己的类 + Forge shim)一开始被 FML **当成早期服务罐**:
+
+```
+Found 4 early service jars (out of 103)
+Loading FML Early Services:
+ - …/loader-11.0.15.jar
+ - …/earlydisplay-11.0.15.jar
+ - mods/optifine-26.1.2-neoforge.jar
+ - mods/optifine-own-classes.jar          <- 它不该在这里
+```
+
+原因是流水线拆出的 classpath jar **原样保留了 `META-INF/services/**`**,而 OptiFine 的
+`net.neoforged.neoforgespi.transformation.ClassProcessor` / `...locating.IModFileCandidateLocator`
+两个服务文件就在里面。早期服务的类由一个**看不见游戏类**的加载器加载,于是
+`net.optifine.reflect.Reflector.<clinit>` 抛
+`NoClassDefFoundError: net.minecraft.world.level.chunk.ChunkAccess`,
+刚被打过补丁的 `net.minecraft.util.Mth.<clinit>` 又抛 `net/optifine/util/MathUtils` 找不到。
+从第二个罐子里去掉这两个服务文件之后,`[OptiFine]` 开始打印(5 行),stderr 回到 107 字节。
+
+**还差什么(下一轮从这里进)**
+
+OptiFine 的处理器开始安装类之后,客户端死在**换父类**这一处,错误与 FML 10 线上一模一样:
+
+```
+VerifyError: Bad type on operand stack
+  Location: net/neoforged/neoforge/attachment/AttachmentSync.onChunkSent(...)V @82: invokestatic
+  Reason: Type 'net.minecraft.world.level.block.entity.BlockEntity' ... is not assignable to
+          'net/neoforged/neoforge/attachment/AttachmentHolder'
+```
+
+1.21.9 上这是由处理器**在加载期**读 `reparent.txt` 修的;26.1.2 的挂载点是 OptiFine 自己的处理器,
+它不会做这件事,所以那一套(换父类 + 构造器 chain 重写、成员回填、shim)**必须在离线阶段就写进
+并进 OptiFine jar 的 `srg/**` 成品类里**——这正是 `26.x` 文档里写的"本项目贡献的是离线流水线"。
+本轮还没有做这一步,因此 26.1.2 **没有通过验收**,只是从"完全不动"推进到了"OptiFine 在跑、卡在换父类"。
