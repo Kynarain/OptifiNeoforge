@@ -198,3 +198,23 @@ et.neoforged.fml.startup.Client + 常规游戏参数启动,支持 -Mods(拷进 m
 
 也就是说 **1.21.9+ 的"启动"这一半做完了**。三条线还差的最后一件事是把 26.x 的 src/fml10(已实测可编译)
 与 OptiFine 的类一起**做成 FML 10 会发现的那个载荷 jar**,然后用这个脚本去跑。
+### 载荷 jar 到底要装什么(从 src/fml10 两个类的说明里读出来的,附出处)
+
+下一步"打包 fml10 载荷"的配方,现在不是猜的了 —— 两个类自己的文档写清了 FML 10 的发现机制:
+
+- OptifinePayloadClassProcessor **通过 META-INF/services/net.neoforged.neoforgespi.transformation.ClassProcessor
+  注册**(FMLLoader.createClassProcessorSet → ServiceLoaderUtil.loadServices),它做的事是把**已经打好补丁的游戏类
+  覆盖到游戏自己那份上**;而那些成品类按约定放在**同一个 jar 的 srg/ 下**(rig 事先把 patch/srg/** 应用到原版归档
+  的结果,也就是本仓库离线管线 optifine-patched.jar 的布局)。
+- OptifinePayloadLocator 之所以存在,是因为
+  
+et.neoforged.fml.loading.EarlyServiceDiscovery.SERVICES 正好只有
+  {IModFileCandidateLocator, IModFileReader, IDependencyLocator, GraphicsBootstrapper, ImmediateWindowProvider} ——
+  **ClassProcessor 不在其中**。所以"只声明 ClassProcessor 的 mods/ jar"不会被预加载、处理器永远不会被看到;
+  那段注释还记了实测现象:那种 jar 跑到了标题界面,却**零条 [OptiFine]、日志里连处理器都没有**。
+  因此这个 jar **还要**声明一个 IModFileCandidateLocator(服务文件
+  META-INF/services/net.neoforged.neoforgespi.locating.IModFileCandidateLocator),并且要靠自己的元数据
+  被普通的 mods/ 扫描发现。
+
+**所以 1.21.9 的载荷 jar = 离线管线产出的 srg/** 成品类 + 那两个 fml10 类 + 两个服务文件 + META-INF/neoforge.mods.toml。**
+(本轮只把这份配方记下来;**组装脚本还没写**。)
