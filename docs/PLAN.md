@@ -824,3 +824,23 @@ Exception message: java.lang.NullPointerException: Cannot invoke "net.minecraft.
 **下一步的规则**应当是把丢掉改成**有条件保留**:扫运行时 `<clinit>` 里每条 `owner == 本类` 的
 `GETSTATIC`/`PUTSTATIC`,要求成品类里那个字段同名同描述符**且也是 static**;全部满足就保留这个初始化方法,
 有一条不满足就丢掉(并记日志)。这样 `BreezeWindLayer` 那类仍然被挡住,而标签静态字段能拿到值。
+**这一处已经查到具体字段了**(下一轮直接从这里进):把 `TagConventionLogWarning.<clinit>` 的
+`LineNumberTable` 读出来,`line 201` 对应字节码偏移 `2942`,该处正是:
+
+```
+2930: sipush 149
+2933: getstatic Registries.ITEM
+2936: ldc_w   "dyes/black"
+2939: getstatic net/neoforged/neoforge/common/Tags$Items.DYES_BLACK : Lnet/minecraft/tags/TagKey;
+2942: invokestatic createForgeMapEntry(ResourceKey;String;TagKey)
+```
+
+也就是说**为 null 的是 `net.neoforged.neoforge.common.Tags$Items.DYES_BLACK`——NeoForge 自己的静态标签字段**,
+不是我们装的任何类。已核对的:两个 mod 罐子里**都没有 `net/neoforged/**` 条目**(所以不是我们把 NeoForge 的类
+遮蔽掉了)。因此下一轮要查的是:`Tags$Items` 的 `<clinit>` 为什么没有给这个字段赋值——最可能的方向是它取的
+值来自游戏类里被我们换掉的静态方法(日志里 OptiFine 自己也报过
+`[OptiFine] (Reflector) Method not present: net.minecraft.tags.ItemTags.create`),而 `<clinit>` 里的赋值
+被异常/分支跳过了。
+
+另外把这一轮"条件保留 `<clinit>`"的实测结果记清楚:**它没有解决这一处**(改完再跑,仍然是同一个 NPE),
+所以"保留运行时 `<clinit>`"既不是充分条件也不是充分修法;这一处的根因在上面那条链上,不在 `<clinit>` 的取舍。

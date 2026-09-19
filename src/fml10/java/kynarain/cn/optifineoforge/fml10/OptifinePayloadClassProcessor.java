@@ -864,27 +864,41 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 				continue;
 			}
 			if("<clinit>".equals(method.name)) {
-				// Never, and this is the one member the blanket rule must not keep. A static initialiser is
-				// written against the field shapes of its own class, and the two copies can disagree about
-				// them: measured on 1.21.9, BreezeWindLayer's payload copy declares
+				// A static initialiser is written against the field shapes of its own class, and keeping it
+				// wholesale is only safe while those shapes agree. Measured on 1.21.9, BreezeWindLayer's
+				// payload copy declares
 				//
 				//   private net.minecraft.resources.ResourceLocation TEXTURE_LOCATION;   (instance, assigned in
 				//                                                                        the constructor)
 				//
-				// while the runtime's declares the same name and descriptor as static final, so its <clinit>
-				// reads it with GETSTATIC. Keeping that method next to the payload's instance field made the
-				// class fail its own initialisation with
+				// while the runtime's declares the same name and descriptor as static final, and the runtime's
+				// <clinit> reads it with GETSTATIC - keeping that method next to the payload's instance field
+				// made the class fail its own initialisation with
 				//
 				//   IncompatibleClassChangeError: Expected static field
 				//     net.minecraft.client.renderer.entity.layers.BreezeWindLayer.TEXTURE_LOCATION
 				//   at …BreezeWindLayer.<clinit>(BreezeWindLayer.java:18)
 				//
-				// inside EntityRenderers.createEntityRenderers, which killed the resource reload. Static state
-				// that really has to come back does so through the member restore plan's initialisers, which
-				// name the field they fill; a whole initialiser does not.
-				LOGGER.info("OptiFine payload: " + target.name.replace('/', '.') + " keeps no runtime static "
-						+ "initialiser (the payload's field shapes are not the runtime's)");
-				continue;
+				// inside EntityRenderers.createEntityRenderers, which killed the resource reload.
+				//
+				// Dropping it unconditionally then broke the other half, also measured: static fields this
+				// rule keeps from the runtime are *assigned* by this initialiser, so dropping it leaves them
+				// null - NeoForge's own TagConventionLogWarning then died in its own <clinit> with
+				//   NullPointerException: Cannot invoke "net.minecraft.tags.TagKey.toString()" because "tag2"
+				//   is null
+				// at TagConventionLogWarning.createForgeMapEntry, out of NeoForgeMod's constructor, which FML
+				// reported as "NeoForge (neoforge) has failed to load correctly".
+				//
+				// So it is kept when every static access it makes to this class' own fields still resolves to
+				// a static field here, and dropped when one does not.
+				String problem = staticAccessProblem(method, source, target);
+				if(problem != null) {
+					LOGGER.info("OptiFine payload: " + target.name.replace('/', '.') + " keeps no runtime static "
+							+ "initialiser: " + problem);
+					continue;
+				}
+				LOGGER.info("OptiFine payload: " + target.name.replace('/', '.') + " keeps the runtime's static "
+						+ "initialiser (every field it touches is static here too)");
 			}
 			source.methods.add(method);
 			keptMethods++;
@@ -1044,6 +1058,37 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 			}
 		}
 		return result;
+	}
+
+	/**
+	 * Why the runtime's static initialiser cannot be kept next to the payload's fields, or null when it can.
+	 *
+	 * <p>Every {@code GETSTATIC}/{@code PUTSTATIC} it makes on this class' own fields has to resolve, in the
+	 * class as it will exist here, to a static field of the same name and descriptor. A field the payload does
+	 * not declare at all is one this rule is adding from the runtime, so it is static by construction; a field
+	 * the payload declares with the same name and descriptor but without {@code static} is the
+	 * BreezeWindLayer case and the initialiser has to go.</p>
+	 */
+	private static String staticAccessProblem(MethodNode initialiser, ClassNode payload, ClassNode runtime) {
+		if(initialiser.instructions == null) {
+			return "it has no instructions to read";
+		}
+		for(org.objectweb.asm.tree.AbstractInsnNode instruction = initialiser.instructions.getFirst();
+				instruction != null; instruction = instruction.getNext()) {
+			if(!(instruction instanceof org.objectweb.asm.tree.FieldInsnNode field)
+					|| !runtime.name.equals(field.owner)
+					|| (field.getOpcode() != Opcodes.GETSTATIC && field.getOpcode() != Opcodes.PUTSTATIC)) {
+				continue;
+			}
+			for(FieldNode declared : payload.fields) {
+				if(declared.name.equals(field.name) && declared.desc.equals(field.desc)
+						&& (declared.access & Opcodes.ACC_STATIC) == 0) {
+					return "it reads or writes " + field.name + " as a static field while the payload declares it "
+							+ "as an instance field";
+				}
+			}
+		}
+		return null;
 	}
 
 	/** Whether a field with this name and descriptor is already in the list. */
