@@ -25,8 +25,8 @@
 | 1.21.7 | `21.7.25-beta` | `OptifiNeoforge-1.0.0+mc1.21.7.jar` | 无 | `preview_OptiFine_1.21.7_HD_U_J6_pre7.jar` | 21 | 已验证 · 已发布(340 行、stderr 0 字节、无崩溃报告;**不含启用光影包**;本轮本机复现四项判据一致、347 行,见下) |
 | 1.21.8 | `21.8.54` | `OptifiNeoforge-1.0.0+mc1.21.8.jar` | 无 | `preview_OptiFine_1.21.8_HD_U_J6_pre16.jar` | 21 | 已验证 · 已发布(337 行、stderr 0 字节、无崩溃报告;本轮本机复现四项判据一致、344 行,见下) |
 | 1.21.9 | `21.9.16-beta` | `OptifiNeoforge-1.0.0+mc1.21.9.jar` | 无 | `preview_OptiFine_1.21.9_HD_U_J7_pre2.jar` | 21 | 已验证 · **未发布**(本机实机跑通 FML 10 挂载点:365 行、stderr 0 字节、无崩溃报告,两次一致;关掉 FML 早期加载画面,见下文) |
-| 1.21.10 | `21.10.64` | `OptifiNeoforge-1.0.0+mc1.21.10.jar` | 无 | `preview_OptiFine_1.21.10_HD_U_J7_pre11.jar` | 21 | **仅构建通过** · 未发布(**未实机验证**:挂载点还没有在这一版上跑过) |
-| 1.21.11 | `21.11.45` | `OptifiNeoforge-1.0.0+mc1.21.11.jar` | `OptiFine_1.21.11_HD_U_J9.jar` | `preview_OptiFine_1.21.11_HD_U_J9_pre4.jar` | 21 | **仅构建通过** · 未发布(**未实机验证**:同上;此前记的 stderr 107 字节是无 mod 对照跑的数字) |
+| 1.21.10 | `21.10.64` | `OptifiNeoforge-1.0.0+mc1.21.10.jar` | 无 | `preview_OptiFine_1.21.10_HD_U_J7_pre11.jar` | 21 | 已验证 · **未发布**(同一套计划零改动跑通:356 行、stderr 0 字节、无崩溃报告,两次一致;关掉 FML 早期加载画面) |
+| 1.21.11 | `21.11.45` | `OptifiNeoforge-1.0.0+mc1.21.11.jar` | `OptiFine_1.21.11_HD_U_J9.jar` | `preview_OptiFine_1.21.11_HD_U_J9_pre4.jar` | 21 | **仅构建通过** · 未发布(**未实机验证**:装不上 profile——`maven.neoforged.net` 连不上,缺 21.11.45 的安装器) |
 
 `1.0.0` 的含义按 `docs/VERSIONING.md`:它由这一条线自己的实机启动记录支撑,不是"功能完备"的断言。
 表中 NeoForge 一列是**这条线实际验证用的版本**(1.21.4 用的是 `21.4.149`,不是镜像里更新的 `21.4.157`)。
@@ -61,8 +61,10 @@ new crash reports: 0   stderr bytes: 0   [OptiFine] lines: 365
 * 启动入口是 rig 的诊断入口点(同一条 `Entrypoint.startup` 管道)。原因见 `docs/PLAN.md`:FML 10 的官方入口点
   `net.neoforged.fml.startup.Client` 把启动期异常交给一个**模态对话框**,什么也不打印、也不写崩溃报告。
 
-`1.21.10` / `1.21.11` 用的是同一个挂载点与同一套计划,但**还没有在它们自己的 OptiFine 构建上跑过**;
-上一轮之前那两行写的是"已验证",那只指构建,这里改回"仅构建通过"。
+`1.21.10` 用的是同一套计划,并且**没有为它改一行处理器代码**就跑通了(两次一致:356 行、stderr 0 字节、
+无崩溃报告、`Sound engine started`)。`1.21.11` 的 OptiFine 正式版 jar 已取到,但这台机器上
+`maven.neoforged.net` 连不上,拿不到 21.11.45 的安装器,而它的 profile 只有安装器能生成——所以那一行是
+**未实机验证**,不是"通过"。
 
 **本节只改了构建,没有改任何实机结论**:这台机器上没有 rig,本轮**没有**重跑启动,
 所以这三条的实机判据仍然只有 `docs/MATRIX.md` 里那一份。发布本身也仍是独立的一步(需要一条启动记录与
