@@ -307,3 +307,27 @@ new crash reports   : 0
 (即 copy 不执行)——
 - 若仍会关闭 ⇒ 问题在"声明了这些类"这一侧(FML 10 对处理器声明面的处理);
 - 若正常跑起来 ⇒ 问题就在 copy(覆盖 ClassNode 的具体做法,FML 10 的扫描线程可能在读同一批结构)。
+### second bisect:问题不在"声明类",而在"真的把成品覆盖上去"那一步
+
+保留 	argets() 照常声明那个类(FML 会正常询问它),但让 	ransform **什么都不做**(取 payload() 的那行改成
+直接置空,于是方法立刻返回):
+
+`
+===== VERDICT: STARTED =====
+Setting user        : True
+Sound engine started: True
+new crash reports   : 0
+`
+
+⇒ **声明这些类没问题,copy 那步才是元凶**。两次一行实验合起来把范围钉到了唯一一处:
+OptifinePayloadClassProcessor.transform → copy(finished, node)(把成品 ClassNode 的内容覆盖到 FML 交来的
+
+ode 上)。
+
+**下一次要试的具体假设**(按可能性排序):
+
+1. **就地改 FML 交来的那个 ClassNode 可能不被 FML 10 接受** —— 改为构造一个新的 ClassNode 并把它作为结果
+   交回去(如果 SimpleClassProcessor 的契约支持)或者至少不共享字段/方法列表;
+2. copy 里那次"取更宽可见性"的合并或接口字段归一化,可能产出 FML 10 的校验不接受的东西(1.20.x/1.21.x 的加载器
+   是 ModLauncher 的 NodeTransformer,契约不同);
+3. 兜底方案(与第 2 轮记过的那条一致):不注册处理器,改为**事先把成品类直接覆盖进游戏 jar**,让这条线"运行期不换装"。
