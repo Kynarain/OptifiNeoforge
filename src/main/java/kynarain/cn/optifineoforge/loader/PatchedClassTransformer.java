@@ -433,6 +433,17 @@ public final class PatchedClassTransformer implements NodeTransformer {
 	private static final String CRASH_REPORT = "net/minecraft/CrashReport";
 
 	/**
+	 * {@code -Doptifineoforge.traceScreen=true} prints every screen the client switches to, by injecting a
+	 * line at the start of {@code Minecraft.setScreen(Screen)}. It exists because a screenshot cannot settle
+	 * "which screen is the client on": measured on 1.20.4, two captures 70 seconds apart both looked like the
+	 * Mojang loading overlay (mean 233,73,8x, one colour at 84%) while the game's own log showed texture
+	 * atlases being built and the Realms availability check that the title screen starts - and the render
+	 * thread was alive in its frame loop, so it was not a reload barrier. Printing the screen name is the
+	 * measurement that does not depend on what a window happens to have painted.
+	 */
+	private static final boolean TRACE_SCREEN = Boolean.getBoolean("optifineoforge.traceScreen");
+
+	/**
 	 * {@code -Doptifineoforge.strictInterfaceKeep=true} restores the older, blunter rule: never install a
 	 * payload copy of an interface the runtime adds members to, whatever kind the payload's copy is.
 	 *
@@ -455,6 +466,13 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		//   NoSuchMethodError: 'void net.minecraft.client.gui.screens.LoadingOverlay.update()'
 		// Giving the runtime's overlay that one method keeps both halves working.
 		stubMissing(input);
+		// The tracers also run here, before the payload lookup, because the classes most worth tracing are
+		// often ones OptiFine does not patch at all: measured on 1.20.4, net.minecraft.client.Minecraft has no
+		// payload copy, so a tracer called only from the swap path never ran and the screen switch it was
+		// supposed to report produced no output at all.
+		traceInit(input);
+		traceCrash(input);
+		traceScreen(input);
 		if(SKIP_PAYLOAD) {
 			return finish(input);
 		}
@@ -672,6 +690,7 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		applyAccessPlan(input);
 		traceInit(input);
 		traceCrash(input);
+		traceScreen(input);
 		LOGGER.info("Replaced " + input.name.replace('/', '.') + " with OptiFine's patched version ("
 				+ fields.size() + " fields, " + methods.size() + " methods)");
 		return finish(input);
@@ -771,6 +790,37 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		if(applied > 0) {
 			LOGGER.info("Widened " + applied + " member(s) of " + input.name.replace('/', '.')
 					+ " to the runtime's access");
+		}
+	}
+
+	/** Prints the screen the client switches to, at the moment it switches. */
+	private static void traceScreen(ClassNode input) {
+		if(!TRACE_SCREEN || !"net/minecraft/client/Minecraft".equals(input.name)) {
+			return;
+		}
+		for(MethodNode method : input.methods) {
+			if(!"setScreen".equals(method.name) || !"(Lnet/minecraft/client/gui/screens/Screen;)V".equals(method.desc)) {
+				continue;
+			}
+			InsnList trace = new InsnList();
+			trace.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "err", "Ljava/io/PrintStream;"));
+			trace.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
+			trace.add(new InsnNode(Opcodes.DUP));
+			trace.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false));
+			trace.add(new LdcInsnNode("OPF-SCREEN "));
+			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+					"(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+			trace.add(new VarInsnNode(Opcodes.ALOAD, 1));
+			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Object", "getClass", "()Ljava/lang/Class;", false));
+			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Class", "getName", "()Ljava/lang/String;", false));
+			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+					"(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
+					"()Ljava/lang/String;", false));
+			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println",
+					"(Ljava/lang/String;)V", false));
+			method.instructions.insert(trace);
+			LOGGER.info("Tracing every screen switch in Minecraft.setScreen");
 		}
 	}
 

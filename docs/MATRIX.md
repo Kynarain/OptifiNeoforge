@@ -4041,7 +4041,37 @@ java.lang.NoSuchMethodError: 'void com.mojang.blaze3d.systems.RenderSystem$AutoS
 **下一步**:查"加载遮罩为什么一直不消失"(1.21 那条线是资源重载的栅栏卡住,这里还没有查),
 以及那 28 个残留 SRG 名(第二十节)与 `[OptiFine]` 行数差异的来源。
 
-### 二十三、边界
+### 二十四、1.20.4 加载遮罩那件事:线程栈与日志给出的三件事
+
+本轮抓了卡住时的线程栈(`jstack`,约 110 秒)并读了同一时刻的日志,量到:
+
+1. **不是资源重载栅栏卡住**(这与 1.21 那条线的形态不同):渲染线程是 **RUNNABLE**,
+   栈是 `Minecraft.runTick → RenderSystem.limitDisplayFPS → glfwWaitEventsTimeout` —— 它在**正常跑帧循环**,只是被 FPS 限制节流;
+   所有 `Worker-Main-*` 都空闲(`ForkJoinPool.awaitWork`)✔,没有重载任务在飞。
+2. 日志尾部出现了**第二次** `Reloading ResourceManager: mod_resources...`(18:31:51),紧跟着的是
+   `SimpleReloadInstance.lambda$new$3` / `ResourceManagerReloadListener.reload` /
+   `BlockEntityRenderDispatcher.onResourceManagerReload` 这些帧;同一段里还有标题界面才会触发的
+   `RealmsAvailability` 检查(它连不上 Realms 是常见的无害错误)。也就是说:重载在跑、而且有监听器在里面抛过东西,
+   但**没有对应的 ERROR 行**(全日志只有 4 条 ERROR,都是 Realms 连接失败)。
+3. 两次窗口截图(60 秒、130 秒)都是**原版那个红色加载遮罩**:均值 `233,73,8x`、单一颜色桶占 **84%** ——
+   而标题界面的形态是"292 个色桶、最大桶 11%、含 splash 像素"。所以**这台机器上的 1.20.4 确实没有进到标题界面**,
+   尽管文档判据四项全绿(第二十二节)。
+
+顺带新增了一个调试开关 `-Doptifineoforge.traceScreen=true`(往 `Minecraft.setScreen` 注入一行打印,直接回答"当前是哪个界面")。
+**但它本轮没有生效**:日志里连"Tracing every screen switch"都没有 —— 原因是 `net/minecraft/client/Minecraft`
+**不在载荷里**,而这个分支的 transformer 只对"载荷索引 ∪ 各计划的 owner"这批类运行,所以它压根没被调用到。
+这一点记在这里,下一轮要么把追踪目标并进目标集合,要么换别的办法;在它生效之前,"当前界面是哪个"只能靠截图与日志推断。
+
+**下一步**:查那第二次重载为什么收不了尾(监听器抛出的东西没有落到日志里,可以把 `-Doptifineoforge.traceCrash` 或
+对 `SimpleReloadInstance` 加同样的注入);以及把 `traceScreen` 的目标类补进目标集合,把"当前界面"变成直接测量。
+
+### 二十五、边界
+
+- **实测满足文档四条判据的线是两个**:1.20.6(截图确认标题界面)与 1.20.4(判据全绿、stderr 两次逐字节等于记录,
+  但**截图确认它停在加载遮罩**,没有进标题界面);1.20.1 / 1.20.2 未跑。
+- 本轮新增 `-Doptifineoforge.traceScreen=true`(已实现、**尚未生效**,原因见上节);1.21.x 与 26.x 线本轮没动。
+- **没有发布任何东西**;已发布的 jar 没有重建。
+
 
 - **实测满足文档四条判据的版本现在是两个**:1.20.6 与 **1.20.4**(后者判据全绿、stderr 两次逐字节等于记录的
   14 481,但截图显示停在加载遮罩,**没有**视觉确认标题界面);1.20.1 / 1.20.2 未跑。
