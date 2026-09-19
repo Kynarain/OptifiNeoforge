@@ -3733,7 +3733,34 @@ SRG 名随之消失。下一步因此收敛成两件互相独立的事:(a) 把 1
 这个开关变得有意义);(b) 或者让重打包阶段**不带补丁数据**,使 OptiFine 的 transformer 无法再自行打补丁、载荷只能由我们投递
 —— 这需要 rig 侧支持"丢掉全部 patch 条目"(现有 `--unpatched <file>` 是按类丢,1.20.x 的 `OptifineJar` 里也还没有这个选项)。
 
-### 四、边界
+### 四、又一个被排除的嫌疑:OptiFine jar 里那 4948 条补丁数据**不是**这次崩溃的原因
+
+把重打包后的 OptiFine jar 里 `patch/**` 全部去掉(保留 906 条其它条目,拷成一个 `optifine-1.20.4-nopatches.jar`,
+再走一遍 `build-jars.ps1`),重新启动:**失败点一模一样** —— 崩溃报告仍死在
+`CrashReporter → Shaders.<clinit>` 那条链上,`[OptiFine]` 行数 8(带补丁数据时是 10)。所以装载期补丁数据只解释
+`skipPayload` 那次看到的 SRG 漏出,**不解释**默认这几次的构造期崩溃。
+
+同一批日志把崩溃位置夹得更紧:最后三行永远是
+
+```
+[OptifiNeoforge/]: Replaced net.minecraft.client.renderer.texture.AbstractTexture with OptiFine's patched version (...)
+[OptifiNeoforge/]: Initialised 1 restored fields in net/minecraft/client/renderer/texture/AbstractTexture
+[OptifiNeoforge/]: Restored 3 members in net/minecraft/client/renderer/texture/AbstractTexture from its donor
+```
+
+也就是说:**换装与成员恢复都成功返回了**,崩溃发生在"这个被换装的类第一次被游戏使用/初始化"的时候。
+
+### 五、尚未验证的假设(下一步要证或证伪的那一条)
+
+成员恢复里那行 `Initialised N restored static fields in X` 说明恢复**会写静态字段**,而写静态字段会让 JVM 先跑
+`X.<clinit>`。若 OptiFine 打过补丁的 `AbstractTexture` 的静态初始化里会碰到 OptiFine 自己的 `Shaders`,就会正好
+产生我们看到的那个 `NullPointerException`(读 `Minecraft.getInstance().gameDirectory`,而此时我们还在
+`Minecraft` 的构造过程里)—— **上游 OptiFine 不会这么早初始化 `Shaders`**,这一点是我们这条流程独有的次序差异。
+要证的顺序很清楚:(a) 用 `javap -c -p` 看载荷里那份 `AbstractTexture` 的 `<clinit>` 到底碰了谁;
+(b) 若确实是"写静态字段触发过早初始化",就得让静态恢复**不触发类初始化**(反射写静态字段一定会触发,需要用
+`Unsafe`/`VarHandle` 那条路),或把静态恢复推迟到该类第一次被真正使用时。
+
+### 六、边界
 
 - **1.20.6 仍然是本分支唯一实测通过的版本**;1.20.4 本轮把类定义那一处修好、走得更远,但**仍未通过**;1.20.1 / 1.20.2 未跑。
 - 本轮新增的 loader 能力是**通用**的(任何线都能用 `drop-members.txt`),但**只有 1.20.4 实测用过它**;
