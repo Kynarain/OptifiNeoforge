@@ -387,6 +387,17 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		return Set.copyOf(targets);
 	}
 
+	/**
+	 * {@code -Doptifineoforge.skipPayload=true} delivers no patched class at all, which exists to bisect a
+	 * failure between "the payload was swapped in" and everything else the loader does. It is needed
+	 * because a crash whose crash report is itself fatal hides which half is at fault: measured on 1.20.4,
+	 * the client dies inside {@code Minecraft}'s constructor and OptiFine's own {@code CrashReporter} then
+	 * dies reading {@code Minecraft.getInstance().gameDirectory}, so the original throwable is never
+	 * printed. The stubs still run - they are what unswapped runtime classes need - but no class is
+	 * replaced by OptiFine's copy.
+	 */
+	private static final boolean SKIP_PAYLOAD = Boolean.getBoolean("optifineoforge.skipPayload");
+
 	@Override
 	public ClassNode transform(ClassNode input) {
 		logModulesOnce();
@@ -397,6 +408,9 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		//   NoSuchMethodError: 'void net.minecraft.client.gui.screens.LoadingOverlay.update()'
 		// Giving the runtime's overlay that one method keeps both halves working.
 		stubMissing(input);
+		if(SKIP_PAYLOAD) {
+			return input;
+		}
 		ClassNode patched;
 		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(PREFIX + input.name + ".class")) {
 			if(stream == null) {

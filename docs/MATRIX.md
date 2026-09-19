@@ -3707,17 +3707,37 @@ NPE 不走这个日志标签),所以这一轮**没有拿到原始 throwable**。
 `launch.ps1` 另加了一条 `RIG_EXTRA_JVM`(用 `|` 分隔):形如 `-Xlog:...` 的参数没法通过 `-File` 传进去 —— PowerShell 会把它
 当成参数名,报 `MissingArgument`。
 
-### 三、下一步(有明确顺序)
+### 三、二分法的第一次尝试:`-Doptifineoforge.skipPayload=true`(结果有用,但**这一问被混淆了**)
 
-1. **先让原始异常可见**:最省事的是给 1.20.x 的 loader 加一个"跳过载荷投递"的调试开关(1.21.x 分支有同类开关,这条线没有),
-   用二分法把崩溃归到"载荷换装"还是"成员恢复"上;因为现在的失败点就在换装刚做完的那几个类之后。
-2. 拿到原始 throwable 之后再决定改哪儿;若仍指向 `AbstractTexture` 这类"换装 + 静态成员恢复"同时发生的类,优先怀疑
-   **成员恢复触发的静态初始化**(日志里 `Initialised N restored static fields in ...` 是这条线独有的行为)。
+给 1.20.x 的 transformer 加了一个调试开关 `-Doptifineoforge.skipPayload=true`:它让**载荷一个类都不投递**(stub 照旧跑,
+因为未被换装的运行时类需要它们),用来把失败二分到"换装"还是"其余部分"。第一次运行(载荷关闭)的结果**不是**同一个崩溃,
+而是回到了更早那条:
+
+```
+Caused by: java.lang.NoSuchMethodError:
+  'net.minecraft.network.chat.MutableComponent net.minecraft.network.chat.Component.m_237115_(java.lang.String)'
+  at net.minecraft.resources.ResourceLocation.<clinit>
+  ...
+  at net.minecraft.client.main.Main.main(Main.java:61)
+```
+
+原因也量到了:**重打包后的 OptiFine jar 里仍然带着全部 4948 个 `patch/` 条目**(`patch/srg/**` 与 `patch/notch/**` 都在,
+另外 `net/optifine/**` 是 0 条 —— OptiFine 自己的类在 loader jar 里,服务文件
+`META-INF/services/cpw.mods.modlauncher.api.ITransformationService` 在 OptiFine jar 里)。也就是说 **OptiFine 自己的
+transformer 仍在装载期按 `patch/srg` 打补丁、并把 SRG 名写进游戏类**,这正是 1.21 那条线记录过的现象;1.21 用
+`SrgNameTable` + 装载期改名(`-Doptifineoforge.renameSrg`)压住它,而**那条能力在 1.20.x 这条线上没有**。所以载荷一关,
+没人去覆盖 OptiFine 装载期打出来的那些类,SRG 名就漏出来了 —— 这一问**不能**用来判"崩溃是不是换装引起的"。
+
+反过来说,这条也解释了我们**默认**(载荷开启)那次为什么能走到 `Minecraft.<init>`:我们的投递把那 427 个类覆盖掉了,
+SRG 名随之消失。下一步因此收敛成两件互相独立的事:(a) 把 1.21.x 的**装载期改名**移植到 1.20.x(它同时能让 skipPayload
+这个开关变得有意义);(b) 或者让重打包阶段**不带补丁数据**,使 OptiFine 的 transformer 无法再自行打补丁、载荷只能由我们投递
+—— 这需要 rig 侧支持"丢掉全部 patch 条目"(现有 `--unpatched <file>` 是按类丢,1.20.x 的 `OptifineJar` 里也还没有这个选项)。
 
 ### 四、边界
 
 - **1.20.6 仍然是本分支唯一实测通过的版本**;1.20.4 本轮把类定义那一处修好、走得更远,但**仍未通过**;1.20.1 / 1.20.2 未跑。
-- 本轮新增的 loader 能力是**通用**的(任何线都能用 `drop-members.txt`),但**只有 1.20.4 实测用过它**。
+- 本轮新增的 loader 能力是**通用**的(任何线都能用 `drop-members.txt`),但**只有 1.20.4 实测用过它**;
+  `-Doptifineoforge.skipPayload=true` 是调试开关,不参与任何线的验收判据。
 - **没有发布任何东西**;已发布的 jar 没有重建。
 
 ## 2026-09-19(晚间):在本机重建的 rig 上跑 1.20.6(实测与记录的差异),以及 1.20.4 的实测阻塞
