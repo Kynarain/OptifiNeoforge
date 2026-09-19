@@ -1629,3 +1629,59 @@ FML 2.0.17 把它做成了**配置文件**:`config/fml.toml` 里的 `earlyWindow
 
 **顺带一个反复踩到的坑**:PowerShell 的 `Set-Content -Encoding UTF8` 会写 BOM,而 TOML 解析器直接报
 `Invalid bare key: \ufeffEarly`。改配置/源码一律用 `[System.IO.File]::WriteAllText(..., UTF8Encoding($false))`。
+## 2026-09-19(重建后的 rig):26.1.2 在本机第一次复跑,停在哪一步
+
+本节的数字都来自本轮在**重新搭起来的** rig(`optifineoforge-test`)上真跑的两次;GitHub 上 README 里
+"3478 行 `[OptiFine]`、`processClass` 795 次"那次记录来自更早的会话,本轮没有复现到那一步。
+
+**已经量到的**
+
+* rig 装上 Minecraft 26.1.2 + NeoForge `26.1.2.109`(FML **11.0.15**、Java **25**),
+  原版客户端 38,113,927 字节;这一版的 profile 主类仍是 `net.neoforged.fml.startup.Client`,
+  所以 1.21.x 那套 FML 10 启动器可以直接用(给它加了 `-JavaExe`,这一线要 JDK 25)。
+* **基线**(mods 里只有修过元数据的 OptiFine):`VERDICT: STARTED` + `Setting user` + `Sound engine started`
+  + 无崩溃报告 + stderr 107 字节 —— 与"不带任何 mod"的对照跑相同。**实例本身可用**。
+* 元数据:OptiFine 的 `META-INF/mods.toml` 必须换成 `neoforge.mods.toml`(loaderVersion `[1,)`);
+  **`optifine/Patcher`、`optifine/xdelta/**`、`optifine/json/**` 不能删** —— 删了以后
+  `OptiFineBaseTransformer.<init>` 抛 `NoClassDefFoundError: optifine/Patcher`,处理器实例化失败
+  (`ServiceConfigurationError: Provider optifine.OptiFineClassProcessor could not be instantiated`),
+  OptiFine 完全不生效。
+* 处理器需要"基底类":不把成品类放进它的 jar 时,它对每个目标报
+  `java.io.IOException: Base resource not found: net/minecraft/…`(一次跑 866,068 字节 stderr)。
+  把本仓库离线流水线产出的 `srg/**` 成品类(566 个,net/minecraft 486 —— 与 `docs/DEVELOPMENT.md`
+  记的 566 / 486 一致)并进 OptiFine 的 jar 之后,处理器开始真的安装它们,`[OptiFine]` 开始打印。
+
+**一条新的加载器陷阱(与 1.21.9 那轮同源)**
+
+`optifine-own-classes.jar`(OptiFine 自己的类 + Forge shim)被 FML 当成**早期服务罐**:
+
+```
+Found 4 early service jars (out of 103)
+Loading FML Early Services:
+ - …/loader-11.0.15.jar
+ - …/earlydisplay-11.0.15.jar
+ - mods/optifine-26.1.2-neoforge.jar
+ - mods/optifine-own-classes.jar          <- 不该在这里
+```
+
+因为流水线拆出的 classpath jar **原样保留 `META-INF/services/**`**,而 OptiFine 的两个 NeoForge SPI
+服务文件正在其中。早期服务的类由一个**看不见游戏类**的加载器加载,于是
+`net.optifine.reflect.Reflector.<clinit>` 抛 `NoClassDefFoundError: net.minecraft.world.level.chunk.ChunkAccess`,
+刚打补丁的 `net.minecraft.util.Mth.<clinit>` 抛 `net/optifine/util/MathUtils` 找不到。
+从第二个罐子里剔除这两个服务文件后 `[OptiFine]` 开始打印(5 行),stderr 回到 107 字节。
+
+**卡在哪:换父类**
+
+```
+net.neoforged.fml.ModLoadingException: Loading errors encountered:
+	- NeoForge (neoforge) has failed to load correctly
+	  java.lang.VerifyError: Bad type on operand stack
+	    Location: net/neoforged/neoforge/attachment/AttachmentSync.onChunkSent(...)V @82: invokestatic
+	    Reason: Type 'net.minecraft.world.level.block.entity.BlockEntity' ... is not assignable to
+	            'net/neoforged/neoforge/attachment/AttachmentHolder'
+```
+
+1.21.9 / 1.21.10 / 1.21.11 上这一步由**加载期**读 `reparent.txt` 修;26.1.2 的挂载点是 OptiFine 自己的
+处理器,它不做这件事,所以**换父类(含构造器 chain 重写)、成员回填、shim 都必须在离线阶段写进
+并进 OptiFine jar 的 `srg/**` 成品类**。这就是本项目在这一线上的那份工作,本轮还没有做,
+所以 26.1.2 **没有通过验收**。
