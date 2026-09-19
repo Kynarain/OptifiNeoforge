@@ -247,3 +247,20 @@ et.neoforged.fml.loading.EarlyServiceDiscovery.SERVICES 正好只有
 - 也就是说:**不是某个类把游戏弄坏**,而是"载荷一旦被装上,FML 就把自己关掉"。
   下一步要看的是处理器与 FML 10 交互的这一段(例如它在安装时是否动了 FML 正在扫描的那个 jar —— 之前出现过
   zip file closed 的抱怨,可能就是这条线索的另一面),而不是继续缩小类的范围。
+### 定位到唯一一处:是 ClassProcessor 的安装动作,不是 jar / locator / 元数据 / 类本身
+
+同一个载荷 jar,**只去掉那条 ClassProcessor 的服务文件**(其余——locator 服务、
+eoforge.mods.toml、那个成品类——
+完全一样),启动结果就变成:
+
+`
+===== VERDICT: STARTED =====
+  Setting user        : True
+  Sound engine started: True
+  new crash reports   : 0
+  [OptiFine] lines    : 0
+`
+
+也就是说:jar 本身没问题、locator 没问题、元数据没问题、类也没问题,**唯一让 FML 10 关闭自己的就是"处理器真的去装类"这一步**。
+剩下要查的就只有 OptifinePayloadClassProcessor 的安装实现与 FML 10 扫描/持有 jar 的方式之间的相互作用
+(它自己去读同一个 jar 的那段代码是最可疑的地方,之前那条 zip file closed 也指向这里)。
