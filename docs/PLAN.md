@@ -237,3 +237,13 @@ et.neoforged.fml.loading.EarlyServiceDiscovery.SERVICES 正好只有
 
 **下一步**(明确):给这次启动加 -Xlog:exceptions=trace(本会话已两次用这招挖出"看不见"的原因),看主线程在
 "装了十几二十个类"之后到底抛了什么 —— 或者先只放**少数几个类**的载荷做二分。
+### 二分的结果:不是"某个类坏",而是"载荷一被装上 FML 就关掉自己"
+
+- 用 -Xlog:exceptions=trace 抓:整份载荷跑完后日志**最后一条异常**仍是无关的 AWT/字体噪音(2.8 秒处),
+  **没有任何异常伴随那次关闭** —— 无 mod 的对照也是同样的收尾,但它能继续走到 Setting user。
+- 于是做二分:把载荷缩到**只含一个类**(srg/net/minecraft/util/Mth.class,jar 共 19 016 字节),
+  OptiFine payload: 1 finished game classes → installed net.minecraft.util.Mth (34 fields, 109 methods) [1 so far]
+  → **紧接着仍然是 Closing FML Loader**。
+- 也就是说:**不是某个类把游戏弄坏**,而是"载荷一旦被装上,FML 就把自己关掉"。
+  下一步要看的是处理器与 FML 10 交互的这一段(例如它在安装时是否动了 FML 正在扫描的那个 jar —— 之前出现过
+  zip file closed 的抱怨,可能就是这条线索的另一面),而不是继续缩小类的范围。
