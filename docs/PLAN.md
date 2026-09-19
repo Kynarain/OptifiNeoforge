@@ -381,3 +381,21 @@ client-1.21.9-…-srg.jar,原件留成 .rig-original),实测 **替换 515 个游
 的契约(本轮没读),搞清楚"替换"应该怎么声明(而不是就地改 
 ode);或者找一个在无 ModLauncher 情况下
 启动 OptiFine 自身初始化的方式。
+### 读 FML 10 的处理器契约(本轮读到的东西)
+
+从 rig 的 libraries\net\neoforged\fancymodloader\loader\10.0.14\loader-10.0.14.jar 里 javap 出来:
+
+- SimpleClassProcessor:bstract void transform(ClassNode, SimpleTransformationContext) +
+  bstract Set<Target> targets();handlesClass 与 **processClass 都是 final** ⇒ 用这个基类时,
+  **处理器没有地方声明"我用哪种重写方式"**。
+- SimpleTransformationContext 只有 	ype() / empty() / initialSha256() —— **没有**"声明替换"之类的 API,
+  所以就地改 
+ode 确实是设计用法(前面那条"就地改是不是不被接受"的猜测到此可以划掉)。
+- 但 ClassProcessor 接口本身有 **ComputeFlags processClass(TransformationContext)**,而
+  ClassProcessor 的取值是:**NO_REWRITE / SIMPLE_REWRITE / COMPUTE_MAXS / COMPUTE_FRAMES**。
+
+**这给出一个很具体的、可验证的假设**:我们继承 SimpleClassProcessor,而它把 processClass 定成 final ⇒
+FML 用它内部固定的旗标写回;如果那个旗标弱于 COMPUTE_FRAMES,而我们**整方法替换**了字节码(帧会变),
+写出来的类就是帧不一致的 —— 症状正好可以是"FML 在处理过程中直接放弃,而且什么都不打印"。
+**下一步**:改成直接实现 ClassProcessor 接口,在 processClass 里返回 ComputeFlags.COMPUTE_FRAMES
+(以及 handlesClass 用同一批目标名),再看那三条线是否能起来。
