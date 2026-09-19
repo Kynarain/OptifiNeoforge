@@ -1744,3 +1744,36 @@ net.neoforged.fml.ModLoadingException: Loading errors encountered:
    `DiagnosticClientAny`,因为官方入口点把启动期异常交给一个什么都不打印的模态对话框)。
    mods 里放的就是上面那两个罐子 —— **本项目的加载器不在其中**,挂载点是 OptiFine 自带的
    `OptiFineClassProcessor`。
+## 2026-09-20:光影包实测(六个包,全部通过)
+
+用户要求"自己下载安装多个光影包测试"。做法与结论如下,全部是本机真机跑出来的。
+
+### 怎么装、怎么选
+
+光影包从 **Modrinth API**(`api.modrinth.com`,这台机器 IPv4/IPv6 都通)取,
+按 `versions:26.1.2` 过滤后取各项目最新版,放进 `<游戏目录>\shaderpacks\`。选中哪个包由
+**`<游戏目录>\optionsshaders.txt`** 决定——这是从 OptiFine 自己的类里读出来的,不是猜的:
+`net/optifine/shaders/Shaders` 里有 `optionsshaders.txt` 常量、以
+`new File(Minecraft.getInstance().gameDirectory, "optionsshaders.txt")` 构造,
+键名来自 `net/optifine/shaders/config/EnumShaderOption.SHADER_PACK`(`getPropertyKey()` =
+**`shaderPack`**,默认值空串),值就是 `shaderpacks\` 里的条目名(含 `.zip`)。
+rig 侧脚本 `test-shaderpack.ps1` 做"装包 → 写配置 → 启动 → 从日志取数"这一整条,并逐包打印判据。
+
+### 26.1.2 上六个包的结果(均为真机一次运行)
+
+| 光影包 | 版本 | 判据(四项) | 包是否加载 | `[OptiFine]` 行 | `[Shaders]` 行 | GLSL 编译错误 | GL 错误 |
+|---|---|---|---|---|---|---|---|
+| MakeUp-UltraFast | 9.5e | 全中 | 是 | 3436 | 80 | 0 | 0 |
+| Complementary Reimagined | r5.9.3 | 全中 | 是 | 569 | 106 | 0 | 0 |
+| BSL Shaders | v10.1.5 | 全中 | 是 | 388 | 72 | 0 | 0 |
+| Photon | v1.3b | 全中 | 是 | 1194 | 185 | 0 | 0 |
+| Rethinking Voxels | r0.1-beta9 | 全中 | 是 | 566 | 98 | 0 | 0 |
+| Solas Shader | V3.7b | 全中 | 是 | 3386 | 84 | 0 | 0 |
+
+"判据全中"= `VERDICT: STARTED` + `Setting user` + `Sound engine started` + **本次运行无崩溃报告**;
+六次的 stderr 都是 **107 字节**,即与"不带任何 mod"的对照跑同一行 log4j 环境告警。
+"包是否加载"取自日志里 OptiFine 自己的那行 `[Shaders] Loaded shaderpack: <包名>`。
+
+**顺带把一个之前"没有解释"的数字解释掉了**:README 里 26.1.2 的旧记录写的是 `[OptiFine]` **3478 行**,
+而我在无光影包时量到 352 行、当时记为"差别没有解释"。装上光影包后这一线量到 **3436 行** ——
+3478 属于"开着光影包"的那次记录,352 属于"没开"的那次。两者不是矛盾,是两种情况。
