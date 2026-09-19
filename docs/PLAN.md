@@ -92,3 +92,15 @@ OptiFine 的 `optifine.OptiFineTransformationService` 只依赖 `cpw.mods.modlau
       --launchTarget、ignoreList 等)—— 要跑这三条线,得给 rig 加一条 FML 10 的启动路径。
 
 这两件事都**没有做**,所以 1.21.9 / 1.21.10 / 1.21.11 仍然是未实测的。
+### 补充(同一轮的下一步):FML 10 的 ClassProcessor 确实能编出来(实测)
+
+- **SPI 在哪里**:在 rig 的 libraries 里扫 515 个 jar,**只有一份**含有
+  
+et/neoforged/neoforgespi/transformation/ClassProcessor.class ——
+  libraries\net\neoforged\fancymodloader\loader\10.0.14\loader-10.0.14.jar(随 NeoForge 21.9.16-beta 装进来的)。
+- **编译配方(实测通过)**:26.x 那两份源码 + 上面这个 loader jar + libraries\net\neoforged\neoforgespi\**
+  + log4j-api + rig 的 ASM jar ⇒ **2 个 class / 7470 字节的 jar** ✔。也就是说"把 ClassProcessor 编出来"这一步
+  没有任何未知数。
+- **仍然缺的**:① 按本文件上面的注释,这两个类要和 OptiFine 的类一起**打进载荷 jar**(rig 没有这一步);
+  ② **1.21.9+ 的启动路径**(没有 ModLauncher,launch.ps1 那套 module path / --launchTarget 都不适用)。
+  ②是这三条线唯一的大件,做完才能谈"实测"。
