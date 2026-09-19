@@ -3777,7 +3777,46 @@ method");日志里的 `Initialised N restored static fields in X` 只是**换装
 `net/optifine/Config.getMipmapType()`),而 `Config.<clinit>` 会不会链到着色器类,是下一步要用
 `-Xlog:class+init=debug`(带初始化上下文)或直接 `javap -c` 看 `Config` 的 `<clinit>` 来定的。
 
-### 六、边界
+### 六、触发链已经量出来:`Config.<clinit>` → `Shaders.<clinit>` → NPE,而且这条链是 OptiFine 自己的
+
+同一份 `-Xlog:class+init` 日志按时间排出来是这样(本机实测):
+
+```
+5.019  com/mojang/blaze3d/platform/GlDebug          <- 我们换装过的类
+5.021  net/minecraft/client/ClientBrandRetriever   <- 我们换装过的类
+5.022  com/mojang/blaze3d/platform/GlUtil
+5.025  net/optifine/Config                          <- OptiFine 自己的类
+5.034  net/optifine/shaders/Shaders                 <- 9 毫秒后
+   ...  随后是 ProgramStage / Program / ProgramStack / Property / ...
+```
+
+再对载荷里那份 `net/optifine/shaders/Shaders.class` 做 `javap -p -c`:它的 `<clinit>` 有 **2074 行**字节码,其中
+偏移 2922/2925 就是
+
+```
+invokestatic  net/minecraft/client/Minecraft.getInstance()
+getfield      net/minecraft/client/Minecraft.gameDirectory
+```
+
+也就是说 **`Shaders` 这个类在 `Minecraft` 实例存在之前根本无法初始化** —— 上游 OptiFine 必然是在实例存在之后才第一次碰到
+它。我们这条流程里,构造期被换装的 `GlDebug`/`ClientBrandRetriever` 这类类先初始化,顺带把 OptiFine 的 `Config` 拉起来,
+`Config.<clinit>` 再链到 `Shaders.<clinit>`,于是必然 NPE。**这条链本身是 OptiFine 自己的类之间的链**(不是我们拼出来的),
+所以我们能做的是**改变"什么时候碰到它"**,而不是改 `Shaders`。
+
+顺带把"换另一个 1.20.4 构建"这条也量了:两个构建在这两处**完全一样** —— 都没有 `Entity`/`blv` 的补丁项,
+`AbstractClientPlayer` 的 srg 补丁都是 7997 字节。所以换 `I8_pre4` 没有理由改变这条链(这只说明"不太可能",不是"不会")。
+
+### 七、下一步(可执行的顺序)
+
+1. 找出**具体是哪一个被换装的类**在构造期碰到 `Config`:把 `-Xlog:class+init=trace` 与 `-Xlog:class+load` 对齐,或对
+   候选类(`GlDebug`、`ClientBrandRetriever`、`GlUtil`)逐个用 `javap -c` 看它们的 `<clinit>` 里有没有
+   `net/optifine/Config` 调用。
+2. 若锁定到某一个类,再用本分支已有的能力把它排除在换装之外(整类保留运行时版本 —— 注意当前 `keep-runtime.txt` 的解析
+   只认三列 `owner|name|desc`,整类那条形式在这条线上还**没有**实现,需要先补上),看崩溃是否随之消失。
+3. 另一条互不排斥的路:让 OptiFine 的 `Config`/`Shaders` 在 `Minecraft` 实例就绪之后再初始化,即把"谁先碰它"的顺序
+   改回来 —— 这需要在 loader 侧找一个更晚的挂点,而不是改 OptiFine。
+
+### 八、边界
 
 - **1.20.6 仍然是本分支唯一实测通过的版本**;1.20.4 本轮把类定义那一处修好、走得更远,但**仍未通过**;1.20.1 / 1.20.2 未跑。
 - 本轮新增的 loader 能力是**通用**的(任何线都能用 `drop-members.txt`),但**只有 1.20.4 实测用过它**;
