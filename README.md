@@ -27,9 +27,11 @@
 > **1.20.4 在本机没有通过**:装配走通、载荷的 SRG→官方名改名也做完了(从 Forge maven 取 MCPConfig
 > `1.20.4-20231207.112700` 的 `joined.tsrg`,再用 rig 的 `proguard-to-tsrg.ps1` 造 obf→official 表),原先那条
 > `NoSuchMethodError: Component.m_237115_(java.lang.String)` 随之消失,但载入阶段停在
-> `IncompatibleClassChangeError: AbstractClientPlayer overrides final method Entity.getY()`(`javap` 已确认:override
-> 是 OptiFine 自己补丁带的,而运行时那份 `Entity.getY()` 是 final)。命令、数字与边界都在 `docs/MATRIX.md` 的
-> 2026-09-19 一节。
+> `IncompatibleClassChangeError: AbstractClientPlayer overrides final method Entity.getY()`。这一条已用**脱离 loader**
+> 的 `jshell` 测试证死:从载荷里取出那个 class、按真实类名配运行时 classpath 直接 `Class.forName`,JVM 报的是
+> **逐字相同**的一行 —— 即这份 OptiFine 载荷的这个类在 1.20.4 运行时上按原样就不可定义(OptiFine 的补丁给它加了
+> `getX/getY/getZ` 三个对 final 方法的重写,而 1.20.4 的 `Entity` 这三个方法都是 final;1.20.6 的载荷里根本没有
+> 这个类,所以那条线不受影响)。命令、数字与三条候选修法都在 `docs/MATRIX.md` 的 2026-09-19 一节。
 
 - mod id `optifineoforge`,仅客户端。
 - **一个 jar 只对应一个 MC 版本**:这条线跨了四个版本,NeoForge 坐标、Java 版本与运行期命名空间在每个版本上都不同,不能混用,也不能拿别的线的 jar 顶替。

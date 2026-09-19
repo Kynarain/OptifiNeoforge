@@ -3720,18 +3720,40 @@ java.lang.IncompatibleClassChangeError: class net.minecraft.client.player.Abstra
   overrides final method net.minecraft.world.entity.Entity.getY()D
 ```
 
-用 `javap` 量到的三件事(全部在本机):载荷里的 `AbstractClientPlayer` **确实**声明了 `m_20185_()`(改名后即
-`getY()`),而且**未改名的载荷里就有** —— 所以那是 OptiFine 自己补丁带的方法,不是改名造的;OptiFine 的 jar 里
-**没有** `entity/Entity.class` 的补丁项、载荷里也没有这个类,所以 Entity 只能来自运行时;而 1.20.4 三个客户端变体
-里唯一带这个类的 `client-1.20.4-…-srg.jar` 中,`Entity.getY()` 是 **final**。也就是说,载荷给出的 override 与运行时
-的 final 声明在这份组装下不能共存。**下一步不是猜**:最干净的一次对照实验是同一个实例**只放未修改的 OptiFine
-jar**(1.20.4 上 FML 还接受它,1.20.6 起才拒绝),看同一个类定义错误是否照样出现 —— 若照样出现,差异就不在我们
-交付的载荷上,而在 OptiFine 自己那套换装里。
+用 `javap` 量到的四件事(全部在本机),其中第 4 件把这条阻塞**在我们的 loader 之外**也证死了:
+
+1. 载荷里的 `AbstractClientPlayer` 声明了 **三个** 对 final 方法的重写:`m_20185_()` / `m_20186_()` /
+   `m_20189_()`,即改名后的 `getX()` / `getY()` / `getZ()`;这三行在**未改名的载荷里就有**,所以是 OptiFine
+   自己补丁带的方法,不是改名造的(改名本身是对的:joined.tsrg 是 `tsrg2 obf srg id` 三列格式,`blv` 对
+   `net/minecraft/src/C_507_`,Entity 的 `dr/dt` 方法正是 `m_20185_`/`m_20186_`,而我的 obf→official 表给出
+   `getX`/`getY` —— 两边一致)。
+2. 运行时的 `AbstractClientPlayer` **一个都没有**(`getX/getY/getZ` 在 1.20.4 只在 `Entity` 上声明);
+3. 而 `Entity` 的这三个存取器在 1.20.4 上是 **final**:原版混淆 jar 的 `blv`(= Entity)是 `public final double
+   dt();`,NeoForge 的 `neoforge-20.4.251-client.jar` 与 `client-…-srg.jar` 也都是 `public final double getX/getY/getZ()`。
+   顺带量了 1.20.6 作为对照:它的 `Entity` **同样**是 final,但 **1.20.6 的载荷里根本没有 `AbstractClientPlayer`
+   这个类** —— 这正是那条线能过的原因之一。
+4. **把 loader 完全排除在外的验证**:从载荷里取出这一个 class 文件、按真实类名放到临时目录,用 `jshell`
+   以「载荷 jar + `runtime-1.20.4.jar` + NeoForge universal」为 classpath 直接 `Class.forName`(需要 universal 是因为
+   接口 `IPlayerExtension` 由 loader 注入)。JVM 的原话与游戏里那一行**逐字相同**:
+   `IncompatibleClassChangeError: class net.minecraft.client.player.AbstractClientPlayer overrides final method
+   net.minecraft.world.entity.Entity.getY()D`。也就是说:**这份 OptiFine 载荷的这个类,在 1.20.4 运行时上按原样
+   就是不可定义的**,与我们的 transformer、keep 计划、member restore 都无关。
+
+顺带把"拿未修改的 OptiFine jar 做对照"这条也跑了:1.20.4 上 FML **同样拒绝**它
+(`InvalidLauncherSetupException: Invalid Services found OptiFine`),所以那条对照路走不通,上面的第 4 件才是可用的证据。
+
+**下一步有三条明确的路,按代价排序**:(a) 查 OptiFine 这份补丁的基线到底是谁 —— 若 Forge 1.20.4 的
+`Entity.java.patch` 去掉了这三个 `final`,那 OptiFine 的载荷是**为 Forge 运行时**编的,本线要么给这三个成员加
+"drop/保留运行时版本"的能力,要么整类保留运行时版本;(b) 本分支 loader 现有的 `keep-runtime.txt` **只支持成员级**
+(`owner|name|desc` 保留游戏侧方法体,**没有**整类保留、也没有删除成员的语义),所以 (a) 里那条路需要在 loader 里
+加东西,不是改个计划文件就行;(c) 换 1.20.4 的另一个 OptiFine 构建(`I8_pre4`)不解决问题:两个构建**都**带
+`patch/srg/net/minecraft/client/player/AbstractClientPlayer.class.xdelta`(已对两个 jar 的条目表逐个数过)。
 
 ### 五、边界
 
 - 本轮**实测通过**的是 1.20.6(判据四项里三项与记录逐字一致,`[OptiFine]` 行数 +9 已如实写明);**1.20.4 未通过**,
-  停在上面那条 `NoSuchMethodError`;1.20.1 / 1.20.2 这一轮**没有跑**。
+  SRG 改名做完之后停在 `AbstractClientPlayer overrides final method Entity.getY()` —— 并且已用脱离 loader 的
+  `jshell` 测试证明这份载荷的那个类在 1.20.4 运行时上按原样不可定义;1.20.1 / 1.20.2 这一轮**没有跑**。
 - 1.21.x 线本轮在另一份记录里推进(1.21 – 1.21.8 六条线实测、1.21 的资源重载阻塞仍未解),26.x 线这一轮没碰。
 - 为了能重跑,rig 被改动的地方(全部在 rig 内、不在仓库里):`add-line.ps1` 增加了 `-ModLauncher`(1.20.x 用
   `-Pmodlauncher` 而不是 `-Pmountpoint`)、`-TargetJavaVersion`(1.20.6 必须 `21`,否则 Gradle 报
