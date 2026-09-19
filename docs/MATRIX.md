@@ -4206,7 +4206,38 @@ java.lang.VerifyError: Bad <init> method call
    **securejarhandler / fancymodloader 比 Forge `47.1.106` 自带的新**。下一步是换成 `47.2.x` 的安装器再试
    (分支文档里也提过 47.2.x 带 `fancymodloader 47.2.2`),这是**未完成**的一项。
 
-### 三十五、边界
+### 三十六、1.20.1 的第三处阻塞:securejarhandler 版本(已修),以及第四处(与 1.20.2 同类)
+
+接着上一节:
+
+3. **`SimpleJarMetadata` 那个错配的根因量出来了** —— 三个 securejarhandler 版本的构造器各不相同(逐个 `javap`):
+
+   | jar | `SimpleJarMetadata` 的构造器 |
+   |---|---|
+   | `2.1.10` | `(String, String, Set<String>, List<Provider>)` |
+   | **`2.1.24`** | `(String, String, **Supplier<Set<String>>**, List<Provider>)` ← **OptiFine 1.20.1 I6 要的是这个** |
+   | `9.0.14` | `(String, String, JarContents)` |
+
+   而 Forge 的 profile 把 `securejarhandler 2.1.10` 钉住了(47.1.106 与 47.4.23 都是)⇒ 报的就是
+   `NoSuchMethodError: SimpleJarMetadata.<init>(String, String, Supplier, List)`。修法(实测有效):
+   把 **profile 里两处**都换掉 —— JVM 参数串里的 `securejarhandler/2.1.10/...` 和 `libraries[].downloads.artifact.path`
+   里的 `cpw/mods/securejarhandler/2.1.10/...`(只改前者不起作用:launch.ps1 是按 `artifact.path` 解析 jar 的)。
+   换掉之后 `optifine.OptiFineJar` 那条 `NoSuchMethodError` 消失 ✔。
+4. **换过去之后露出来的下一处是 `VerifyError: Bad <init> method call`** —— 与 1.20.2 上那个 `net/minecraft/Util$N`
+   家族错配**同一类**(见第三十二节第 2 条):OptiFine 这份载荷的匿名类与运行时的编译产物不配套。
+   下一步就是把 1.20.2 上用的那招(整类保留运行时的 `Util` 家族)照搬到 1.20.1 —— 这一步**还没做**。
+
+### 三十七、边界
+
+- 实测通过:**1.20.6**、**1.20.4**、**1.20.2**(后两条标题界面由 `setScreen` 追踪确认)。
+- **1.20.1**:装配 3/42355 缺失,启动已越过"模块解析"与"OptiFine jar 处理"两道坎(后者靠把 profile 里的
+  securejarhandler 换成 **2.1.24**),当前阻塞是载荷的 `VerifyError: Bad <init> method call`,
+  下一步照搬 1.20.2 的 `Util` 家族整类保留;**未通过**。
+- 1.21 / 1.21.9 / 1.21.10 / 1.21.11 / 26.1.2 未跑。
+- rig 侧本轮又改了三处:安装器 URL 两个 host 都试(Forge 时代 47.1.106 在 neoforged、47.4.23 只在
+  minecraftforge)、artifact 目录两个 group 都找、以及上面的 securejarhandler 替换。
+- **没有发布任何东西**;已发布的 jar 没有重建。
+
 
 - 实测通过:**1.20.6**、**1.20.4**、**1.20.2**(后两条标题界面由 `setScreen` 追踪确认)。
 - **1.20.1**:装配已过(3/42355 缺失引用),启动停在 OptiFine 与 Forge `47.1.106` 的 securejarhandler 错配,
