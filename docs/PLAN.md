@@ -170,3 +170,31 @@ et.neoforged.fml.startup.Client、游戏参数用父 profile 那套),
 **注意边界**:这是**无 mod 对照**(没有 OptiFine、没有本项目的载荷),所以它既不等于"这三条线通过",也不改变
 那三条线"未实测"的状态。还差的两件仍是:① 把 26.x 的 src/fml10(两个类,已实测可编译)按注释**打进载荷 jar**;
 ② 在 rig 里把上面这套参数固化成一条 **FML 10 的启动路径**(launch.ps1 目前只懂 ModLauncher)。
+### rig 现在有了 FML 10 的启动路径(实测:无 mod 对照 VERDICT: STARTED)
+
+新增 optifineoforge-test\launch-fml10.ps1(ModLauncher 那套留在 launch.ps1)。它做四件事:
+
+1. 顺着 inheritsFrom 把 profile 链读出来(NeoForge profile → 原版 profile),按"父先子后、后者覆盖"合并 libraries,
+   用它们拼 -cp ——**不把 client jar 放进去**(实测:放进去与否现象一样,FML 自己会用 -DlibraryDirectory
+   加 --fml.neoFormVersion 找到游戏 jar);
+2. 展开两边 rguments.jvm 与 rguments.game 里的占位符,并且**跳过 rule 条目**
+   (实测:第一个版本照搬了 -XstartOnFirstThread 这条 macOS 专用规则,JVM 直接拒绝启动:
+   Unrecognized option: -XstartOnFirstThread);
+3. 用 
+et.neoforged.fml.startup.Client + 常规游戏参数启动,支持 -Mods(拷进 mods/)、-Fresh、-Seconds;
+4. 打印与 launch.ps1 **同样形状**的 VERDICT 块(Setting user / 声音引擎 / 新崩溃报告 / stderr 字节 /
+   [OptiFine] 行数),便于两条路径的结果直接对照。
+
+实测(1.21.9 / NeoForge 21.9.16-beta,无 mod):
+
+`
+===== VERDICT: STARTED =====
+  Setting user        : True
+  Sound engine started: True
+  new crash reports   : 0
+  stderr bytes        : 0
+  [OptiFine] lines    : 0  (latest.log, not doubled)
+`
+
+也就是说 **1.21.9+ 的"启动"这一半做完了**。三条线还差的最后一件事是把 26.x 的 src/fml10(已实测可编译)
+与 OptiFine 的类一起**做成 FML 10 会发现的那个载荷 jar**,然后用这个脚本去跑。
