@@ -910,3 +910,28 @@ NeoForge 的 `c`(与 ModLauncher 线上 `ConventionTags` 同一套规则),再委
   `net.neoforged.fml.startup.Client` 把异常交给一个**模态对话框**,什么也不打印。
 * 这条线的 payload 不随仓库发布(`srg/**` 是 OptiFine 打过补丁的游戏类),rig 侧由
   `build-fml10-payload.ps1` 用仓库自己的离线工具产出。
+## 1.21.10 / 1.21.11 的准备:一条 FML 10 线的完整配方(rig 侧已脚本化)
+
+1.21.9 通过之后,剩下两条 FML 10 线(1.21.10 / 1.21.11)用的是**同一个挂载点、同一套计划**,
+所以把它们做成一条命令就值得。rig 侧新增两个脚本,步骤与输入来源都写在脚本头部:
+
+* **`prepare-fml10-line.ps1`**(`-Mc` / `-NeoForge` / `-OptifineJar`):
+  1. **runtime 视图** = NeoForge 的 `-client.jar`(覆盖)+ NeoForm 的 `client-*-srg.jar`;
+     注意 `HierarchyPlan` 必须**先**拿 overlay,否则 vanilla 的 `BlockEntity` 会把 NeoForge 的盖掉、
+     计划静默为空(1.21.9 上踩过,0/0)。
+  2. `OptifinePipeline <obf 原版客户端> <OptiFine jar> <work>` —— 仓库自己的离线补丁流程。
+  3. `MemberRestorePlan`(成员恢复计划 + donors)。
+  4. `HierarchyPlan`(要换父类的类 + 要 chain 的构造器)。
+  5. `MissingTargets --stub`(**必须给全运行时 classpath**:游戏 + universal + 每个库 jar;用 argfile 传参,
+     因为这几条线的库 jar 有几百个,命令行会被 Windows 拒掉)。
+  6. `PayloadDrift`(keep-runtime / interfaces / access 三份计划)。
+  7. Gradle `-Pmountpoint=fml10` 编译挂载点,再产出两个 jar。
+* **`build-fml10-own-classes.ps1`**:第二个 mod jar(OptiFine 自己的类 + Forge API 桩 + 它自己的
+  `neoforge.mods.toml`)。桩类目录为空时会**当场用 `ForgeApiShims` 生成**,两者都必须从 OptiFine jar
+  **和**打补丁后的类里取(只用 OptiFine jar 会漏成员)。
+  两个 jar 都必须手工按 `/` 分隔写 zip 条目:`ZipFile.CreateFromDirectory` 在 PowerShell 5.1 上写反斜杠,
+  FML 会直接判"not a valid mod file",而症状是**客户端正常启动但 mod 根本没装**(1.21.9 上踩过)。
+
+1.21.9 的 OptiFine 构建与 1.21.10 的都从第三方镜像按 IPv4 取到;1.21.11 的**正式版**在镜像上路径不对
+(返回 9 字节 "Not Found"),改走 `get-optifine.ps1` 的 optifine.net 两步 token 流程取到了
+(`OptiFine_1.21.11_HD_U_J9.jar`,8 045 116 字节)。两条线的 jar 都只放在 rig 的 `downloads\` 下,不进仓库。
