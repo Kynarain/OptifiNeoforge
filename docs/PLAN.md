@@ -285,3 +285,25 @@ ode 上的那段
    (FML 10 的扫描线程可能正在读同一批 jar),再逐层缩小;
 3. 另一条互不排斥的路:不注册处理器,改用**事先把成品类覆盖进游戏 jar**(rig 层面做完),让这条线像 1.20.x/1.21.x
    那样"不改类也能跑",代价是失去了运行期换装。
+### 一行实验的结论:FML 10 允许"注册处理器",不允许它"真的装类"
+
+把 	argets() 改成返回空集(**处理器照旧注册,服务文件照旧在**,只是一个类都不声明),其余全部不变:
+
+`
+===== VERDICT: STARTED =====
+Setting user        : True
+Sound engine started: True
+new crash reports   : 0
+`
+
+日志里 OptifinePayloadClassProcessor constructed (FML 10 mount point) 仍在 ✔,而 installed ... 一条都没有 ✔。
+也就是说:
+
+- **"有 ClassProcessor 注册"本身完全没问题**;
+- 问题精确地落在**它声明并安装类**这一步 —— 即 	argets() 报出的那 517 个类,以及 	ransform 里
+  copy(finished, node) 把成品覆盖回去的那段。
+
+**下一次的一行实验**(把这个范围再切一半):保留 	argets() 照常报类,但让 	ransform 只记日志、**什么都不改**
+(即 copy 不执行)——
+- 若仍会关闭 ⇒ 问题在"声明了这些类"这一侧(FML 10 对处理器声明面的处理);
+- 若正常跑起来 ⇒ 问题就在 copy(覆盖 ClassNode 的具体做法,FML 10 的扫描线程可能在读同一批结构)。
