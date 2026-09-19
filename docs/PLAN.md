@@ -357,3 +357,27 @@ ode,而应通过上下文的 API 声明替换;
 **因此走兜底方案**:不注册处理器,改为**在 rig 层面事先把成品类覆盖进游戏 jar**
 (libraries\net\minecraft\client\1.21.9-…\client-1.21.9-…-srg.jar 的副本),
 这样这条线"运行期不换装",与 1.20.x/1.21.x 的验收环境等价(那两个分支的换装是运行期的,但验收看的是游戏能不能起来)。
+### 兜底方案的实测结果:能起来,但 OptiFine 是"哑"的
+
+按兜底方案做了:把载荷里 1233 个 srg/** 成品类写进游戏 jar 的副本(用 libraries\net\minecraft\client\1.21.9-…\
+client-1.21.9-…-srg.jar,原件留成 .rig-original),实测 **替换 515 个游戏类、追加 716 个 OptiFine 自身的类**
+(结果 23 289 537 字节),然后不带任何 mod 启动:
+
+`
+===== VERDICT: STARTED =====
+  Setting user        : True
+  Sound engine started: True
+  new crash reports   : 0
+  stderr bytes        : 0
+  [OptiFine] lines    : 0
+`
+
+也就是说:**游戏起来了,但日志里一个 optifine 字样都没有** —— OptiFine 的代码根本没有被激活。
+原因不难理解:在 ModLauncher 那几条线上,是 **OptiFine 自己的 transformation service** 把它启动起来的;
+这条 FML 10 的路径上没有任何东西去启动它,光把**打过补丁的游戏类**放进去并不等于 OptiFine 在跑。
+所以兜底方案**不足以**当作"这条线通过"的依据 —— 它只证明"预覆盖不炸",不证明 OptiFine 生效。
+
+**结论(下一步)**:还是要修处理器这一侧 —— 去读 FML 10 SimpleClassProcessor / SimpleTransformationContext
+的契约(本轮没读),搞清楚"替换"应该怎么声明(而不是就地改 
+ode);或者找一个在无 ModLauncher 情况下
+启动 OptiFine 自身初始化的方式。
