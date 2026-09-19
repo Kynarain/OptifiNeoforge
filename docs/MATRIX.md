@@ -3985,27 +3985,40 @@ java.lang.NoSuchMethodError: 'void com.mojang.blaze3d.systems.RenderSystem$AutoS
 把离线改名补到能覆盖它们;或者把装载期改名(1.21 那一档)按"声明+引用都改"的形式移植过来。修完这一档,1.20.4 就只剩
 `sound engine` 与"0 崩溃报告"两条判据了。
 
-### 十九、边界
+### 二十、把 rig 的两张表修好:载荷里剩下的 SRG 名从 114 降到 28
 
-- **1.20.6 仍是本分支唯一实测通过的版本**;1.20.4 本轮进到**渲染循环**(730 行 `[OptiFine]`、`Setting user` ✓、
-  stderr 0 字节),仍有 1 份崩溃报告,原因是载荷里还留着 114 个 SRG 名成员;1.20.1 / 1.20.2 未跑。
+上一轮量到"载荷里还有 114 个 SRG 名成员",本轮查到根因**在 rig 的表生成上**,不在仓库的代码里:
+
+- `proguard-to-tsrg.ps1` 把 Mojang 映射里的**嵌套类**当成了外层类的**字段**来写(`Inner -> a:` 这种行被当成成员行),
+  于是每个嵌套类的成员在 obf→official 表里都没有条目 —— 而 114 个残留里**样本全是嵌套类**
+  (`GlStateManager$BlendState.f_84577_`、`GlStateManager$BooleanState.m_84589_`、`RenderSystem$AutoStorageIndexBuffer$IndexGenerator.m_157487_`);
+- 并列的第二个小错:obf 那一列对未混淆的 `com.mojang.*` 类名**没有把点换成斜杠**,于是表里的
+  `com.mojang.blaze3d.platform.GlStateManager$a` 与 joined.tsrg 里同名同形的键对不上。
+
+两处都修好之后(实测,同一套输入):
+
+| 指标 | 修之前 | 修之后 |
+|---|---|---|
+| `MissingTargets` 报的缺失引用 | 63 / 43162 | **23 / 43162** |
+| `--stub` 补的假成员 | 46 | **18** |
+| `SrgMemberMap` 数出的"载荷里仍是 SRG 名的成员" | **114** | **28** |
+
+也就是说 1.20.4 的载荷现在和能跑通的 1.20.6 处在同一个量级(23 对 23)✔。**但启动结果没有变**:仍然是 730 行
+`[OptiFine]`、崩在同一处(`GameRenderer.frameInit:1759`),而崩溃报告里的名字显示**交付出去的
+`RenderSystem$AutoStorageIndexBuffer` 自己还带着 SRG 方法名**(`m_157476_`、`m_221946_`)——
+这一类名字不是我们投递的那份(载荷里那 28 个之外的部分已经改干净,`IndexGenerator.accept` 就是本轮改成功的样本),
+而是**装载期**出现的(OptiFine 自己的 transformer 会按 `patch/srg/**` 重新打补丁,见第十六节)。
+
+**下一步**:把那 28 个成员逐个查清(哪些是表仍缺的、哪些是装载期才出现的),并把"装载期改名"这一档补上
+(1.21.x 有、这一分支没有),这也是 1.20.4 现在唯一的阻塞。
+
+### 二十一、边界
+
+- **1.20.6 仍是本分支唯一实测通过的版本**;1.20.4 停在"进到渲染循环、730 行 `[OptiFine]`、`Setting user` ✓、
+  stderr 0 字节、1 份崩溃报告",装配质量本轮显著变好(缺失引用 63→23、假 stub 46→18、载荷残留名 114→28),
+  但启动结果未变;1.20.1 / 1.20.2 未跑。
 - 本轮改了 loader 一条判定(同类接口换装允许、`-Doptifineoforge.strictInterfaceKeep=true` 可退回旧行为),并新增
-  `-Doptifineoforge.dump=<dir>` 调试开关;两者都不参与任何线的验收判据。
-
-
-- **1.20.6 仍是本分支唯一实测通过的版本**;1.20.4 推进到 `Setting user` ✓、74 行 `[OptiFine]`、stderr 0 字节,
-  仍有 1 份崩溃报告,根因本轮已锁定(交付出去的接口带 SRG 名,缺少装载期改名这一档);1.20.1 / 1.20.2 未跑。
-- 本轮新增的调试开关 `-Doptifineoforge.dump=<dir>` 是通用的,不参与任何线的验收判据。
-
-
-- **1.20.6 仍是本分支唯一实测通过的版本**;1.20.4 本轮推进到 `Setting user` ✓、74 行 `[OptiFine]`、stderr 0 字节,
-  仍有 1 份崩溃报告(下一条已精确定位到 `SpriteResourceLoader`,细节见上节,根因未结);1.20.1 / 1.20.2 未跑。
-
-
-- **1.20.6 仍然是本分支唯一实测通过的版本**;1.20.4 的阻塞本轮**定位到我们自己的流水线**(stub 阶段给载荷自己的类补了
-  一个非 static 成员),修法明确但**尚未修**,所以 1.20.4 仍未通过;1.20.1 / 1.20.2 未跑。
-- 本轮新增的 loader 能力是**通用**的(任何线都能用 `drop-members.txt`、`keep-runtime.txt` 的整类形式、`traceInit` /
-  `traceCrash` 两个调试开关),但**只有 1.20.4 实测用过它们**。
+  `-Doptifineoforge.dump=<dir>` 调试开关,以及修好 rig 的两张映射表(嵌套类 + obf 列斜杠);这些都不参与验收判据。
 - **没有发布任何东西**;已发布的 jar 没有重建。
 
 ## 2026-09-19(晚间):在本机重建的 rig 上跑 1.20.6(实测与记录的差异),以及 1.20.4 的实测阻塞
