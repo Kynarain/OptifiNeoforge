@@ -758,3 +758,69 @@ OptiFine 刚开始处理贴图之后,失败的调用是 `glClear`。
 **下一步**:把 1.21.8 那条线最后用过的那几份计划照 `add-line.ps1` 的顺序补齐 —— `PayloadDrift`
 (keep-runtime / runtime-interfaces / access)与 `MissingTargets --stub`,再把它们接进 FML 10 的处理器;
 1.21.8 上"GL 状态那一路"正是靠这几份计划才过的。
+## 1.21.9 第四轮:资源重载跑通了(Sound engine started),卡在 NeoForge 自己的约定标签检查
+
+### 这一轮接进处理器的东西,全部来自仓库自己的离线工具
+
+按 `add-line.ps1` 的顺序给 1.21.9 补齐了计划:
+
+* **`MissingTargets --stub`**:扫 1281 个类、43634 条游戏成员引用,**13 条在运行时不存在**,给 4 个类
+  (`GpuTexture`、`BlockModelPart`、`BlockStateModel`、`BlockEntity`)补了 12 个成员,1 条留给加载器。
+  产物 `optifine-patched-stubbed.jar` 现在就是 payload 的 `srg/**` 来源(`build-fml10-payload.ps1` 优先用它)。
+* **`PayloadDrift`**:`constant drift: 2 class(es)`,两份是
+  `net/minecraft/client/renderer/MappableRingBuffer`(`BUFFER_COUNT: payload=5 runtime=3`)与
+  `net/minecraft/client/resources/model/ModelDiscovery$ModelWrapper`(`SLOT_COUNT: payload=7 runtime=8`)。
+  写出的 `keep-runtime.proposed.txt` 就是"这两类整个用运行时的"。另外 15 条 interface 计划、164 条 access 计划。
+* 处理器现在读 `/optifineoforge/keep-runtime.txt`(即 proposed 的正式名);被计划的类**不安装**,日志明说
+  "is kept as the runtime's own class",并连"代价"一起写在计划文件里。
+
+### 三处按症状定位、按量到的形状修的
+
+1. **模型精灵集合**:客户端进资源重载后**什么都不做**,只每 5 秒打一行
+   `[OptiFine] Waiting for model sprites`(永远)。这是 OptiFine 的图集拼装等它自己的标志位。payload 里那次调用
+   在,但**藏在分支后面**(从字节码读出来):
+   ```
+   106: invokestatic net/optifine/Config.isCustomItems:()Z
+   109: ifeq 121
+   118: invokestatic net/optifine/CustomItems.collectModelSprites:(Ljava/util/Map;)V
+   ```
+   修法与 1.21.8 那条线一致:把调用放到 `discoverModelDependencies` 每个"第一个参数是 Map"的重载的**开头**,
+   无条件。接收者是局部 0(静态方法,查过而不是照抄——ml11 那份无条件压局部 0,只在静态时才成立)。
+2. **FML 早期加载画面与 OptiFine 抢同一个 GL 上下文**:不关早期窗口时,GL 错误刷屏(一次跑 7195 行),
+   然后 `SimpleBufferBuilder.begin` 抛 `Already building`,崩溃报告写 "Rendering overlay"。**对照组**证明这与环境无关:
+   同样 rig、90 秒、**不带 mod**,76 行日志、0 条 GL 错误、STARTED。rig 现在有 `-NoEarlyWindow`
+   (写 FML 自己的 `earlyWindowControl=false`),并且这件事被当作 **rig 设置**记下来,因为其它线的跑法里它是开着的。
+3. **成员恢复的两个"必须内联"和两个"不能抄"**:静态初始化方法内联进本类 `<clinit>`、实例的(带局部 0 接收者)
+   内联进每个构造器;`<clinit>` 本身**既不从 donor 抄、也不从运行时保留**——`BreezeWindLayer` 就是反例:
+   payload 那份声明 `private ResourceLocation TEXTURE_LOCATION;`(实例,构造器里 putfield),
+   运行时那份同名同描述符但是 `static final`,运行时的 `<clinit>` 用 `GETSTATIC` 读它,
+   于是 `IncompatibleClassChangeError: Expected static field ... TEXTURE_LOCATION`,第二次资源重载直接死在
+   `EntityRenderers.createEntityRenderers`。
+
+### 结果
+
+```
+===== VERDICT: FAILED =====
+  Setting user        : True
+  Sound engine started: True      <- 资源重载这一次真的完成了
+  new crash reports   : 1 -> crash-…22.30.08-fml.txt
+  stderr bytes        : 0
+  [OptiFine] lines    : 283
+```
+
+**下一处已经定位到具体一行**,而且是 NeoForge 自己的代码:
+
+```
+Exception message: java.lang.NullPointerException: Cannot invoke "net.minecraft.tags.TagKey.toString()"
+    because "tag2" is null
+	at net.neoforged.neoforge.common.TagConventionLogWarning.createForgeMapEntry(TagConventionLogWarning.java:556)
+	at net.neoforged.neoforge.common.TagConventionLogWarning.<clinit>(TagConventionLogWarning.java:201)
+	at net.neoforged.neoforge.common.NeoForgeMod.<init>(NeoForgeMod.java:585)
+```
+
+`createForgeMapEntry(ResourceKey, String, TagKey)` 的第三个参数是**调用方传进来的**,即
+`TagConventionLogWarning.<clinit>` 里某个标签静态字段**是 null**。这是上一条"`<clinit>` 不能抄"的**另一半**:
+为了修 `BreezeWindLayer` 我把运行时 `<clinit>` 整个丢掉了,而被"保留运行时成员"补进来的**静态字段**正是靠它赋值的。
+**下一步的规则**应当是把丢掉改成**有条件保留**:扫运行时 `<clinit>` 里每条 `owner == 本类` 的
+`GETSTATIC`/`PUTSTATIC`,要求成品类里那个字段同名同描述符**且也是 static**;全部满足就保留这个初始化方法,
+有一条不满足就丢掉(并记日志)。这样 `BreezeWindLayer` 那类仍然被挡住,而标签静态字段能拿到值。

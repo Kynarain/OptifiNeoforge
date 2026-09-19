@@ -73,6 +73,8 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 
 	private static int installed;
 
+	private static int keptWhole;
+
 	public OptifinePayloadClassProcessor() {
 		LOGGER.info("OptifiNeoforge: OptifinePayloadClassProcessor constructed (FML 10 mount point)");
 	}
@@ -108,13 +110,80 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 		}
 		ClassNode finished = new ClassNode();
 		new ClassReader(bytes).accept(finished, 0);
+		if(keepWhole().contains(node.name)) {
+			keptWhole++;
+			LOGGER.info("OptiFine payload: " + node.name.replace('/', '.') + " is kept as the runtime's own "
+					+ "class (keep plan), not replaced [" + keptWhole + " so far]");
+			return;
+		}
 		copy(finished, node);
 		int restored = restoreMembers(node);
 		repairFrozenReloadListeners(node);
+		repairSpriteCollection(node);
 		installed++;
 		LOGGER.info("OptiFine payload: installed " + node.name.replace('/', '.') + " (" + finished.fields.size()
 				+ " fields, " + finished.methods.size() + " methods" + (restored == 0 ? "" : ", " + restored
 				+ " restored from its donor") + ") [" + installed + " so far]");
+	}
+
+	/**
+	 * Puts OptiFine's model-sprite collection on the call path unconditionally, which is the repair the
+	 * 1.21.8 line carries in {@code MemberRestoreTransformer} for the same symptom.
+	 *
+	 * <p>Measured on 1.21.9, the client reaches the resource reload, starts it, and then does nothing else
+	 * for as long as one is willing to wait - the only line it logs is</p>
+	 *
+	 * <pre>[OptiFine] Waiting for model sprites   (every 5 s, forever)</pre>
+	 *
+	 * <p>which is OptiFine's atlas stitch waiting on a flag that its model-sprite collection sets. The
+	 * payload's own {@code ModelManager.discoverModelDependencies} does contain the call, but behind a
+	 * branch - read out of the payload's bytecode:</p>
+	 *
+	 * <pre>106: invokestatic net/optifine/Config.isCustomItems:()Z
+	 * 109: ifeq 121
+	 * 114: invokevirtual ModelDiscovery.resolveCustomModels:()V
+	 * 117: aload_0
+	 * 118: invokestatic net/optifine/CustomItems.collectModelSprites:(Ljava/util/Map;)V
+	 * 121: ...</pre>
+	 *
+	 * <p>so when {@code isCustomItems()} is false the collection never runs and the wait never ends. The
+	 * call is put at the head of the method instead, where nothing can branch around it;
+	 * {@code collectModelSprites} only walks a list and sets that flag, so running it in addition to the
+	 * payload's own call costs nothing. The receiver is local 0 for a static method and local 1 for an
+	 * instance one, the method being static here (checked, not assumed - the 1.21.8 line's version pushes
+	 * local 0 unconditionally, which is only right while the method is static).</p>
+	 */
+	private static void repairSpriteCollection(ClassNode installed) {
+		if(!"net/minecraft/client/resources/model/ModelManager".equals(installed.name)) {
+			return;
+		}
+		int repaired = 0;
+		for(MethodNode method : installed.methods) {
+			if(!"discoverModelDependencies".equals(method.name) || method.instructions == null) {
+				continue;
+			}
+			org.objectweb.asm.Type[] arguments = org.objectweb.asm.Type.getArgumentTypes(method.desc);
+			if(arguments.length < 1 || !"Ljava/util/Map;".equals(arguments[0].getDescriptor())) {
+				continue;
+			}
+			org.objectweb.asm.tree.InsnList call = new org.objectweb.asm.tree.InsnList();
+			call.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.ALOAD,
+					(method.access & Opcodes.ACC_STATIC) != 0 ? 0 : 1));
+			call.add(new org.objectweb.asm.tree.MethodInsnNode(Opcodes.INVOKESTATIC, "net/optifine/CustomItems",
+					"collectModelSprites", "(Ljava/util/Map;)V", false));
+			method.instructions.insert(call);
+			method.maxStack = Math.max(method.maxStack, 1);
+			repaired++;
+		}
+		if(repaired > 0) {
+			LOGGER.info("OptiFine payload: OptiFine's model sprite collection is called unconditionally from "
+					+ repaired + " discoverModelDependencies overload(s) of " + installed.name.replace('/', '.')
+					+ ", because the payload's own call sits behind Config.isCustomItems()");
+		} else {
+			LOGGER.warn("OptiFine payload: no discoverModelDependencies with a Map first argument in "
+					+ installed.name.replace('/', '.') + "; OptiFine's sprite collection stays off the call path "
+					+ "and the atlas stitch will wait for it forever");
+		}
 	}
 
 	/**
@@ -182,6 +251,57 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 			return;
 		}
 	}
+
+	/**
+	 * The classes the keep plan names with the whole-class form ({@code owner<TAB>*}), read once.
+	 *
+	 * <p>This is the plan the 1.20.x and 1.21.x lines already carry, and for the reason {@code PayloadDrift}
+	 * writes into the file itself: a class whose compile-time constant the payload inlined into its own bodies
+	 * cannot be reconciled member by member, because the inlined number is not a member. Measured on 1.21.9,
+	 * the reload advanced to exactly this and stopped:</p>
+	 *
+	 * <pre>CompletionException: ExceptionInInitializerError
+	 *   at …ModelDiscovery$ModelWrapper.&lt;clinit&gt;(ModelDiscovery.java:200)
+	 *   at …ModelDiscovery.&lt;init&gt;(ModelDiscovery.java:42)
+	 *   at …ModelManager.discoverModelDependencies(ModelManager.java:201)</pre>
+	 *
+	 * <p>and {@code PayloadDrift} names the constant: {@code SLOT_COUNT: payload=7 runtime=8}. The runtime's
+	 * class is therefore loaded whole, and the log line says so per class, including the price: keeping the
+	 * runtime's class also drops whatever OptiFine changed in it.</p>
+	 */
+	private static java.util.Set<String> keepWhole() {
+		if(keepPlan != null) {
+			return keepPlan;
+		}
+		java.util.Set<String> result = new java.util.LinkedHashSet<>();
+		try(InputStream stream = OptifinePayloadClassProcessor.class
+				.getResourceAsStream("/optifineoforge/keep-runtime.txt")) {
+			if(stream == null) {
+				LOGGER.info("OptiFine payload: no /optifineoforge/keep-runtime.txt in this jar; every class the "
+						+ "payload has is installed");
+			} else {
+				java.io.BufferedReader reader = new java.io.BufferedReader(
+						new java.io.InputStreamReader(stream, java.nio.charset.StandardCharsets.UTF_8));
+				String line;
+				while((line = reader.readLine()) != null) {
+					if(line.startsWith("#") || line.isBlank()) {
+						continue;
+					}
+					String[] parts = line.split("\\s+");
+					if(parts.length == 2 && "*".equals(parts[1])) {
+						result.add(parts[0]);
+					}
+				}
+				LOGGER.info("OptiFine payload: keep plan: " + result.size() + " class(es) stay the runtime's own");
+			}
+		} catch(Throwable t) {
+			LOGGER.warn("OptiFine payload: could not read the keep plan: " + t);
+		}
+		keepPlan = result;
+		return keepPlan;
+	}
+
+	private static java.util.Set<String> keepPlan;
 
 	/**
 	 * The member restore pass, which is the half that keeping runtime members does not cover.
@@ -263,6 +383,29 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 				} else {
 					initialisers.add(method);
 				}
+				continue;
+			}
+			if("<clinit>".equals(method.name)) {
+				// The donor's static initialiser is NOT copied, and that was measured rather than cautious.
+				// It initialises the donor's fields as the donor's class declares them, which is not how this
+				// class declares them: measured on 1.21.9, BreezeWindLayer's payload copy has
+				//
+				//   private net.minecraft.resources.ResourceLocation TEXTURE_LOCATION;   (instance)
+				//
+				// while the runtime's copy has the same name and descriptor but static, and the runtime's
+				// <clinit> reads it with GETSTATIC - so installing that initialiser next to the payload's
+				// instance field made the class's own initialisation fail with
+				//
+				//   IncompatibleClassChangeError: Expected static field
+				//     net.minecraft.client.renderer.entity.layers.BreezeWindLayer.TEXTURE_LOCATION
+				//   at net.minecraft.client.renderer.entity.layers.BreezeWindLayer.<clinit>(BreezeWindLayer.java:18)
+				//
+				// during EntityRenderers.createEntityRenderers, which killed the resource reload. The static
+				// values that do have to come back are the ones the plan names, and those arrive as the
+				// initialiser methods handled below.
+				LOGGER.info("OptiFine payload: " + installed.name.replace('/', '.') + " has no static "
+						+ "initialiser of its own and the donor's is not copied (it initialises the runtime's "
+						+ "field shapes, not this class's)");
 				continue;
 			}
 			if(!hasMethod(installed.methods, method.name, method.desc)) {
@@ -718,6 +861,29 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 		}
 		for(MethodNode method : target.methods) {
 			if(hasMethod(source.methods, method.name, method.desc)) {
+				continue;
+			}
+			if("<clinit>".equals(method.name)) {
+				// Never, and this is the one member the blanket rule must not keep. A static initialiser is
+				// written against the field shapes of its own class, and the two copies can disagree about
+				// them: measured on 1.21.9, BreezeWindLayer's payload copy declares
+				//
+				//   private net.minecraft.resources.ResourceLocation TEXTURE_LOCATION;   (instance, assigned in
+				//                                                                        the constructor)
+				//
+				// while the runtime's declares the same name and descriptor as static final, so its <clinit>
+				// reads it with GETSTATIC. Keeping that method next to the payload's instance field made the
+				// class fail its own initialisation with
+				//
+				//   IncompatibleClassChangeError: Expected static field
+				//     net.minecraft.client.renderer.entity.layers.BreezeWindLayer.TEXTURE_LOCATION
+				//   at …BreezeWindLayer.<clinit>(BreezeWindLayer.java:18)
+				//
+				// inside EntityRenderers.createEntityRenderers, which killed the resource reload. Static state
+				// that really has to come back does so through the member restore plan's initialisers, which
+				// name the field they fill; a whole initialiser does not.
+				LOGGER.info("OptiFine payload: " + target.name.replace('/', '.') + " keeps no runtime static "
+						+ "initialiser (the payload's field shapes are not the runtime's)");
 				continue;
 			}
 			source.methods.add(method);
