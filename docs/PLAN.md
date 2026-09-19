@@ -1176,3 +1176,18 @@ MakeUp UltraFast 9.5e、Rethinking Voxels r0.1-beta9、Solas V3.7b)从 Modrinth 
 下一轮的诊断手段已经想好:用 ASM 给 **1.21.9 那份** `net/optifine/shaders/Shaders.loadConfig()` 开头插一行
 探针,打印 `configFile`、`configFile.exists()` 与读完后 `shadersConfig.getProperty("shaderPack","(unset)")`,
 再把探针 jar 放进 `mods\` 跑一次。这样"路径/存在性/读到的值"三件事一次量清。
+### 1.21.10 上六个包的全部结果(补上表)
+
+| 光影包 | 四项判据 | 包是否加载 | `[OptiFine]` 行 | `[Shaders]` 行 | GLSL 错误 | GL 错误 | stderr |
+|---|---|---|---|---|---|---|---|
+| MakeUp-UltraFast 9.5e | 全中 | 是 | 3441 | 76 | 0 | 0 | 0 |
+| Complementary Reimagined r5.9.3 | 全中 | 是 | 592 | 104 | 0 | 0 | 0 |
+| BSL v10.1.5 | 全中 | 是 | 393 | 68 | 0 | 0 | 0 |
+| Photon v1.3b | 全中 | 是 | 1199 | 180 | 0 | 0 | 0 |
+| Rethinking Voxels r0.1-beta9 | 全中 | 是 | 570 | 94 | 0 | 0 | 0 |
+| Solas V3.7b | 全中 | 是 | 3390 | 80 | 0 | 0 | 0 |
+
+每个包都是**一次真机启动**:`VERDICT: STARTED` + `Setting user` + `Sound engine started` + 无崩溃报告,
+并且日志里有 OptiFine 自己的 `[Shaders] Loaded shaderpack: <包名>`。"GLSL 错误"统计的是
+`Error compiling|Error linking|SMCLog.severe` 四类的匹配数,六次都是 0;`GL 错误`统计
+`OpenGL API ERROR`,也都是 0。
