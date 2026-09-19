@@ -24,19 +24,14 @@
 > `Setting user`、0 崩溃报告与 **stderr 0 字节**都与上表**逐字一致**,但 `[OptiFine]` 行数是 **231 而不是 222**:
 > 差 9 行,两次独立运行都是 231。同一台机器上 1.21 / 1.21.1 也是 +9、1.21.6 / 1.21.7 / 1.21.8 是 +7,而
 > 1.21.3 / 1.21.4 与记录完全相等 —— 记录里的 `latest.log` 不在仓库里,所以多出来的是哪几行无法从这边归因。
-> **1.20.4 在本机仍未通过,但已推进两处。** ① 载荷的 SRG→官方名改名做完(从 Forge maven 取 MCPConfig
-> `1.20.4-20231207.112700` 的 `joined.tsrg`,再用 rig 的 `proguard-to-tsrg.ps1` 造 obf→official 表),
-> `NoSuchMethodError: Component.m_237115_(java.lang.String)` 随之消失。② 接着卡在
-> `IncompatibleClassChangeError: AbstractClientPlayer overrides final method Entity.getY()` —— 这一条已用**脱离
-> loader** 的 `jshell` 测试证死(OptiFine 的补丁给那个类加了 `getX/getY/getZ` 三个对 final 方法的重写,而 1.20.4 的
-> `Entity` 这三个都是 final),于是给本分支 loader 加了第三个计划文件 `optifineoforge/drop-members.txt`
-> (`owner<TAB>name<TAB>desc`,把成员从交付的类里删掉;`keep-runtime` 与 `member-restores` 都表达不了这一档),
-> 1.20.4 用 `drop-members-1.20.4.txt` 删掉那三个成员后,**类定义错误消失**,`[OptiFine]` 行数从 0–2 推进到 10,
-> 载入走到 `Minecraft.<init>` 里面。现在停在构造期的一次崩溃,而原始异常看不到:崩溃处理路径自己死在 OptiFine 的
-> `CrashReporter → Shaders.<clinit>`(`Minecraft.getInstance()` 那时还是 null)。同一实例**不加 mod** 的对照跑到了
-> `VERDICT: STARTED`,所以环境(原生库、`earlyWindowProvider`)没问题,问题在我们这一侧。命令、数字、rig 侧两个坑
-> (共用的 `natives\` 会串 LWJGL 3.3.2/3.3.3、崩溃的 JVM 会占着 `glfw.dll`)都在 `docs/MATRIX.md` 的
-> 2026-09-19(续)一节。
+> **1.20.4 在本机也通过了**(同一套 rig,用户自己的 `OptiFine_1.20.4_HD_U_I7.jar` 现场生成载荷):
+> `VERDICT: STARTED`、`Setting user` ✓、声音引擎 ✓、**本次运行 0 崩溃报告**,stderr **14 481 字节 = 记录值**
+> (三次里两次逐字节相同,另一次 14 643)。标题界面这一条由游戏自己的 `setScreen` 追踪确认(`TitleScreen`,之后没再切过界面);
+> **窗口截图给的是过期帧**(两次相隔 40 秒抓帧统计完全相同,窗口未聚焦时不重绘),所以这一条不是像素确认。
+> `[OptiFine]` 行数与记录差得远(730 合并值 = 365 原始 vs 记录 241),**原因未查明**。
+> 走到这里要修的一串东西(顺序、SRG 改名、删除成员、访问计划、同类接口换装)与每一步的实测证据都在
+> `docs/MATRIX.md` 的第十八节到第二十九节;rig 侧的坑(共用的 `natives\` 会串 LWJGL 3.3.2/3.3.3、崩溃的 JVM 会占着
+> `glfw.dll`、以 `-` 开头的 JVM 参数要走 `RIG_EXTRA_JVM`)记在同一处的第二十八节。
 
 - mod id `optifineoforge`,仅客户端。
 - **一个 jar 只对应一个 MC 版本**:这条线跨了四个版本,NeoForge 坐标、Java 版本与运行期命名空间在每个版本上都不同,不能混用,也不能拿别的线的 jar 顶替。
