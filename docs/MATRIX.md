@@ -3925,10 +3925,6 @@ java.lang.RuntimeException: java.lang.IncompatibleClassChangeError:
   仍有 1 份崩溃报告(下一条已精确定位到 `SpriteResourceLoader`,细节见上节,根因未结);1.20.1 / 1.20.2 未跑。
 
 
-- **1.20.6 仍是本分支唯一实测通过的版本**;1.20.4 本轮推进到 `Setting user` ✓、74 行 `[OptiFine]`、stderr 0 字节,
-  仍有 1 份崩溃报告(下一条已定位为 `SpriteResourceLoader.create` 的签名问题);1.20.1 / 1.20.2 未跑。
-
-
 - **1.20.6 仍然是本分支唯一实测通过的版本**;1.20.4 的阻塞本轮**定位到我们自己的流水线**(stub 阶段给载荷自己的类补了
   一个非 static 成员),修法明确但**尚未修**,所以 1.20.4 仍未通过;1.20.1 / 1.20.2 未跑。
 - 本轮新增的 loader 能力是**通用**的(任何线都能用 `drop-members.txt`、`keep-runtime.txt` 的整类形式、`traceInit` /
