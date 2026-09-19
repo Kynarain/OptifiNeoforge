@@ -24,7 +24,14 @@
 > `Setting user`、0 崩溃报告与 **stderr 0 字节**都与上表**逐字一致**,但 `[OptiFine]` 行数是 **231 而不是 222**:
 > 差 9 行,两次独立运行都是 231。同一台机器上 1.21 / 1.21.1 也是 +9、1.21.6 / 1.21.7 / 1.21.8 是 +7,而
 > 1.21.3 / 1.21.4 与记录完全相等 —— 记录里的 `latest.log` 不在仓库里,所以多出来的是哪几行无法从这边归因。
-> **1.20.4 在本机也通过了**(同一套 rig,用户自己的 `OptiFine_1.20.4_HD_U_I7.jar` 现场生成载荷):
+> **1.20.2 与 1.20.4 在本机也通过了**(同一套 rig,用户自己的 OptiFine jar 现场生成载荷)。
+> 1.20.2 用 `preview_OptiFine_1.20.2_HD_U_I7_pre1.jar`:`STARTED` + `Setting user` ✓ + 声音引擎 ✓ +
+> **0 崩溃报告**,stderr **14 625 字节 = 记录值** ✔;标题界面由 `setScreen` 追踪确认。
+> 这条线文档里被标为"最薄的一环",实际修了三处:重打包用的 OptiFine jar 也要做 SRG→官方名改名;
+> 整个 `net/minecraft/Util`/`Util$*` 家族(16 个类)必须整类保留运行时的版本 —— 那个唯一的 preview 载荷内部自相矛盾
+> (它的 `Util` 调 `Util$5.<init>(Path)` 而它的 `Util$5` 只声明无参构造,改名**之前**就是错的);以及文档里早写过的
+> `ModelPart.getChild` 保留游戏侧实现(`Failed to create model for minecraft:skull`)。
+> 1.20.4 用 `OptiFine_1.20.4_HD_U_I7.jar`:
 > `VERDICT: STARTED`、`Setting user` ✓、声音引擎 ✓、**本次运行 0 崩溃报告**,stderr **14 481 字节 = 记录值**
 > (三次里两次逐字节相同,另一次 14 643)。标题界面这一条由游戏自己的 `setScreen` 追踪确认(`TitleScreen`,之后没再切过界面);
 > **窗口截图给的是过期帧**(两次相隔 40 秒抓帧统计完全相同,窗口未聚焦时不重绘),所以这一条不是像素确认。

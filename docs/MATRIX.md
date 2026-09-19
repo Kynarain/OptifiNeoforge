@@ -4153,7 +4153,48 @@ java.lang.VerifyError: Bad <init> method call
 (验证是按类做的,报错只是碰巧落在 `memoize` 这一帧上)。要么是改名把某个 `<init>` 调用改错了目标,要么是别的成员被替换后形状不对。
 **下一步**:用 `-Doptifineoforge.dump=` 把交付的 `Util` 拿出来,与运行时的 `Util` 逐方法 `javap -c` 对照,找出那条坏的 `<init>` 调用。
 
-### 三十一、边界
+### 三十二、1.20.2 也通过了 —— 这条线文档里最薄的一环
+
+1.20.2 在 `docs/VERSIONS.md` 里被标为"本线最薄的一环"(OptiFine 只有**一个** preview 构建),本轮把它跑通了。
+判据(`launch.ps1`,两次独立运行):
+
+| 判据 | 记录 | 本机实测 |
+|---|---|---|
+| `VERDICT` | `STARTED` | `STARTED` ✔ |
+| `Setting user` | ✓ | ✓ ✔ |
+| 声音引擎 | ✓ | ✓ ✔ |
+| 本次运行的崩溃报告 | 0 | **0** ✔ |
+| stderr | 14 625 字节 | **14 625** ✔(带 `traceScreen` 那次 14 682,多出来的 57 字节正是追踪自己打印的那一行) |
+
+标题界面同样由 `setScreen` 追踪直接测到:`OPF-SCREEN net.minecraft.client.gui.screens.TitleScreen` ✔。
+`[OptiFine]` 行数 **494**(合并值 = 247 原始)对记录 239 —— 又是那个**未查明**的差异,与 1.20.4 同一性质。
+
+**让它跑通的是三处**(都在本轮实测):
+
+1. **重打包用的 OptiFine jar 也要做 SRG→官方名改名** —— 否则 OptiFine 自己的 `CrashReporter` 会去找
+   `CrashReport.m_127524_()`:`NoSuchMethodError`。这一步已经写进 rig 的 `add-line.ps1`(`-SrgMappings` 路径自动生成
+   `downloads\of-<mc>-official.jar`)。
+2. **整个 `net/minecraft/Util` 家族必须来自同一侧**。1.20.2 这个唯一的 preview 载荷内部**自相矛盾**:
+   它的 `Util` 调 `Util$5.<init>(Ljava/nio/file/Path;)V`,而它的 `Util$5` 只声明无参构造(捕获字段甚至还叫
+   `val$pathIn`,来自另一次编译)⇒ `VerifyError: Bad <init> method call`;把运行时那份 `Util` 单独保留、而 `Util$9`
+   仍来自载荷,又变成 `VerifyError: Bad type on operand stack`(保留的 `Util` 对 `new Util$9` 调 Thread 的方法)。
+   于是把运行时那 **16** 个 `Util`/`Util$*` 类**整类保留** ✔(本分支新加的 `owner<TAB>*` 形式刚好能表达这件事)。
+   注意:这**不是**我们改名的产物 —— 改名前的 patcher 输出里就已经是错的(逐阶段 `javap` 对照过)。
+3. **文档里早写过的那条 ModelPart 修复**。崩在 `IllegalStateException: Failed to create model for minecraft:skull`
+   (`BlockEntityRenderDispatcher.onResourceManagerReload`)—— 正是 `PatchedClassTransformer` 里那段注释描述的情形:
+   OptiFine 的 `ModelPart.getChild` 按它自己烘焙时设置的 id 查子节点,而这条线上 OptiFine 根本不补 `PartDefinition`,
+   于是 id 永远是 0、查找永远返回 null ⇒ 保留**游戏侧原本的 `children.get(name)`** 就是修法(`keep-runtime-1.20.2.txt`
+   里那一行成员级条目)。
+
+### 三十三、边界
+
+- 本分支实测通过:**1.20.6**、**1.20.4**、**1.20.2**(后两条的标题界面由 `setScreen` 追踪直接测到)。
+- **1.20.1** 尚未尝试(它是这条线上唯一走 `net.neoforged:forge:1.20.1-47.1.106` 坐标、Java 17、ModLauncher 10 的版本,
+  应该能复用 1.20.2/1.20.4 这套 recipe)。
+- 1.21 / 1.21.9 / 1.21.10 / 1.21.11 / 26.1.2 未跑。
+- `[OptiFine]` 行数与记录的差异**仍未查明**(1.20.2: 247 原始 vs 239;1.20.4: 365 vs 241;1.20.6: 231 vs 222)。
+- **没有发布任何东西**;已发布的 jar 没有重建。
+
 
 - 实测通过:**1.20.6**(像素确认标题界面)、**1.20.4**(判据 + `setScreen` 确认,像素抓帧是过期帧)。
 - **1.20.2**:装配已过、启动推进到 6 行 `[OptiFine]`,当前阻塞是 `Util` 的 `VerifyError`(根因未结)。
