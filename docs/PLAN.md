@@ -935,3 +935,27 @@ NeoForge 的 `c`(与 ModLauncher 线上 `ConventionTags` 同一套规则),再委
 1.21.9 的 OptiFine 构建与 1.21.10 的都从第三方镜像按 IPv4 取到;1.21.11 的**正式版**在镜像上路径不对
 (返回 9 字节 "Not Found"),改走 `get-optifine.ps1` 的 optifine.net 两步 token 流程取到了
 (`OptiFine_1.21.11_HD_U_J9.jar`,8 045 116 字节)。两条线的 jar 都只放在 rig 的 `downloads\` 下,不进仓库。
+### 1.21.10:安装缺件卡在网络,已定位到具体两件
+
+为了把 1.21.10 也跑起来,这一轮做了这些(都留在 rig 里,不进仓库):
+
+* **OptiFine jar 取到了两条线**:1.21.10 的 `preview_OptiFine_1.21.10_HD_U_J7_pre11.jar`(7 805 444 字节,
+  第三方镜像按 IPv4);1.21.11 的**正式版** `OptiFine_1.21.11_HD_U_J9.jar`(8 045 116 字节)——
+  镜像上那条路径不对(返回 9 字节 "Not Found"),改走 `get-optifine.ps1` 的 optifine.net 两步 token 流程取到。
+* **NeoForge 21.10.64 装上了**(universal jar、1577 个库、126 个 native),`versions\1.21.10\1.21.10.jar`
+  (30 592 168 字节,混淆原版客户端)也在。
+* **两个 rig 脚本写好并语法自检通过**:`prepare-fml10-line.ps1`(runtime 视图 → OptifinePipeline →
+  MemberRestorePlan → HierarchyPlan → MissingTargets --stub → PayloadDrift → 两个 jar)与
+  `build-fml10-own-classes.ps1`(第二个 mod jar,含 Forge API 桩的按需生成)。
+* **卡点**:`libraries\net\minecraft\client\1.21.10-…` 下的 slim/extra/srg 三个 NeoForm 客户端变体,
+  以及 `libraries\net\neoforged\neoforge\21.10.64\neoforge-21.10.64-client.jar`(NeoForge 打补丁后的客户端覆盖层)
+  **都不存在**;安装每次都报 `libraries: fetched 1, already present 1577, failed 1`。
+  直接取这两件时 **`maven.neoforged.net:443` 连不上**(curl 72 秒超时),这是环境/网络问题,不是配置问题。
+  已经把 Gradle 模块缓存里的 `neoform-1.21.10-20251010.172816.zip`(889 425 字节)**补种**到 rig 的
+  `libraries\net\neoforged\neoform\1.21.10-20251010.172816\`,并核对了 `neoforge-21.10.64-userdev.jar`:
+  里面是 `patches/**`、`ats/accesstransformer.cfg`、`config.json`,**不含编译后的客户端类**,所以覆盖层必须由
+  NeoForm 流程(neoform zip + 这些补丁)产出,不是能直接下载的成品。
+
+**下一步**:网络恢复后重跑 `add-line.ps1 -InstallOnly`(neoform zip 已就位,可能就能补齐三个客户端变体),
+再跑 `prepare-fml10-line.ps1 -Mc 1.21.10 -NeoForge 21.10.64 -OptifineJar <jar>`,最后按脚本末尾打印的命令启动。
+这个脚本里的每一步都是 1.21.9 上量过的同一条链,所以剩下的风险集中在"安装能不能补齐"这一件上。
