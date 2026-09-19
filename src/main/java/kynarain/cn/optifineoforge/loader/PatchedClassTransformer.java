@@ -389,6 +389,28 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		} catch(IOException e) {
 			LOGGER.warn("could not read " + INDEX + ": " + e);
 		}
+		// A traced class has to be a target even when there is no payload for it, because this transformer is
+		// only called for its targets. Measured on 1.20.4: net.minecraft.client.Minecraft is not in the index,
+		// so -Doptifineoforge.traceScreen=true produced no output at all and the tracer looked broken.
+		//
+		// The properties are read here rather than through the constants below on purpose: TARGETS is
+		// initialised before those constants, so reading them would still see their default values and the
+		// widening would silently do nothing - which is what the first version of this did (the target count
+		// stayed at 427).
+		if(Boolean.getBoolean("optifineoforge.traceScreen")) {
+			targets.add("net.minecraft.client.Minecraft");
+		}
+		if(Boolean.getBoolean("optifineoforge.traceCrash")) {
+			targets.add("net.minecraft.CrashReport");
+		}
+		String traced = System.getProperty("optifineoforge.traceInit");
+		if(traced != null && !"*".equals(traced.trim())) {
+			for(String candidate : traced.split(",")) {
+				if(!candidate.isBlank()) {
+					targets.add(candidate.trim().replace('/', '.'));
+				}
+			}
+		}
 		LOGGER.info("Patched-class targets: " + targets.size());
 		return Set.copyOf(targets);
 	}
