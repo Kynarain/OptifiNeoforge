@@ -4530,3 +4530,21 @@ atives-for.ps1、get-optifine.ps1、launch.ps1(RIG_EXTRA_JVM)、
 ### 五、没有做的事
 
 **没有发布任何东西**;已发布的 jar 没有重建。本会话的产物全部是文档、loader 能力与 rig 工具。
+## 光影包实测(2026-09-20,1.20.4 线,Java 17)
+
+用户要求下载安装多个光影包测试。三个包从 Modrinth 取到 rig 的 `shaderpacks-1.20.4\`,
+由 rig 侧脚本 `test-shaderpack.ps1 -Launcher modlauncher -JavaHome <jdk-17>` 逐包跑一次真机:
+
+| 光影包 | 四项判据 | 包是否加载 | `[OptiFine]` 行 | `[Shaders]` 行 | GLSL 错误 | GL 错误 | stderr |
+|---|---|---|---|---|---|---|---|
+| Complementary Reimagined r5.9.3 | 全中 | 是 | 810 | 141 | 0 | 0 | 14 481 字节 |
+| BSL v10.1.5 | 全中 | 是 | 448 | 82 | 0 | 0 | 14 481 字节 |
+| MakeUp UltraFast 9.5e | 全中 | 是 | 3497 | 86 | 0 | 0 | 14 481 字节 |
+
+"四项判据"= `VERDICT: STARTED` + `Setting user` + `Sound engine started` + 本次运行无崩溃报告;
+"包是否加载"取自日志里 OptiFine 自己的 `[Shaders] Loaded shaderpack: <包名>`。
+**stderr 的 14 481 字节与本线此前记录的值一致**(那是这一线无 mod 对照跑的数字),三次都一样 —— 也就是说
+三个光影包都没有往 stderr 多写一个字节。
+
+选中哪个包由 `<游戏目录>\optionsshaders.txt` 的 `shaderPack=` 决定(键名与文件名都取自 OptiFine 自己的类:
+`EnumShaderOption.SHADER_PACK.getPropertyKey()` 与 `Shaders` 里的 `optionsshaders.txt` 常量)。
