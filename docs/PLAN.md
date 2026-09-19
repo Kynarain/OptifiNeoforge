@@ -218,3 +218,22 @@ et.neoforged.fml.loading.EarlyServiceDiscovery.SERVICES 正好只有
 
 **所以 1.21.9 的载荷 jar = 离线管线产出的 srg/** 成品类 + 那两个 fml10 类 + 两个服务文件 + META-INF/neoforge.mods.toml。**
 (本轮只把这份配方记下来;**组装脚本还没写**。)
+### 第一次真正跑 1.21.9 载荷:机制全部按设计工作,游戏在装完类之后安静退出
+
+本轮做成并实测了三件事:
+
+1. **载荷 jar 组装成功**(按上一节那份配方,临时脚本内联):work\1.21.9\optifine-patched.jar 里的
+   **1233 个 srg/** 成品类** + 两个 fml10 类 + 两个服务文件 + META-INF/neoforge.mods.toml
+   ⇒ jars-1.21.9\optifine-payload-fml10.jar(**2 999 556 字节**)。
+2. **FML 10 确实把它当载荷吃下去了**(launch-fml10.ps1 的日志):
+   - mods/optifine-payload-fml10.jar 被发现 ✔
+   - OptifiNeoforge: early service jar recognised; the payload jar itself is disco...(locator 起作用 ✔)
+   - OptifiNeoforge: OptifinePayloadClassProcessor constructed (FML 10 mount point) ✔
+   - OptiFine payload: 517 finished game classes ✔,随后一条条
+     OptiFine payload: installed net.minecraft.util.Mth (34 fields, 109 methods) [1 so far] …(到 16 条时日志中断)
+3. **然后仍然是安静退出**:Closing FML Loader → Clearing ModLoader,**没有 ERROR、没有异常、stderr 0 字节**,
+   Setting user 没出现。注意:**无 mod 的对照是能跑到 Setting user 的**(第 56 轮),所以问题出在装进去的类上,
+   而不是启动方式。
+
+**下一步**(明确):给这次启动加 -Xlog:exceptions=trace(本会话已两次用这招挖出"看不见"的原因),看主线程在
+"装了十几二十个类"之后到底抛了什么 —— 或者先只放**少数几个类**的载荷做二分。
