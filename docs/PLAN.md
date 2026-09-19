@@ -1125,3 +1125,54 @@ VerifyError: Bad type on operand stack
 1.21 / 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8、1.21.9 / 1.21.10 / 1.21.11、26.1.2),
 逐条的数字在各自的 README 与分支文档里,三条 FML 10 线与 26.1.2 的 rig 前提(关掉 FML 早期加载画面、
 诊断入口点、以及"安装器拿不到时用 NeoForm 缓存产物替代"这件事)也都写在同一处。
+## 光影包实测(FML 10 三条线):1.21.10 通过,1.21.9 有未解释的差异
+
+用户要求下载安装多个光影包测试。六个包(Complementary Reimagined r5.9.3、BSL v10.1.5、Photon v1.3b、
+MakeUp UltraFast 9.5e、Rethinking Voxels r0.1-beta9、Solas V3.7b)从 Modrinth API 取到 rig 的
+`shaderpacks\`,由 rig 侧脚本 `test-shaderpack.ps1` 逐包"装包 → 写 `optionsshaders.txt` → 启动 → 从日志取数"。
+
+**怎么选中一个包**:`<游戏目录>\optionsshaders.txt`,键 `shaderPack`,值是 `shaderpacks\` 里的条目名(含 `.zip`)。
+这是从 OptiFine 自己的类里读出来的(`Shaders` 里 `optionsshaders.txt` + `new File(Minecraft.getInstance()
+.gameDirectory, ...)`,键名来自 `EnumShaderOption.SHADER_PACK.getPropertyKey()`),不是猜的。
+
+### 结果
+
+| 线 | 光影包 | 四项判据 | 包是否加载 | `[OptiFine]` 行 | `[Shaders]` 行 | GLSL 错误 |
+|---|---|---|---|---|---|---|
+| **1.21.10** | MakeUp-UltraFast 9.5e | 全中 | **是** | 3441 | 76 | 0 |
+| **1.21.10** | Photon v1.3b | 全中 | **是** | 1199 | 180 | 0 |
+| 1.21.9 | MakeUp-UltraFast 9.5e | 全中 | **否** | 365 | 9 | 0 |
+
+(1.21.10 上其余四个包的结果补在本节末尾;26.1.2 上六个包全部通过,记录在 `26.x` 的
+`docs/DEVELOPMENT.md`。)
+
+### 1.21.9 的差异:如实记为"未解释"
+
+同一条命令、同一份 `optionsshaders.txt`(内容逐字节相同:`shaderPack=<包>` + `antialiasingLevel=0`)、
+同一台机器:
+
+* 1.21.10 的日志:`[Shaders] Load shaders configuration.` → 2 毫秒后
+  `[Shaders] Loaded shaderpack: photon_v1.3b.zip`;
+* 1.21.9 的日志:`[Shaders] Load shaders configuration.` 之后**什么都没有**,直接进资源重载。
+
+已经排除的(都量过):
+
+* **不是文件格式/位置**:该文件存在、是普通文件(`Archive`,59 字节)、内容正确;
+  用 OptiFine 自己的 `net.optifine.util.PropertiesOrdered` 离线解析同一个文件,拿到
+  `shaderPack=[(debug)]`(换值也拿得到),所以 `key=value` 与 `:value` 两种写法都能被解析。
+* **不是路径构造不同**:`javap` 逐字节比较 1.21.9(`J7_pre2`)与 1.21.10(`J7_pre11`)两个构建的
+  `Shaders` 初始化代码,`new File(Minecraft.getInstance().gameDirectory, "optionsshaders.txt")` 与
+  `shaderpacks` 两处**完全一致**。
+* **不是我们装的 `Minecraft`**:1.21.9 的载荷里**没有** `net/minecraft/client/Minecraft.class`
+  (运行时那份带 `public final File gameDirectory`),所以读的是运行时的字段。
+* **不是 antialiasing / Fabulous 拦截**:那两个分支各自会打一行 `[Shaders]` 说明,日志里都没有;
+  而且 `antialiasingLevel=0` 与 `=2` 两种取值都试过,行为不变。
+* **不是把文件放错目录**:把同样的内容种到 6 个候选位置(游戏目录、游戏目录下的 `run\`、`game\`、
+  rig 根、`.minecraft`、用户目录)再跑,`[Shaders]` 里依然没有任何一行提到它被读到。
+* **`Config` 的默认值**:三个 `[Shaders]` 相关取值都表现为"读到空串",即 `loadConfig()` 在
+  `Properties.load()` 之前先 `setProperty("shaderPack","")` 的那个值——也就是说文件读取这一步
+  在 1.21.9 上要么抛了被吞掉的异常、要么读的不是那个文件。**具体是哪一种没有定论。**
+
+下一轮的诊断手段已经想好:用 ASM 给 **1.21.9 那份** `net/optifine/shaders/Shaders.loadConfig()` 开头插一行
+探针,打印 `configFile`、`configFile.exists()` 与读完后 `shadersConfig.getProperty("shaderPack","(unset)")`,
+再把探针 jar 放进 `mods\` 跑一次。这样"路径/存在性/读到的值"三件事一次量清。
