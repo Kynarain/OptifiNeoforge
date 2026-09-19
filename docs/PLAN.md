@@ -668,3 +668,93 @@ OptiFine 的类在里面、`Reflector` 初始化成功、游戏把用户设置�
    实测过的两件事:① 删掉 `optionsof.txt` 再跑仍然出现;② 运行中游戏会重新写出这个文件(88 行,
    全是 `key:value`,没有一行缺冒号)。所以"读到旧版本写的文件"这个猜测**站不住**,
    还得再看这一行到底在切什么。
+## 1.21.9 再续:成员恢复接上了,OptiFine 跑到 167 行,卡在 FML 自己的加载画面上
+
+### 这一轮加进处理器的两件事
+
+**1. 成员恢复(计划 + donor)。** 上一节停在 `Gui.layerManager` 为 null:字段被"保留运行时成员"留下来了,
+但给它赋值的初始化在 NeoForge 的构造器里,而那个构造器被 OptiFine 的副本取代了。处理器现在读
+`/optifineoforge/member-restores.txt` 与 `/optifineoforge/donors/<类>.class`,把 donor 里有、成品类里没有的
+字段/方法补进去,并把 donor 里的合成初始化方法**内联**:静态的进本类 `<clinit>`,实例的进每个
+"自己没有赋过这个字段"的构造器。
+
+两个都是量出来的,不是选的:
+
+* **静态必须内联,不能调用**。静态 final 字段只能在**本类的初始化方法**里赋值,调用一个 helper 去写会被拒:
+  `IllegalAccessError: Update to static final field ... attempted from a different method than the initializer method`。
+* **实例也必须内联**。先按 ml11 那套"每个构造器调一次 helper"做,1.21.9 直接给出:
+  ```
+  IllegalAccessError: Update to non-static final field com.mojang.blaze3d.opengl.GlDevice.deviceProperties
+    attempted from a different method (optifineoforge$init$deviceProperties) than the initializer method <init>
+      at com.mojang.blaze3d.opengl.GlDevice.optifineoforge$init$deviceProperties(GlDevice.java)
+      at com.mojang.blaze3d.opengl.GlDevice.<init>(GlDevice.java:95)
+  ```
+  内联进构造器之后,同一个 `putfield` 就合法了,而且**接收者天然对齐**:donor 的初始化方法把对象放在局部 0,
+  `<init>` 也是。
+* **指令克隆器缺 `VarInsnNode`** —— 这是 `Gui.layerManager` 一度仍然是 null 的直接原因,日志里写得很清楚:
+  `cannot inline optifineoforge$init$layerManager: an instruction of kind VarInsnNode has no copy here`。
+  只允许局部 0(其余局部在构造器里会与形参撞车),其余一律拒绝而不是猜。
+
+**2. 一处针对性的修复:`ReloadableResourceManager` 的监听器列表被冻结。** 这是 NeoForge 与 OptiFine 的
+**先后顺序**冲突,两边单独看都没错:
+
+* NeoForge 在 `Minecraft` 构造器里通过 `AddClientReloadListenersEvent` 收集监听器,排序结果**不可改**——
+  `ReloadListenerSort.sort` 的最后一步是 `Collections.unmodifiableList`(从
+  `neoforge-21.9.16-beta-universal.jar` 里读出来的),`ReloadableResourceManager.updateListenersFrom` 把它直接
+  赋给字段;
+* OptiFine 自己的补丁在同一个构造器里、**晚几行**(它注入到 `Window.setDefaultErrorCallback` 的那次调用)
+  注册一个监听器,于是撞上冻结的列表:
+  ```
+  UnsupportedOperationException
+    at java.util.Collections$UnmodifiableCollection.add
+    at net.minecraft.server.packs.resources.ReloadableResourceManager.registerReloadListener(...:43)
+    at net.optifine.util.TextureUtils.registerResourceListener(TextureUtils.java:412)
+  ```
+  NeoForge 自己之后不再注册,所以这个冻结在纯 NeoForge 里看不出来。
+
+  修在**冻结点**而不是 `registerReloadListener`:在 `updateListenersFrom` 调用 `ReloadListenerSort.sort` 之后插
+  `new ArrayList<>(list)`(`NEW/DUP_X1/SWAP/INVOKESPECIAL`),让字段恢复 vanilla 构造器给的契约(一个可以
+  继续加的 List),NeoForge 算出来的顺序一点不动。字段在这里可赋值,是因为处理器本来就会把
+  运行时非 final 的字段的 `final` 清掉——这个字段正是如此(负载编成 `final`,NeoForge 的没有)。
+
+### 结果:167 行 `[OptiFine]`,然后倒在 FML 自己的加载画面上
+
+```
+===== VERDICT: FAILED =====
+  Setting user        : True
+  new crash reports   : 1 -> crash-…22.07.08-client.txt
+  stderr bytes        : 0
+  [OptiFine] lines    : 167
+```
+
+OptiFine 这次是真的在工作(`[OptiFine] Scaled non power of 2: minecraft:leaf_3, 5 -> 10` 这类贴图处理已经跑起来了),
+游戏也进了主循环,但停在 **NeoForge 的加载覆盖层**上:
+
+```
+java.lang.IllegalStateException: Already building.
+	at net.neoforged.fml.earlydisplay.render.SimpleBufferBuilder.begin(SimpleBufferBuilder.java:185)
+	at …RenderContext.renderText(RenderContext.java:91)
+	at …PerformanceElement.render(PerformanceElement.java:75)
+	at …LoadingScreenRenderer.renderToFramebuffer(LoadingScreenRenderer.java:280)
+	at TRANSFORMER/neoforge@21.9.16-beta/…NeoForgeLoadingOverlay.render(NeoForgeLoadingOverlay.java:68)
+	at TRANSFORMER/minecraft@1.21.9/net.minecraft.client.renderer.GameRenderer.render(GameRenderer.java:811)
+	at TRANSFORMER/minecraft@1.21.9/net.minecraft.client.Minecraft.runTick(Minecraft.java:1330)
+```
+
+而且是**先有一大片 GL 错误**才轮到它:同一份日志里 `OpenGL API ERROR: 1167` 之类共 **865 行**,第一次出现在
+OptiFine 刚开始处理贴图之后,失败的调用是 `glClear`。
+
+**这不是环境问题,是对照组量出来的**:同样的 rig、同样的 90 秒、**不带任何 mod** 跑一次:
+
+```
+===== VERDICT: STARTED =====    Setting user: True, Sound engine started: True, 崩溃 0, stderr 0
+日志总行数 76,OpenGL API ERROR 0 行,Already building 0 次
+```
+
+也就是说这批 GL 错误是**我们装的类带来的**:OptiFine 在资源重载期间的 GL 操作把状态弄坏了(或者某个
+被换掉的 `GlStateManager`/`GlDevice` 那一路还缺东西),FML 的早期显示在坏掉的 GL 状态上画,一次 `draw`
+中途抛错就把 `SimpleBufferBuilder.building` 留在 true,下一帧 `begin` 直接抛 "Already building"。
+
+**下一步**:把 1.21.8 那条线最后用过的那几份计划照 `add-line.ps1` 的顺序补齐 —— `PayloadDrift`
+(keep-runtime / runtime-interfaces / access)与 `MissingTargets --stub`,再把它们接进 FML 10 的处理器;
+1.21.8 上"GL 状态那一路"正是靠这几份计划才过的。

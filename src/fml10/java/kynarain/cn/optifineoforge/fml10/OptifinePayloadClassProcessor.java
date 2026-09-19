@@ -58,6 +58,12 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 	/** Where the rig puts the finished game classes: OptiFine's own layout, one directory up. */
 	private static final String PAYLOAD_ROOT = "srg/";
 
+	/** Where the member restore plan's donor classes sit in this jar, as the rig lays them out. */
+	private static final String DONOR_ROOT = "optifineoforge/donors/";
+
+	/** The prefix {@code MemberRestorePlan} gives the synthetic methods that fill restored fields. */
+	private static final String INITIALISER_PREFIX = "optifineoforge$init$";
+
 	/**
 	 * The finished classes, read once. Read from this class's own jar rather than through a
 	 * resource lookup, because the payload sits at a path ({@code srg/}) that no package claims and
@@ -103,10 +109,436 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 		ClassNode finished = new ClassNode();
 		new ClassReader(bytes).accept(finished, 0);
 		copy(finished, node);
+		int restored = restoreMembers(node);
+		repairFrozenReloadListeners(node);
 		installed++;
 		LOGGER.info("OptiFine payload: installed " + node.name.replace('/', '.') + " (" + finished.fields.size()
-				+ " fields, " + finished.methods.size() + " methods) [" + installed + " so far]");
+				+ " fields, " + finished.methods.size() + " methods" + (restored == 0 ? "" : ", " + restored
+				+ " restored from its donor") + ") [" + installed + " so far]");
 	}
+
+	/**
+	 * One repair, on one class, for an ordering conflict between NeoForge and OptiFine.
+	 *
+	 * <p>Measured on 1.21.9: NeoForge collects the client's reload listeners through
+	 * {@code AddClientReloadListenersEvent} inside {@code Minecraft}'s constructor, and the sorted result it
+	 * stores is <em>unmodifiable</em> - {@code ReloadListenerSort.sort} ends in
+	 * {@code Collections.unmodifiableList} (read out of {@code neoforge-21.9.16-beta-universal.jar}) and
+	 * {@code ReloadableResourceManager.updateListenersFrom} assigns it straight to the field. OptiFine's own
+	 * patch registers a listener a few lines later in the same constructor, from the call it injects into
+	 * {@code Window.setDefaultErrorCallback}, so it lands on the frozen list:</p>
+	 *
+	 * <pre>UnsupportedOperationException
+	 *   at java.util.Collections$UnmodifiableCollection.add
+	 *   at net.minecraft.server.packs.resources.ReloadableResourceManager.registerReloadListener(...:43)
+	 *   at net.optifine.util.TextureUtils.registerResourceListener(TextureUtils.java:412)
+	 *   at com.mojang.blaze3d.platform.Window.setDefaultErrorCallback(Window.java:307)
+	 *   at net.minecraft.client.Minecraft.&lt;init&gt;(Minecraft.java:669)</pre>
+	 *
+	 * <p>Nothing registers a listener after that point in NeoForge itself, which is why the freeze is
+	 * invisible there and fatal here. The repair is at the freezing site rather than in
+	 * {@code registerReloadListener}: the list NeoForge sorted is stored wrapped in a mutable copy, so the
+	 * field keeps the contract vanilla's own constructor gives it - a list one may add to - while the
+	 * ordering NeoForge computed is untouched, and the bytecode of the method that does the sorting is not
+	 * rewritten at all. {@code new ArrayList&lt;&gt;(list)} on the stack is
+	 * {@code NEW, DUP_X1, SWAP, INVOKESPECIAL}.</p>
+	 *
+	 * <p>The field is assignable here because this processor already clears {@code final} on a field the
+	 * runtime's copy declares non-final, which it does for this one: the payload compiled
+	 * {@code listeners} as {@code final} and NeoForge's class does not.</p>
+	 */
+	private static void repairFrozenReloadListeners(ClassNode installed) {
+		if(!"net/minecraft/server/packs/resources/ReloadableResourceManager".equals(installed.name)) {
+			return;
+		}
+		for(MethodNode method : installed.methods) {
+			if(!"updateListenersFrom".equals(method.name) || method.instructions == null) {
+				continue;
+			}
+			for(org.objectweb.asm.tree.AbstractInsnNode instruction = method.instructions.getFirst();
+					instruction != null; instruction = instruction.getNext()) {
+				if(!(instruction instanceof org.objectweb.asm.tree.MethodInsnNode call)
+						|| call.getOpcode() != Opcodes.INVOKESTATIC
+						|| !"net/neoforged/neoforge/resource/ReloadListenerSort".equals(call.owner)
+						|| !"sort".equals(call.name)) {
+					continue;
+				}
+				org.objectweb.asm.tree.InsnList wrap = new org.objectweb.asm.tree.InsnList();
+				wrap.add(new org.objectweb.asm.tree.TypeInsnNode(Opcodes.NEW, "java/util/ArrayList"));
+				wrap.add(new org.objectweb.asm.tree.InsnNode(Opcodes.DUP_X1));
+				wrap.add(new org.objectweb.asm.tree.InsnNode(Opcodes.SWAP));
+				wrap.add(new org.objectweb.asm.tree.MethodInsnNode(Opcodes.INVOKESPECIAL, "java/util/ArrayList",
+						"<init>", "(Ljava/util/Collection;)V", false));
+				method.instructions.insert(call, wrap);
+				LOGGER.info("OptiFine payload: " + installed.name.replace('/', '.')
+						+ ".updateListenersFrom stores the sorted listeners in a mutable copy, because "
+						+ "NeoForge's sort returns an unmodifiable list and OptiFine registers a listener "
+						+ "after it");
+				return;
+			}
+			LOGGER.warn("OptiFine payload: " + installed.name.replace('/', '.')
+					+ ".updateListenersFrom does not call ReloadListenerSort.sort as this repair expects; the "
+					+ "listener list stays frozen");
+			return;
+		}
+	}
+
+	/**
+	 * The member restore pass, which is the half that keeping runtime members does not cover.
+	 *
+	 * <p>Measured on 1.21.9, and it is the reason this exists: {@code Gui} has a NeoForge field
+	 * ({@code layerManager}, in the repository's own {@code member-restores.txt} for this line) that
+	 * OptiFine's copy does not declare. Keeping the runtime's members puts the field back, and then
+	 * NeoForge's own {@code initModdedOverlays} - also a kept runtime member - reads it and finds
+	 * {@code null}:</p>
+	 *
+	 * <pre>NullPointerException: Cannot invoke "…GuiLayerManager.initModdedLayers()"
+	 *     because "this.layerManager" is null
+	 *   at net.minecraft.client.gui.Gui.initModdedOverlays(Gui.java:1604)
+	 *   at net.neoforged.neoforge.client.ClientHooks.initClientHooks(...:984)</pre>
+	 *
+	 * <p>because the assignment NeoForge made lives in <em>its</em> constructor, and the payload's
+	 * constructor replaced it. The repo's answer, from the {@code MemberRestoreTransformer} the
+	 * ModLauncher lines use, is a plan plus donor classes: the plan names the members, and each donor
+	 * carries them together with synthetic initialisers whose bodies are inlined here - static ones into
+	 * the class's own {@code <clinit>} (a static final field may only be assigned from its own class's
+	 * initialiser, so calling a helper is rejected with "Update to static final field"), instance ones
+	 * into every constructor that does not assign that field itself.</p>
+	 *
+	 * <p>Returns how many members came from the donor, for the log line.</p>
+	 */
+	private static int restoreMembers(ClassNode installed) {
+		if(!restoreTargets().contains(installed.name)) {
+			return 0;
+		}
+		ClassNode donor = donor(installed.name);
+		if(donor == null) {
+			LOGGER.warn("OptiFine payload: no donor class for " + installed.name.replace('/', '.')
+					+ "; its dropped members stay missing");
+			return 0;
+		}
+		int restored = 0;
+		boolean targetIsInterface = (installed.access & Opcodes.ACC_INTERFACE) != 0;
+		for(FieldNode field : donor.fields) {
+			if(hasField(installed.fields, field.name, field.desc)) {
+				continue;
+			}
+			int access = field.access;
+			if(targetIsInterface) {
+				// The donor is written as a plain class, so its fields arrive without the rules that apply
+				// in an interface - and final is cleared on purpose, because an initialiser fills them -
+				// so the donor's own flags cannot be copied across as they are. Whatever the donor says,
+				// an interface's fields have to be public static final or the JVM rejects the class
+				// outright ("ClassFormatError: Illegal field modifiers"), which the 1.21.8 line measured.
+				access = (access & ~(Opcodes.ACC_PRIVATE | Opcodes.ACC_PROTECTED))
+						| Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL;
+			}
+			installed.fields.add(new FieldNode(access, field.name, field.desc, field.signature, field.value));
+			restored++;
+		}
+		java.util.List<MethodNode> staticInitialisers = new java.util.ArrayList<>();
+		java.util.List<MethodNode> initialisers = new java.util.ArrayList<>();
+		for(MethodNode method : donor.methods) {
+			if(method.name.startsWith(INITIALISER_PREFIX)) {
+				// The initialisers are *inlined* and never added to the class, and that is measured rather
+				// than stylistic: they assign fields, and an instance field that is final may only be
+				// assigned from a constructor. Calling one instead produced
+				//
+				//   IllegalAccessError: Update to non-static final field
+				//     com.mojang.blaze3d.opengl.GlDevice.deviceProperties attempted from a different method
+				//     (optifineoforge$init$deviceProperties) than the initializer method <init>
+				//   at com.mojang.blaze3d.opengl.GlDevice.optifineoforge$init$deviceProperties(GlDevice.java)
+				//   at com.mojang.blaze3d.opengl.GlDevice.<init>(GlDevice.java:95)
+				//
+				// on 1.21.9, which killed the client inside Minecraft's constructor. Inlined into the
+				// constructor the same PUTFIELD is legal, and the receiver lines up without any rewriting:
+				// the donor's initialiser takes the object as its local 0, and so does <init>.
+				if(targetIsInterface) {
+					// An interface is the one class these must not appear in at all: its fields are final
+					// and its initialiser already fills them.
+					continue;
+				}
+				if("()V".equals(method.desc)) {
+					staticInitialisers.add(method);
+				} else {
+					initialisers.add(method);
+				}
+				continue;
+			}
+			if(!hasMethod(installed.methods, method.name, method.desc)) {
+				MethodNode copy = new MethodNode(method.access, method.name, method.desc, method.signature,
+						method.exceptions == null ? null : method.exceptions.toArray(new String[0]));
+				method.accept(copy);
+				installed.methods.add(copy);
+				restored++;
+			}
+		}
+		inlineStaticInitialisers(installed, staticInitialisers);
+		inlineInstanceInitialisers(installed, initialisers);
+		if(restored > 0) {
+			LOGGER.info("OptiFine payload: restored " + restored + " members in "
+					+ installed.name.replace('/', '.') + " from its donor");
+		}
+		return restored;
+	}
+
+	/** Writes the donor's static initialiser bodies into the class's own {@code <clinit>}. */
+	private static void inlineStaticInitialisers(ClassNode installed, java.util.List<MethodNode> initialisers) {
+		if(initialisers.isEmpty()) {
+			return;
+		}
+		MethodNode clinit = null;
+		for(MethodNode method : installed.methods) {
+			if("<clinit>".equals(method.name)) {
+				clinit = method;
+				break;
+			}
+		}
+		org.objectweb.asm.tree.InsnList values = body(initialisers.get(0));
+		if(values == null) {
+			return;
+		}
+		for(int index = 1; index < initialisers.size(); index++) {
+			org.objectweb.asm.tree.InsnList more = body(initialisers.get(index));
+			if(more == null) {
+				return;
+			}
+			values.add(more);
+		}
+		if(clinit == null) {
+			clinit = new MethodNode(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
+			clinit.instructions.add(values);
+			clinit.instructions.add(new org.objectweb.asm.tree.InsnNode(Opcodes.RETURN));
+			clinit.maxStack = 8;
+			clinit.maxLocals = 0;
+			installed.methods.add(clinit);
+		} else {
+			org.objectweb.asm.tree.AbstractInsnNode last = null;
+			for(org.objectweb.asm.tree.AbstractInsnNode instruction = clinit.instructions.getFirst();
+					instruction != null; instruction = instruction.getNext()) {
+				if(instruction.getOpcode() == Opcodes.RETURN) {
+					last = instruction;
+				}
+			}
+			if(last == null) {
+				LOGGER.warn("OptiFine payload: no return in the static initialiser of "
+						+ installed.name.replace('/', '.') + "; " + initialisers.size() + " restored fields stay "
+						+ "at their defaults");
+				return;
+			}
+			clinit.instructions.insertBefore(last, values);
+			clinit.maxStack = Math.max(clinit.maxStack, 8);
+		}
+		LOGGER.info("OptiFine payload: initialised " + initialisers.size() + " restored static fields in "
+				+ installed.name.replace('/', '.'));
+	}
+
+	/**
+	 * Writes the donor's instance initialiser bodies into every constructor that does not assign that field
+	 * itself. A constructor restored from the donor already stored the field, and inlining the initialiser
+	 * after it would overwrite the value it just stored with the initialiser's default.
+	 */
+	private static void inlineInstanceInitialisers(ClassNode installed, java.util.List<MethodNode> initialisers) {
+		if(initialisers.isEmpty()) {
+			return;
+		}
+		int constructors = 0;
+		for(MethodNode constructor : installed.methods) {
+			if(!"<init>".equals(constructor.name) || constructor.instructions == null) {
+				continue;
+			}
+			java.util.Set<String> assigned = assignedFields(constructor, installed.name);
+			org.objectweb.asm.tree.InsnList values = new org.objectweb.asm.tree.InsnList();
+			int wanted = 0;
+			for(MethodNode initialiser : initialisers) {
+				String field = initialiser.name.substring(INITIALISER_PREFIX.length());
+				if(assigned.contains(field)) {
+					continue;
+				}
+				org.objectweb.asm.tree.InsnList more = body(initialiser);
+				if(more == null) {
+					return;
+				}
+				values.add(more);
+				wanted++;
+			}
+			if(wanted == 0) {
+				continue;
+			}
+			for(org.objectweb.asm.tree.AbstractInsnNode instruction = constructor.instructions.getFirst();
+					instruction != null; instruction = instruction.getNext()) {
+				if(instruction.getOpcode() == Opcodes.RETURN) {
+					constructor.instructions.insertBefore(instruction, values);
+				}
+			}
+			constructors++;
+		}
+		LOGGER.info("OptiFine payload: initialised " + initialisers.size() + " restored instance fields in "
+				+ constructors + " constructor(s) of " + installed.name.replace('/', '.'));
+	}
+
+	/** One initialiser body, with its RETURN dropped, or null when an instruction could not be copied. */
+	private static org.objectweb.asm.tree.InsnList body(MethodNode initialiser) {
+		org.objectweb.asm.tree.InsnList values = new org.objectweb.asm.tree.InsnList();
+		if(initialiser.instructions == null) {
+			return values;
+		}
+		for(org.objectweb.asm.tree.AbstractInsnNode instruction = initialiser.instructions.getFirst();
+				instruction != null; instruction = instruction.getNext()) {
+			if(instruction.getOpcode() == Opcodes.RETURN) {
+				continue;
+			}
+			org.objectweb.asm.tree.AbstractInsnNode copy = copyInstruction(instruction);
+			if(copy == null) {
+				LOGGER.warn("OptiFine payload: cannot inline " + initialiser.name
+						+ ": an instruction of kind " + instruction.getClass().getSimpleName()
+						+ " has no copy here; the field stays at its default");
+				return null;
+			}
+			values.add(copy);
+		}
+		return values;
+	}
+
+	/** A copy of one instruction, or null for a kind this pass does not carry across. */
+	private static org.objectweb.asm.tree.AbstractInsnNode copyInstruction(
+			org.objectweb.asm.tree.AbstractInsnNode instruction) {
+		if(instruction instanceof org.objectweb.asm.tree.InsnNode plain) {
+			return new org.objectweb.asm.tree.InsnNode(plain.getOpcode());
+		}
+		if(instruction instanceof org.objectweb.asm.tree.MethodInsnNode call) {
+			return new org.objectweb.asm.tree.MethodInsnNode(call.getOpcode(), call.owner, call.name, call.desc,
+					call.itf);
+		}
+		if(instruction instanceof org.objectweb.asm.tree.FieldInsnNode field) {
+			return new org.objectweb.asm.tree.FieldInsnNode(field.getOpcode(), field.owner, field.name,
+					field.desc);
+		}
+		if(instruction instanceof org.objectweb.asm.tree.TypeInsnNode type) {
+			return new org.objectweb.asm.tree.TypeInsnNode(type.getOpcode(), type.desc);
+		}
+		if(instruction instanceof org.objectweb.asm.tree.LdcInsnNode ldc) {
+			return new org.objectweb.asm.tree.LdcInsnNode(ldc.cst);
+		}
+		if(instruction instanceof org.objectweb.asm.tree.IntInsnNode integer) {
+			return new org.objectweb.asm.tree.IntInsnNode(integer.getOpcode(), integer.operand);
+		}
+		if(instruction instanceof org.objectweb.asm.tree.VarInsnNode local) {
+			// Only local 0, which is the object in both the donor's initialiser and the constructor it is
+			// inlined into, so the receiver lines up. Any other local belongs to the initialiser's own frame
+			// and would collide with the constructor's parameters once inlined - measured on 1.21.9, where
+			// omitting this kind altogether is what left Gui.layerManager null:
+			//   cannot inline optifineoforge$init$layerManager: an instruction of kind VarInsnNode has no copy
+			// The bodies the plan writes need exactly "aload_0; <value>; putfield", so this is the whole of
+			// what is required; anything else is refused rather than silently miscompiled.
+			if(local.var != 0) {
+				return null;
+			}
+			return new org.objectweb.asm.tree.VarInsnNode(local.getOpcode(), local.var);
+		}
+		if(instruction instanceof org.objectweb.asm.tree.InvokeDynamicInsnNode dynamic) {
+			// A value built through a lambda is still one expression: SingleVariant$Unbaked.MAP_CODEC is
+			// Variant.MAP_CODEC.xmap(lambda, lambda), and leaving the field at its default made every
+			// blockstate in the game fail to load on 1.21.8, because NeoForge's own
+			// BlockStateModel$Unbaked.CODEC falls back to it. The bootstrap method and its arguments are
+			// shared rather than copied - they are immutable.
+			return new org.objectweb.asm.tree.InvokeDynamicInsnNode(dynamic.name, dynamic.desc, dynamic.bsm,
+					dynamic.bsmArgs.clone());
+		}
+		return null;
+	}
+
+	/** The names of the fields one constructor assigns on its own class. */
+	private static java.util.Set<String> assignedFields(MethodNode constructor, String owner) {
+		java.util.Set<String> assigned = new java.util.LinkedHashSet<>();
+		for(org.objectweb.asm.tree.AbstractInsnNode instruction = constructor.instructions.getFirst();
+				instruction != null; instruction = instruction.getNext()) {
+			if(instruction instanceof org.objectweb.asm.tree.FieldInsnNode field
+					&& field.getOpcode() == Opcodes.PUTFIELD && owner.equals(field.owner)) {
+				assigned.add(field.name);
+			}
+		}
+		return assigned;
+	}
+
+	/** The classes the member restore plan names, read once. */
+	private static java.util.Set<String> restoreTargets() {
+		if(restoreTargets != null) {
+			return restoreTargets;
+		}
+		java.util.Set<String> result = new java.util.LinkedHashSet<>();
+		try(InputStream stream = OptifinePayloadClassProcessor.class
+				.getResourceAsStream("/optifineoforge/member-restores.txt")) {
+			if(stream == null) {
+				LOGGER.info("OptiFine payload: no /optifineoforge/member-restores.txt in this jar; no member is "
+						+ "restored from a donor");
+			} else {
+				java.io.BufferedReader reader = new java.io.BufferedReader(
+						new java.io.InputStreamReader(stream, java.nio.charset.StandardCharsets.UTF_8));
+				int members = 0;
+				String line;
+				while((line = reader.readLine()) != null) {
+					String[] parts = line.split("\\s+");
+					if(parts.length >= 4 && ("F".equals(parts[0]) || "M".equals(parts[0]))) {
+						result.add(parts[1]);
+						members++;
+					}
+				}
+				LOGGER.info("OptiFine payload: member restore plan: " + members + " members across "
+						+ result.size() + " classes");
+			}
+		} catch(Throwable t) {
+			LOGGER.warn("OptiFine payload: could not read the member restore plan: " + t);
+		}
+		restoreTargets = result;
+		return restoreTargets;
+	}
+
+	private static java.util.Set<String> restoreTargets;
+
+	/** The donor class for one name, from this jar, or null when the plan has none for it. */
+	private static ClassNode donor(String name) {
+		try {
+			java.util.zip.ZipFile zip = payloadZip();
+			if(zip == null) {
+				return null;
+			}
+			java.util.zip.ZipEntry entry = zip.getEntry(DONOR_ROOT + name + ".class");
+			if(entry == null) {
+				return null;
+			}
+			try(InputStream stream = zip.getInputStream(entry)) {
+				ClassNode node = new ClassNode();
+				new ClassReader(stream.readAllBytes()).accept(node, 0);
+				return node;
+			}
+		} catch(Throwable t) {
+			LOGGER.warn("OptiFine payload: could not read the donor for " + name + ": " + t);
+			return null;
+		}
+	}
+
+	/**
+	 * This jar, open, for the donor classes. The payload itself is read once by {@link #payload()} from
+	 * its own code-source location rather than by resource lookup, for the reason stated there, and the
+	 * donors need the same door: they sit under {@code optifineoforge/donors/} beside a plan that lists
+	 * them, and a jar that is also a mod file is not always reachable by resource name on this classpath.
+	 */
+	private static java.util.zip.ZipFile payloadZip() {
+		if(payloadArchive != null) {
+			return payloadArchive;
+		}
+		try {
+			URL own = OptifinePayloadClassProcessor.class.getProtectionDomain().getCodeSource().getLocation();
+			payloadArchive = new java.util.zip.ZipFile(new File(own.toURI()));
+		} catch(Throwable t) {
+			LOGGER.error("OptiFine payload: could not open this jar for the donor classes - no member is "
+					+ "restored", t);
+		}
+		return payloadArchive;
+	}
+
+	private static java.util.zip.ZipFile payloadArchive;
 
 	/**
 	 * Where OptiFine's own classes live, printed once, because the stack trace of the failure this
