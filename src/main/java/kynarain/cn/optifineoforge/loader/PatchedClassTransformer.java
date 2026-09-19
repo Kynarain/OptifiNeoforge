@@ -120,6 +120,94 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		}
 	}
 
+	/**
+	 * The interfaces each swapped class has to carry, from {@code optifineoforge/runtime-interfaces.txt}:
+	 * one line per interface, {@code owner<TAB>interface}, both internal names, with {@code #} comments and
+	 * blank lines ignored. Written by the build's {@code PayloadDrift} step read straight out of the runtime
+	 * jar.
+	 *
+	 * <p>This is a port from the 1.21.x loader, and the port <em>is</em> the repair on this line: the 1.20.2
+	 * jar has carried this plan since it was built - 15 entries, {@code BlockState} among them - and this
+	 * loader never read it, so it was never applied. NeoForge adds members to a game class by having the
+	 * <em>runtime</em> weave an extension interface into it, so those members exist only as inherited
+	 * interface methods and sit in no jar the offline tools could copy them out of. Replacing the class with
+	 * OptiFine's compilation therefore drops all of them at once, and the loss stays invisible until the
+	 * game calls one:</p>
+	 *
+	 * <pre>java.lang.NoSuchMethodError: 'boolean net.minecraft.world.level.block.state.BlockState.canSustainPlant(
+	 *   net.minecraft.world.level.BlockGetter, net.minecraft.core.BlockPos, net.minecraft.core.Direction,
+	 *   net.neoforged.neoforge.common.IPlantable)'
+	 *   at net.minecraft.world.level.block.BushBlock.canSurvive(BushBlock.java:34)
+	 *   at net.minecraft.world.level.levelgen.blockpredicates.WouldSurvivePredicate.test  (world generation)</pre>
+	 *
+	 * <p>Measured on 1.20.2 / NeoForge 20.2.88: "Exception initializing level" in
+	 * {@code crash-2026-09-20_06.57.39-server.txt}, thrown the moment a world was created, while the run's
+	 * own Reflector lines named the same missing members from the other side
+	 * ({@code IForgeBlockState.getLightEmission}, {@code getSoundType}, {@code getStateAtViewpoint},
+	 * {@code shouldDisplayFluidOverlay}) and the log carried no {@code Injected ... runtime interface(s)}
+	 * line at all. Putting the interfaces back also restores what NeoForge's own callers were compiled
+	 * against: its code casts a game class to its extension interface, so a class without it fails there
+	 * too.</p>
+	 */
+	private static final String RUNTIME_INTERFACES = "/optifineoforge/runtime-interfaces.txt";
+
+	/** {@code owner} to the runtime interfaces that must be present on it. */
+	private static final Map<String, List<String>> RUNTIME_INTERFACES_BY_CLASS = loadRuntimeInterfaces();
+
+	private static Map<String, List<String>> loadRuntimeInterfaces() {
+		Map<String, List<String>> result = new LinkedHashMap<>();
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(RUNTIME_INTERFACES)) {
+			if(stream == null) {
+				// Absent is not a failure: the plan is written per line, and a line with no payload copy of a
+				// runtime-patched class has nothing for it to say.
+				LOGGER.info("No " + RUNTIME_INTERFACES + " in this jar; no interface is added to a class");
+				return Map.of();
+			}
+			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+				String text = line.trim();
+				if(text.isEmpty() || text.startsWith("#")) {
+					continue;
+				}
+				String[] parts = text.split("\t");
+				if(parts.length != 2) {
+					LOGGER.warn("Ignoring a " + RUNTIME_INTERFACES + " line that is not 'owner interface': "
+							+ text);
+					continue;
+				}
+				result.computeIfAbsent(parts[0].trim(), key -> new ArrayList<>()).add(parts[1].trim());
+			}
+		} catch(IOException e) {
+			LOGGER.warn("could not read " + RUNTIME_INTERFACES + ": " + e);
+		}
+		int count = result.values().stream().mapToInt(List::size).sum();
+		if(count > 0) {
+			LOGGER.info("Runtime interfaces from the plan: " + count + " across " + result.size()
+					+ " class(es)");
+		}
+		return Map.copyOf(result);
+	}
+
+	/** Adds the interfaces the plan requires of {@code input}, and says so when it changes anything. */
+	private static void injectPlannedInterfaces(ClassNode input) {
+		List<String> wanted = RUNTIME_INTERFACES_BY_CLASS.get(input.name);
+		if(wanted == null) {
+			return;
+		}
+		List<String> interfaces = input.interfaces == null ? new ArrayList<>() : new ArrayList<>(input.interfaces);
+		int added = 0;
+		for(String name : wanted) {
+			if(!interfaces.contains(name)) {
+				interfaces.add(name);
+				added++;
+			}
+		}
+		if(added > 0) {
+			input.interfaces = interfaces;
+			LOGGER.info("Injected " + added + " runtime interface(s) on " + input.name.replace('/', '.')
+					+ " from the interface plan: " + wanted);
+		}
+	}
+
 	/** Null-safe class-name comparison: a class with no superclass equals only another such class. */
 	private static boolean sameName(String left, String right) {
 		return left == null ? right == null : left.equals(right);
@@ -389,6 +477,15 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		} catch(IOException e) {
 			LOGGER.warn("could not read " + INDEX + ": " + e);
 		}
+		// The plan's owners are targets even when no payload replaces them, and this is the half of the port
+		// that makes the injection above reach the class at all: ModLauncher calls a transformer only for the
+		// classes it declares, so a class that is in no payload is never offered here and its interfaces
+		// could not be added however early the call sits. Measured on this line, by intersecting the jar's
+		// own two files: all 15 owners in runtime-interfaces.txt are also in patched-index.txt, so this adds
+		// nothing to the 1.20.2 target count today - it is here because that agreement is a property of the
+		// payload rather than of the plan, and the 1.21.x line needed it for real (there the stub file names
+		// a class that is in no payload at all).
+		addFirstField(targets, RUNTIME_INTERFACES);
 		// A traced class has to be a target even when there is no payload for it, because this transformer is
 		// only called for its targets. Measured on 1.20.4: net.minecraft.client.Minecraft is not in the index,
 		// so -Doptifineoforge.traceScreen=true produced no output at all and the tracer looked broken.
@@ -413,6 +510,34 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		}
 		LOGGER.info("Patched-class targets: " + targets.size());
 		return Set.copyOf(targets);
+	}
+
+	/**
+	 * Adds the owner column of a tab separated plan file, dotted, to {@code targets}.
+	 *
+	 * <p>Reads the resource rather than a loaded plan, and that is deliberate: {@code TARGETS} is
+	 * initialised before the plan constants declared below it, so going through one of those would see its
+	 * default value instead of the file - the mistake the tracing properties in {@link #loadTargets} carry a
+	 * note about, where it silently left the count at 427.</p>
+	 */
+	private static void addFirstField(Set<String> targets, String resource) {
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(resource)) {
+			if(stream == null) {
+				return;
+			}
+			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+				String text = line.trim();
+				if(text.isEmpty() || text.startsWith("#")) {
+					continue;
+				}
+				String owner = text.split("\t")[0].trim();
+				if(!owner.isEmpty()) {
+					targets.add(owner.replace('/', '.'));
+				}
+			}
+		} catch(IOException e) {
+			LOGGER.warn("could not read " + resource + ": " + e);
+		}
 	}
 
 	/**
@@ -488,6 +613,17 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		//   NoSuchMethodError: 'void net.minecraft.client.gui.screens.LoadingOverlay.update()'
 		// Giving the runtime's overlay that one method keeps both halves working.
 		stubMissing(input);
+		// And the runtime interfaces, before anything else here decides what this class will be. The
+		// placement is the one ordering requirement of the port and it is not cosmetic: every path below
+		// hands back the class the game will really use, and three of them - skipPayload, a whole-class keep,
+		// and a class with no payload copy - return without ever reaching the swap. A class the runtime wove
+		// an interface into is just as broken when this transformer passes it through untouched as when it
+		// replaces it, because in both cases the interface is not there; the 1.21.x loader puts the call in
+		// exactly this spot for the same measured reason, and the reason the class handed over is not a
+		// usable source of the list holds here too: OptiFine's transformation service registers before this
+		// one and its own compilation of the class never heard of NeoForge's extension interfaces, so a
+		// class arriving here has lost them either way.
+		injectPlannedInterfaces(input);
 		// The tracers also run here, before the payload lookup, because the classes most worth tracing are
 		// often ones OptiFine does not patch at all: measured on 1.20.4, net.minecraft.client.Minecraft has no
 		// payload copy, so a tracer called only from the swap path never ran and the screen switch it was
