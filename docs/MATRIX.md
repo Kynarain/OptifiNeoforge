@@ -4094,7 +4094,48 @@ OPF-SCREEN net.minecraft.client.gui.screens.TitleScreen
 顺带把判据又跑了两遍:`VERDICT: STARTED`、`Setting user` ✓、`Sound engine started` ✓、**0 崩溃报告**、
 stderr 14 481 / 14 608 / 14 643 / 14 481 字节(记录是 14 481,两次逐字节相同)。
 
-### 二十七、边界
+### 二十八、本轮收口:这台机器上到底实测了什么、还差什么、怎么接着做
+
+**这台机器实测通过的线(判据 = `VERDICT: STARTED` + `Setting user` + 声音引擎 + 本次运行 0 崩溃报告 + stderr 与记录一致):**
+
+| 线 | 证据 | `[OptiFine]` 行数(记录 vs 实测) | 标题界面 |
+|---|---|---|---|
+| 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8 | 1.21.x 分支的 `README.md` / `docs/MATRIX.md`(同一条 rig,早先部分) | 232/223、225/225、232/232、347/340、347/340、344/337 | 1.21.8 有截图,其余按判据 |
+| **1.20.6** | 本分支 `docs/MATRIX.md` 2026-09-19 一节 + 截图(292 色桶、最大桶 11%、含 splash) | 222 vs **231** | ✔ 像素确认 |
+| **1.20.4** | 第二十二 / 二十六节 | 241 vs **730**(rig 打印的是 2× 合并值 ⇒ 365 原始) | ✔ 由 `setScreen` 追踪确认(像素抓帧是过期帧) |
+
+**没有实测的线**:1.20.1、1.20.2、1.21、1.21.9、1.21.10、1.21.11、26.1.2。
+
+**这台机器上的 rig(`C:\Users\kynar\IdeaProjects\optifineoforge-test`,不在仓库里)包含**:
+`fetch-libraries.ps1`(含解析 `@ext` 分类器)、`get-optifine.ps1`(adloadx 换 token 再 downloadx)、
+`natives-for.ps1`(按 LWJGL 版本重建 `natives\`)、`prepare-line.ps1`(现支持 `-SrgMappings` / `-ObfOfficial`,
+在生成任何计划**之前**做 SRG→官方名改名)、`build-jars.ps1`(`-KeepRuntimeFile` / `-DropMembersFile` /
+`-InterfaceFile` / `-AccessFile` / `-SrgTableFile`)、`proguard-to-tsrg.ps1`(已修嵌套类与 obf 列斜杠)、
+`SrgMemberMap --emit`、`launch.ps1`(支持 `RIG_EXTRA_JVM`,因为以 `-` 开头的参数没法走 `-File`)、
+`capture-window.ps1`(会打印 `is foreground`,过期帧问题就靠它识别)、`add-line.ps1`(端到端:下载、装 NeoForge、
+跑离线管线、构建两个 jar、可选 `-ModLauncher` / `-TargetJavaVersion` / `-InstallerArtifact` / `-SrgMappings`)。
+
+**接着做一条新线(SRG 载荷线,如 1.20.2)的顺序**(全部实测过):
+
+1. 拿到该版本 MCPConfig 的 `joined.tsrg`(Forge maven 的 `mcp_config` 目录,版本串**不是** NeoForm 的时间戳);
+2. 用 `proguard-to-tsrg.ps1` 从该版本的 client mappings 生成 obf→official 表;
+3. `add-line.ps1 ... -ModLauncher 10 -SrgMappings <joined> -ObfOfficial <tsrg>`(Java 17,安装器坐标按版本);
+4. 若启动时报 `IncompatibleClassChangeError: ... overrides final method`,用 `drop-members.txt` 删掉那些重写;
+5. 若报 `IllegalAccessError: ... tried to access method`,确认访问计划已生成并嵌入(`runtime-access.txt`);
+6. 启动后如果看不到窗口内容,别急着判"卡住"——先用 `-Doptifineoforge.traceScreen=true` 问游戏自己在哪个界面
+   (截图在窗口未聚焦时会给过期帧);崩溃报告写不出来时用 `-Doptifineoforge.traceCrash=true` 直接拿原始 throwable。
+
+**这台机器上必须记住的三个坑**:`natives\` 是所有线共用、会串 LWJGL 版本(1.20.1–1.20.4 是 3.3.2,1.20.6+ 是 3.3.3);
+崩过的 JVM 会留在后台占着 `glfw.dll`,重装 natives 前要收掉;`[OptiFine]` 行数在 rig 的合并输出里是 `latest.log` 的 **2 倍**。
+
+### 二十九、边界
+
+- 本分支实测通过:**1.20.6**(像素确认标题界面)与 **1.20.4**(判据 + `setScreen` 确认,像素抓帧是过期帧)。
+- 未实测:1.20.1 / 1.20.2 / 1.21 / 1.21.9 / 1.21.10 / 1.21.11 / 26.1.2。
+- `[OptiFine]` 行数与记录**普遍不一致**(1.20.4 差得尤其大,730 合并 = 365 原始 vs 记录 241),原因**未查明**,
+  只记着"这台机器的数字更高";stderr 在 1.20.4 上两次与记录**逐字节相同**。
+- **没有发布任何东西**;已发布的 jar 没有重建。
+
 
 - **1.20.4 现在算通过**:判据四项全绿,且"当前界面 = `TitleScreen`"由 `setScreen` 追踪直接测到;唯一没做到的是
   **像素级截图确认**(窗口未聚焦时抓到的帧两次完全相同,是过期帧)—— 这一点连同原因写在上节,不当作"已确认"。
