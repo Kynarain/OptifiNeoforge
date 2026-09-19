@@ -58,6 +58,19 @@ if(targetMountPoint == null){
 if(!(targetMountPoint in ['modlauncher', 'fml10'])){
     throw new GradleException("unknown mount point '${targetMountPoint}': expected modlauncher or fml10")
 }
+if(targetMountPoint == 'fml10'){
+    // The FML 10 mount point: the ClassProcessor that replaces the game's own classes with the
+    // finished ones the rig applied OptiFine's patch data to, plus the locator that makes the jar an
+    // early-service jar (FML 10's EarlyServiceDiscovery.SERVICES does not include ClassProcessor, so
+    // without the locator the processor service file is never read).
+    //
+    // This source root arrived on 26.x first, for 26.1.2, and the three 1.21.9-1.21.11 lines cannot
+    // work without it either, so it is compiled here as well rather than staying a file the rig
+    // compiles by hand- which is what it was until this round: the tested payload jar carried a
+    // class no repository revision built.
+    sourceSets.main.java.srcDir 'src/fml10/java'
+    sourceSets.main.resources.srcDir 'src/fml10/resources'
+}
 if(targetMountPoint == 'modlauncher'){
     sourceSets.main.java.srcDir 'src/ml11/java'
     // The registration, without which the classes above are never called. ModLauncher finds a

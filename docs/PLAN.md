@@ -564,3 +564,107 @@ Caused by: java.lang.RuntimeException: Cannot find class net/minecraftforge/comm
    现代 NeoForge 是把补丁直接打进游戏类的,OptiFine 那份编译结果里当然没有这个方法。
    这正是 1.20.x 那条线上 `keep-runtime.txt` 要干的事,**FML 10 的处理器还没有这套计划**——
    下一步就是给它做一份 1.21.9 的 keep-runtime 计划并把计划支持补进处理器。
+## 1.21.9 续:计划机制接上了,OptiFine 已经跑到"Setting user: True"
+
+上一节把 OptiFine 的类送进了游戏类加载器;这一节把**成员/层级**这两件事从"我临时加的粗暴规则"
+换成仓库自己的计划机制,并把结果推到 `Setting user: True` + 32 行 `[OptiFine]`。
+
+### 先把处理器搬进仓库自己的构建
+
+此前 FML 10 的处理器只有 26.x 分支有源码,rig 用 `javac` 手编;也就是说**被测试的那个 jar 里的类,
+不属于任何一次提交**。现在:
+
+* `src/fml10/java/kynarain/cn/optifineoforge/fml10/` —— 两个类从 26.x 取回,放上本分支;
+* `src/fml10/resources/META-INF/services/` —— 两个 service 文件(ClassProcessor 与
+  IModFileCandidateLocator),与 `src/ml11/resources` 同样的做法;
+* `build.gradle` 在 `-Pmountpoint=fml10` 时把这两个 source root 加进 `sourceSets.main`;
+* 构建方式(注意 `JAVA_HOME` 必须是 JDK 21,否则 Gradle 自己的 Groovy 先死在
+  `Unsupported class file major version 71`):
+
+  ```
+  gradlew.bat -Pmc=1.21.9 -Pneoforge=21.9.16-beta -Pmountpoint=fml10 compileJava
+  ```
+
+rig 侧新增 `build-fml10-payload.ps1`:从 `build\classes\java\main` 取这两个类,从
+`work\<line>\optifine-patched.jar` 取 1233 个 `srg/**` 成品类,加 service 与 `neoforge.mods.toml`,
+再把 `work\<line>\plan\reparent.txt` 放到 `optifineoforge/reparent.txt`。
+
+**顺手踩到一个必须记下来的坑**:`ZipFile.CreateFromDirectory` 在 PowerShell 5.1(.NET Framework)上
+写的条目名用**反斜杠**。这样的罐子 FML 直接拒绝:
+
+```
+WARN [ne.ne.fm.lo.mo.ModDiscoverer/SCAN]: Skipping jar. File mods/optifine-payload-fml10.jar is not a valid mod file
+```
+
+症状极具误导性:游戏**正常启动**、`Setting user: True`、0 崩溃报告、stderr 0 字节 —— 唯一的异常信号是
+`[OptiFine] lines: 0`。脚本改成手工写条目、一律用 `/`。
+
+### 两条规则:留运行时独有的成员,按计划换父类
+
+**第一条(成员)**:现代 NeoForge 是**把补丁打进游戏类**的,所以运行时的类可以有 OptiFine 那份编译
+里根本没有的成员。实测到的那一处:
+
+```
+NoSuchMethodError: 'java.util.List net.minecraft.server.packs.resources.ReloadableResourceManager.getListeners()'
+	at net.neoforged.neoforge.client.event.AddClientReloadListenersEvent.<init>(...:29)
+	at net.neoforged.neoforge.client.ClientHooks.initClientHooks(...:973)
+```
+
+处理器现在**保留运行时独有、负载没有的字段与方法**(按 name+desc 判重),并把数量打进日志。
+
+**第二条(层级)**:`BlockEntity` 两侧的父类不一样 —— 负载那份 extends
+`net.minecraftforge.common.capabilities.CapabilityProvider$BlockEntities`(OptiFine 是 Forge 时代编的,
+那个类是 shim),运行时那份 extends `net.neoforged.neoforge.attachment.AttachmentHolder`。两边各试一次,
+**两次都被验证器打回**,而且错法不同:
+
+* 只搬成员、不动父类:`VerifyError: Bad invokespecial instruction: current class isn't assignable to
+  reference class` at `BlockEntity.setData @7` —— NeoForge 的 `setData` 体内是
+  `invokevirtual setChanged()V` 然后 `invokespecial AttachmentHolder.setData(...)`;
+* 只把父类换成运行时的:`VerifyError: Bad <init> method call ... Type
+  'net/minecraftforge/common/capabilities/CapabilityProvider$BlockEntities' is not assignable to
+  'net/minecraft/world/level/block/entity/BlockEntity'` —— 负载自己的构造器还在 chain 到 Forge 父类的构造器。
+
+两半必须一起动,而这正是 ModLauncher 线早就在用的 `reparent.txt` 计划(格式
+`reparent <类> <运行时父类> <构造器>`)。处理器现在**读计划**,没有计划就不动层级;
+按计划的 `()V` 重写时把栈上的实参 POP 掉(与 `PatchedClassTransformer.reparent` 同一套做法)。
+
+计划由仓库自己的 `HierarchyPlan` 生成。**它在这里有个调用上的陷阱**:`readRuntime` 是"先到先得",
+所以第一个 jar 必须是**真正的运行时视图**(这里 NeoForge 的 `-client.jar`,游戏类被它覆盖),
+否则 vanilla 的 `BlockEntity`(父类是 Object)会把它盖掉,于是计划**静默地空**:
+
+```
+# 错误(0/0,静默): runtime 传 client-…-srg.jar
+# 正确:            runtime 传 neoforge-21.9.16-beta-client.jar
+reparent net.minecraft.world.level.block.entity.BlockEntity onto net/neoforged/neoforge/attachment/AttachmentHolder via ()V (the payload extends net/minecraftforge/common/capabilities/CapabilityProvider$BlockEntities)
+reparent plan: 1 class(es) movable, 0 refused
+```
+
+1 个类,和 1.21.4 那条线上记的"shape 就是这一个类"完全一致。
+
+### 这一轮的结果
+
+```
+===== VERDICT: FAILED =====
+  Setting user        : True
+  new crash reports   : 1
+  stderr bytes        : 698
+  [OptiFine] lines    : 32
+```
+
+OptiFine 的类在里面、`Reflector` 初始化成功、游戏把用户设置读出来了。剩下两处,都已定位到行:
+
+1. **`Gui.layerManager` 是 null**:
+   `NullPointerException: Cannot invoke "…GuiLayerManager.initModdedLayers()" because "this.layerManager"
+   is null` at `Gui.initModdedOverlays(Gui.java:1604)` ← `ClientHooks.initClientHooks`。
+   这个字段是 NeoForge 加的,它**就在仓库自己为 1.21.9 生成的 `member-restores.txt` 里**:
+   `F net/minecraft/client/gui/Gui layerManager Lnet/neoforged/neoforge/client/gui/GuiLayerManager;`,
+   而且 rig 里已经有配套的 `donors/`。也就是说**"保留成员"只解决了一半**:字段留下来了(所以不是
+   `NoSuchFieldError`),但给字段赋值的初始化在 NeoForge 的 `Gui.<init>` 里,而那个构造器被 OptiFine
+   的副本整段替换掉了。下一步就是把 `member-restores.txt` + donors 接进 FML 10 的处理器
+   (ModLauncher 线上由 `MemberRestoreTransformer` 内联 donor 代码)。
+2. **`Options.loadOfOptions` 数组越界**(stderr,698 字节):
+   `ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1` at
+   `net.minecraft.client.Options.loadOfOptions(Options.java:3174)`。
+   实测过的两件事:① 删掉 `optionsof.txt` 再跑仍然出现;② 运行中游戏会重新写出这个文件(88 行,
+   全是 `key:value`,没有一行缺冒号)。所以"读到旧版本写的文件"这个猜测**站不住**,
+   还得再看这一行到底在切什么。
