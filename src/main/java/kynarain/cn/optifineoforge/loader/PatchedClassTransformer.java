@@ -593,6 +593,7 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		input.fields = fields;
 		input.methods = methods;
 		keepRuntimeBodies(input, originalMethods);
+		dropMembers(input);
 		LOGGER.info("Replaced " + input.name.replace('/', '.') + " with OptiFine's patched version ("
 				+ fields.size() + " fields, " + methods.size() + " methods)");
 		return input;
@@ -681,6 +682,75 @@ public final class PatchedClassTransformer implements NodeTransformer {
 							+ original.name + original.desc);
 					break;
 				}
+			}
+		}
+	}
+
+	/**
+	 * Members a swapped-in payload class must not declare at all, read from
+	 * {@code optifineoforge/drop-members.txt} as {@code owner<TAB>name<TAB>desc}.
+	 *
+	 * <p>This is the one repair neither of the other two plans can express. The keep plan puts the game's
+	 * body back over a payload member, which needs the runtime class to have that member; the member
+	 * restore plan adds members the runtime has and the payload lacks. Neither can take a member away, and
+	 * a member that must not exist for the class to load at all cannot be fixed by keeping or restoring
+	 * anything.</p>
+	 *
+	 * <p>Measured on 1.20.4, and measured outside this loader as well: OptiFine's own patch for
+	 * {@code net.minecraft.client.player.AbstractClientPlayer} declares {@code getX()}, {@code getY()} and
+	 * {@code getZ()} overrides, while the 1.20.4 runtime declares all three {@code final} on
+	 * {@code net.minecraft.world.entity.Entity} - vanilla's obfuscated class, the NeoForge client jar and
+	 * the {@code -srg} jar all agree on that. Taking the payload's copy of that class out of the jar and
+	 * loading it with jshell against the runtime reproduces the game's failure exactly:
+	 * {@code IncompatibleClassChangeError: class ... AbstractClientPlayer overrides final method
+	 * ... Entity.getY()D}. The three methods are OptiFine's own additions (the vanilla obfuscated class
+	 * declares none of them), so leaving them out is dropping OptiFine's copies of methods the JVM will not
+	 * accept, and every caller resolves to the runtime's inherited one instead.</p>
+	 */
+	private static final String DROP_MEMBERS = "/optifineoforge/drop-members.txt";
+
+	/** {@code owner|name|desc} for each member that is left out of the delivered class. */
+	private static final Set<String> DROPPED_MEMBERS = loadDropped();
+
+	private static Set<String> loadDropped() {
+		Set<String> result = new HashSet<>();
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(DROP_MEMBERS)) {
+			if(stream == null) {
+				return Set.of();
+			}
+			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+				String[] parts = line.split("\t");
+				if(parts.length == 3) {
+					result.add(parts[0] + "|" + parts[1] + "|" + parts[2]);
+				}
+			}
+		} catch(IOException e) {
+			LOGGER.warn("could not read " + DROP_MEMBERS + ": " + e);
+		}
+		if(!result.isEmpty()) {
+			LOGGER.info("Members dropped from the payload: " + result.size());
+		}
+		return Set.copyOf(result);
+	}
+
+	/** Removes the listed members from the class that is about to be defined. */
+	private static void dropMembers(ClassNode input) {
+		if(DROPPED_MEMBERS.isEmpty()) {
+			return;
+		}
+		for(int index = input.methods.size() - 1; index >= 0; index--) {
+			MethodNode method = input.methods.get(index);
+			if(DROPPED_MEMBERS.contains(input.name + "|" + method.name + "|" + method.desc)) {
+				input.methods.remove(index);
+				LOGGER.info("Dropped " + input.name.replace('/', '.') + "." + method.name + method.desc
+						+ " so the class can be defined against this runtime");
+			}
+		}
+		for(int index = input.fields.size() - 1; index >= 0; index--) {
+			FieldNode field = input.fields.get(index);
+			if(DROPPED_MEMBERS.contains(input.name + "|" + field.name + "|" + field.desc)) {
+				input.fields.remove(index);
+				LOGGER.info("Dropped " + input.name.replace('/', '.') + "." + field.name + " " + field.desc);
 			}
 		}
 	}

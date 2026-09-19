@@ -24,14 +24,19 @@
 > `Setting user`、0 崩溃报告与 **stderr 0 字节**都与上表**逐字一致**,但 `[OptiFine]` 行数是 **231 而不是 222**:
 > 差 9 行,两次独立运行都是 231。同一台机器上 1.21 / 1.21.1 也是 +9、1.21.6 / 1.21.7 / 1.21.8 是 +7,而
 > 1.21.3 / 1.21.4 与记录完全相等 —— 记录里的 `latest.log` 不在仓库里,所以多出来的是哪几行无法从这边归因。
-> **1.20.4 在本机没有通过**:装配走通、载荷的 SRG→官方名改名也做完了(从 Forge maven 取 MCPConfig
-> `1.20.4-20231207.112700` 的 `joined.tsrg`,再用 rig 的 `proguard-to-tsrg.ps1` 造 obf→official 表),原先那条
-> `NoSuchMethodError: Component.m_237115_(java.lang.String)` 随之消失,但载入阶段停在
-> `IncompatibleClassChangeError: AbstractClientPlayer overrides final method Entity.getY()`。这一条已用**脱离 loader**
-> 的 `jshell` 测试证死:从载荷里取出那个 class、按真实类名配运行时 classpath 直接 `Class.forName`,JVM 报的是
-> **逐字相同**的一行 —— 即这份 OptiFine 载荷的这个类在 1.20.4 运行时上按原样就不可定义(OptiFine 的补丁给它加了
-> `getX/getY/getZ` 三个对 final 方法的重写,而 1.20.4 的 `Entity` 这三个方法都是 final;1.20.6 的载荷里根本没有
-> 这个类,所以那条线不受影响)。命令、数字与三条候选修法都在 `docs/MATRIX.md` 的 2026-09-19 一节。
+> **1.20.4 在本机仍未通过,但已推进两处。** ① 载荷的 SRG→官方名改名做完(从 Forge maven 取 MCPConfig
+> `1.20.4-20231207.112700` 的 `joined.tsrg`,再用 rig 的 `proguard-to-tsrg.ps1` 造 obf→official 表),
+> `NoSuchMethodError: Component.m_237115_(java.lang.String)` 随之消失。② 接着卡在
+> `IncompatibleClassChangeError: AbstractClientPlayer overrides final method Entity.getY()` —— 这一条已用**脱离
+> loader** 的 `jshell` 测试证死(OptiFine 的补丁给那个类加了 `getX/getY/getZ` 三个对 final 方法的重写,而 1.20.4 的
+> `Entity` 这三个都是 final),于是给本分支 loader 加了第三个计划文件 `optifineoforge/drop-members.txt`
+> (`owner<TAB>name<TAB>desc`,把成员从交付的类里删掉;`keep-runtime` 与 `member-restores` 都表达不了这一档),
+> 1.20.4 用 `drop-members-1.20.4.txt` 删掉那三个成员后,**类定义错误消失**,`[OptiFine]` 行数从 0–2 推进到 10,
+> 载入走到 `Minecraft.<init>` 里面。现在停在构造期的一次崩溃,而原始异常看不到:崩溃处理路径自己死在 OptiFine 的
+> `CrashReporter → Shaders.<clinit>`(`Minecraft.getInstance()` 那时还是 null)。同一实例**不加 mod** 的对照跑到了
+> `VERDICT: STARTED`,所以环境(原生库、`earlyWindowProvider`)没问题,问题在我们这一侧。命令、数字、rig 侧两个坑
+> (共用的 `natives\` 会串 LWJGL 3.3.2/3.3.3、崩溃的 JVM 会占着 `glfw.dll`)都在 `docs/MATRIX.md` 的
+> 2026-09-19(续)一节。
 
 - mod id `optifineoforge`,仅客户端。
 - **一个 jar 只对应一个 MC 版本**:这条线跨了四个版本,NeoForge 坐标、Java 版本与运行期命名空间在每个版本上都不同,不能混用,也不能拿别的线的 jar 顶替。

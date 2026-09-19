@@ -3650,7 +3650,77 @@ ClassFormatError: Illegal field modifiers in class
   (第二节那条修法还没做)。
 - 其余 13 条线没有跑,**没有发布任何东西**。
 
-## 2026-09-19:在本机重建的 rig 上跑 1.20.6(实测与记录的差异),以及 1.20.4 的实测阻塞
+## 2026-09-19(续):给 1.20.x 的 loader 加"删除成员"这一档,1.20.4 的类定义因此修好
+
+上一条把 1.20.4 的阻塞定死在一个类上:载荷的 `AbstractClientPlayer` 带了三个对 final 方法的重写。本轮把这一档修法做出来了,
+并且**实测确实把这一处修好了** —— 但 1.20.4 仍然**没有通过**,新的阻塞记在下面第二节。
+
+### 一、加了什么(代码在本分支,不在 rig)
+
+`PatchedClassTransformer` 新增第三个计划文件 `optifineoforge/drop-members.txt`,行格式
+`owner<TAB>name<TAB>desc`,语义是**这个成员不要出现在交付出去的类里**。前两个计划都表达不了这一档:
+
+- `keep-runtime.txt`(已有)是把**游戏侧的方法体**换回载荷成员上 —— 前提是运行时那个类**有**这个成员;
+- `member-restores.txt`(已有)是补上"运行时**有**、载荷没有"的成员;
+- 而这里要的是"载荷有、运行时没有、且存在就会让类定义不了",只能**删掉**。
+
+计划在 `dropMembers(ClassNode)` 里生效,排在 `keepRuntimeBodies` **之后**(最后说话),方法与字段都覆盖,每删一个成员都会
+打一行日志。rig 的 `build-jars.ps1` 相应新增 `-DropMembersFile`(嵌入 `optifineoforge/drop-members.txt`),1.20.4 的计划文件是
+rig 里的 `drop-members-1.20.4.txt`,内容就是那三行 `net/minecraft/client/player/AbstractClientPlayer` 上的
+`getX/getY/getZ ()D`。
+
+**效果(实测)**:`IncompatibleClassChangeError` 消失,`AbstractClientPlayer` 正常定义;同一次启动里 `[OptiFine]` 行数从
+**0–2 行**推进到 **10 行**,载入过程走到 `Minecraft.<init>` 里面(日志里能看到 `GlDebug`、`ClientBrandRetriever`、
+`AbstractTexture` 等类被换装并做成员恢复)。
+
+### 二、1.20.4 现在停在哪(新阻塞,已量到证据)
+
+同一次启动在 `Minecraft.<init>` 里抛异常,而**原始异常看不到**,因为崩溃处理那条路自己先死了:
+
+```
+at TRANSFORMER/srg/net.optifine.CrashReporter.extendCrashReport(CrashReporter.java:127)
+at TRANSFORMER/srg/net.optifine.CrashReporter.onCrashReport(CrashReporter.java:42)
+at TRANSFORMER/minecraft@1.20.4/net.minecraft.CrashReport.getFriendlyReport(CrashReport.java:172)
+at TRANSFORMER/minecraft@1.20.4/net.minecraft.client.Minecraft.crash(Minecraft.java:949)
+at TRANSFORMER/minecraft@1.20.4/net.minecraft.client.main.Main.main(Main.java:165)
+Caused by: java.lang.ExceptionInInitializerError
+Caused by: java.lang.NullPointerException: Cannot read field "gameDirectory" because the return value of
+   "net.minecraft.client.Minecraft.getInstance()" is null
+	at TRANSFORMER/srg/net.optifine.shaders.Shaders.<clinit>(Shaders.java:603)
+```
+
+也就是说:`Main.main:165` 是 `catch` 块,**真正的原始异常被 `Minecraft.crash` 吃掉了**,而 crash 报告在
+`CrashReporter → Shaders.<clinit>` 处因为 `Minecraft.getInstance()` 还是 null 再次抛错。为了把原始异常挖出来,试了
+JVM 的 `-Xlog:exceptions=trace`(87 938 行日志):里面有崩溃处理自身那条链(`RenderSystem.assertOnRenderThread` →
+`SystemReport.setDetail` → `CrashReporter` → `Shaders.<clinit>`),**但没有**原始异常的产生记录(JVM 自己生成的 helpful
+NPE 不走这个日志标签),所以这一轮**没有拿到原始 throwable**。
+
+顺带确认了两件事,避免把环境问题误判成我们的问题:
+
+- **同一台 rig、同一个实例、不加任何 mod** 的对照跑到了 `VERDICT: STARTED`(`Setting user` ✓、声音引擎 ✓、
+  0 崩溃、stderr 0 字节)—— 所以 GL/原生库/`earlyWindowProvider` 这套环境是好的,上面的崩溃确实来自我们这一侧;
+- rig 自身有两个坑也修掉了(脚本在 rig 里):`natives\` 是**所有线共用**的一个目录,而 1.20.1–1.20.4 要 LWJGL **3.3.2**、
+  1.20.6 起要 **3.3.3**,后跑的线会把前一条线的 DLL 留在那里(实测报 `[LWJGL] Incompatible Java and native library
+  versions detected`),现在用新增的 `natives-for.ps1 -Lwjgl 3.3.2` 在启动前重建;另外启动崩过的 JVM **会留在后台**占着
+  `glfw.dll`,重装 natives 前必须先收掉(`launch.ps1` 的 "stopped the JVM" 并不总能覆盖崩溃路径)。
+
+`launch.ps1` 另加了一条 `RIG_EXTRA_JVM`(用 `|` 分隔):形如 `-Xlog:...` 的参数没法通过 `-File` 传进去 —— PowerShell 会把它
+当成参数名,报 `MissingArgument`。
+
+### 三、下一步(有明确顺序)
+
+1. **先让原始异常可见**:最省事的是给 1.20.x 的 loader 加一个"跳过载荷投递"的调试开关(1.21.x 分支有同类开关,这条线没有),
+   用二分法把崩溃归到"载荷换装"还是"成员恢复"上;因为现在的失败点就在换装刚做完的那几个类之后。
+2. 拿到原始 throwable 之后再决定改哪儿;若仍指向 `AbstractTexture` 这类"换装 + 静态成员恢复"同时发生的类,优先怀疑
+   **成员恢复触发的静态初始化**(日志里 `Initialised N restored static fields in ...` 是这条线独有的行为)。
+
+### 四、边界
+
+- **1.20.6 仍然是本分支唯一实测通过的版本**;1.20.4 本轮把类定义那一处修好、走得更远,但**仍未通过**;1.20.1 / 1.20.2 未跑。
+- 本轮新增的 loader 能力是**通用**的(任何线都能用 `drop-members.txt`),但**只有 1.20.4 实测用过它**。
+- **没有发布任何东西**;已发布的 jar 没有重建。
+
+## 2026-09-19(晚间):在本机重建的 rig 上跑 1.20.6(实测与记录的差异),以及 1.20.4 的实测阻塞
 
 原始 rig(`optifineoforge-test`)在这台机器上**不存在**,所以这一轮是**从零重建**一个等价 rig:下载原版客户端
 与 NeoForge 安装器、把本仓库的离线流水线(`kynarain.cn.optifineoforge.optifine`)跑在**用户自己的** OptiFine jar
@@ -3752,19 +3822,19 @@ java.lang.IncompatibleClassChangeError: class net.minecraft.client.player.Abstra
 - 换一个 1.20.4 的 OptiFine 构建也不解决问题:两个构建**都**带
   `patch/srg/net/minecraft/client/player/AbstractClientPlayer.class.xdelta`(`I7` 4948 条补丁项、`I8_pre4` 4956 条,
   两份条目表已逐个数过)。
-- 由此引出一个**尚未查清、但可以直接查**的问题:OptiFine 那个补丁项声明它期望的基类 md5 是
-  `333d156789338d0c6aa2d03c185d7e5c`,而本机三个可比对象都不等于它 —— 原版混淆的 `fsg` 是
-  `8e0794226d9b58d2a96e4d239633f049`,官方名的那份(`client-…-srg.jar` = 我们的 runtime)是
-  `725926563b191db3a72ff932c5d08d15`,我们打出来的载荷是 `0463369702b81a349470dfd4ef8f8d2b`。**这份基类在磁盘上没有
-  任何一份对应物**,说明 `OptifinePipeline` 喂给 `optifine.Patcher` 的基类是它自己映射出来的中间态;那条补丁究竟
-  是不是打在 OptiFine 期望的那份上、`Patcher` 的 md5 校验在这个流程里起什么作用,**本轮没有查**,而它决定了上面
-  那条 ICCE 到底是"OptiFine 的本意"还是"我们的映射喂错了基类"。
-
-**下一步因此改成先查管线、再决定改不改 loader**(按代价排序):(a) 读本仓库 `optifine` 包里
-`OptifinePipeline` / `Patcher` 的调用面,弄清基类怎么来、md5 不匹配时会发生什么;(b) 若基类确实与 OptiFine 期望的
-不一致,先修管线;(c) 若一致,再给 loader 加"整类保留运行时版本 / 删除成员"的能力 —— 注意本分支的
-`keep-runtime.txt` **只支持成员级**(`owner|name|desc` 保留游戏侧方法体),没有整类保留、也没有删除成员的语义,
-所以 (c) 是真要写代码的。
+- **更正(同一轮内自查)**:下面这条 md5 观察**不构成证据**,不要当作"基类喂错了"的依据。把两套补丁的 md5 都拉出来比过:
+  OptiFine 的 `patch/notch/` 那一套(即喂原版混淆 jar 时走的那一套)对 **1.20.4 和 1.20.6 两版各抽 400 条**做对照,
+  **匹配 0 条、不匹配 400 条**(1.20.4 例:`fns.class` 期望 `0be75f7e…`、实际 `55120f89…`;1.20.6 例:`ggf.class`
+  期望 `1c312056…`、实际 `3736f2a3…`)。1.20.6 那条线是**能跑通的**,所以 `.md5` 显然不是"原始 class 文件的哈希"
+  (更像是 OptiFine 自己对基类做归一化之后的校验值,或者在 `Patcher.process` 这条路上根本不生效)。也就是说
+  `OptifinePipeline` 喂给 `optifine.Patcher` 的基类**没有证据有问题**,我先前那句"这份基类在磁盘上没有对应物"
+  只是误读。
+- 另外把"OptiFine 是拿哪一套补丁打我们的输入"也确认了:jar 里 `patch/notch/` 与 `patch/srg/` **两套都在**
+  (1.20.4 的 `AbstractClientPlayer` 就是 `patch/notch/fsg.class.xdelta` 5431 字节 + `patch/srg/…` 7997 字节各一份),
+  而我们喂进去的是**原版混淆 jar**,所以走的是 notch 那一套 —— 这一套在 `optifine.Patcher.process` 里和 OptiFine
+  自己的安装器用的是同一份代码、同样的两个入参。
+- 因此结论收窄成一句:**载荷这一份 `AbstractClientPlayer` 就是 OptiFine 那份补丁的产物**(不是我们映射错的),
+  而它在 1.20.4 运行时上不可定义。修法只能在我们这一侧(见下)。
 
 ### 五、边界
 
