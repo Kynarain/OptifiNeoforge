@@ -399,3 +399,168 @@ FML 用它内部固定的旗标写回;如果那个旗标弱于 COMPUTE_FRAMES,�
 写出来的类就是帧不一致的 —— 症状正好可以是"FML 在处理过程中直接放弃,而且什么都不打印"。
 **下一步**:改成直接实现 ClassProcessor 接口,在 processClass 里返回 ComputeFlags.COMPUTE_FRAMES
 (以及 handlesClass 用同一批目标名),再看那三条线是否能起来。
+## 1.21.9 的这一轮:FML 10 上的"静默失败"被拆开了,而且 OptiFine 真的跑起来了
+
+这一节把三条线(1.21.9 / 1.21.10 / 1.21.11)的 FML 10 挂载点从"起不来且没有一行错误"推到了"OptiFine 已经在跑"。
+全部结论都是这一轮在这台机器上量出来的,写清楚哪一条推翻了前面的猜测。
+
+### 先推翻一条:`ComputeFlags` 不是原因
+
+上一轮把 `SimpleClassProcessor` 的 `processClass` 是 `final`、而 `ClassProcessor` 接口有
+`ComputeFlags processClass(...)` 当成主要嫌疑。`javap -c` 直接读出来是假的:
+
+```
+public final ClassProcessor$ComputeFlags processClass(ClassProcessor$TransformationContext);
+   0: aload_0
+   1: aload_1
+   2: invokevirtual  ClassProcessor$TransformationContext.node()Lorg/objectweb/asm/tree/ClassNode;
+   5: aload_1
+   6: invokevirtual  transform:(Lorg/objectweb/asm/tree/ClassNode;LSimpleTransformationContext;)V
+   9: getstatic      ClassProcessor$ComputeFlags.COMPUTE_FRAMES
+  12: areturn
+```
+
+它**无条件**返回 `COMPUTE_FRAMES`(没有分支,没有 `empty()` 判断)。所以"基类给的旗标太弱"是错的,
+改成直接实现接口不会改变任何事。这条到此结束。
+
+### "没有任何错误"的机制:FML 把异常送进了一个模态对话框
+
+`net.neoforged.fml.startup.Client.main` 的字节码是:
+
+```
+ 10: invokestatic Entrypoint.startup([Ljava/lang/String;ZLnet/neoforged/api/distmarker/Dist;Z)LFMLLoader;
+ 25: invokestatic Entrypoint.createMainMethodCallable(LFMLLoader;Ljava/lang/String;)Ljava/lang/invoke/MethodHandle;
+ 31: invokevirtual MethodHandle.invokeExact([Ljava/lang/String;)V
+ 46: invokevirtual FMLLoader.close()V          <- "Closing FML Loader" 就是这里
+ ...
+ 76: astore_1 / 77: invokestatic FatalErrorReporting.reportFatalError(Throwable;)V / 81: System.exit(1)
+```
+
+而 `FatalErrorReporting.reportFatalError(String)` 是:
+
+```
+ 0: ldc "java.awt.headless" / 2: ldc "false" / 4: System.setProperty   <- 强制非 headless
+ 8: GraphicsEnvironment.isHeadless() / 11: ifne 21
+14: showErrorUsingSwing(String)      -> JOptionPane.showMessageDialog(...)   <- 模态,阻塞
+21: ... TinyFileDialogs.tinyfd_messageBox(...)
+51: System.exit(1)
+```
+
+**所以 FML 10 上启动期抛异常的表现是**:stderr 0 字节、没有 crash-report、日志最后一行是
+`Closing FML Loader`、JVM 一直不退出(对话框在等人点确定)。这不是"FML 加载器坏了",
+是一个没人看的窗口。为了确认不是猜的,把该 JVM 的顶层窗口枚举出来:
+
+```
+1508380|vis|SunAwtDialog|Fatal Error          <- 就是它
+ 2625878|vis|GLFW30|Minecraft: NeoForge Loading...
+```
+
+**给 rig 加了两件东西**(都在仓库外,`optifineoforge-test\`):
+
+* `diagnostic\kynarain\cn\optifineoforge\rig\DiagnosticClient.java` —— 继承
+  `net.neoforged.fml.startup.Entrypoint`(`startup` 与 `createMainMethodCallable` 都是 `protected static`,
+  子类可用),跑**同一条** FML 管道,但把 throwable 打到 stderr,然后 `Runtime.halt(1)`。
+  只改失败可见性,不改任何变换路径。
+* `launch-fml10.ps1 -MainClass <fqcn> -ExtraClasspath <dir>` —— 把入口点换成上面这个类。
+* `capture-hwnd.ps1` —— 按标题抓一个顶层窗口(PrintWindow,失败再 CopyFromScreen),留着备用;
+  本轮抓到了那张图,但当前模型读不了图像,所以真正解决问题的是上面那个入口点。
+
+### 那条"最小替换"探针为什么死的:**探针罐里没有 OptiFine 自己的类**
+
+换上诊断入口点后,第一次运行 stderr 就有 2036 字节,原因一目了然:
+
+```
+java.lang.NoClassDefFoundError: Could not initialize class net.minecraft.util.Mth
+	at com.mojang.blaze3d.buffers.Std140SizeCalculator.align(...)
+Caused by: java.lang.ExceptionInInitializerError: Exception java.lang.NoClassDefFoundError:
+        net/optifine/util/MathUtils [in thread "main"]
+	at net.minecraft.util.Mth.<clinit>(Mth.java:55)
+```
+
+OptiFine 编译出来的 `Mth` 的 `<clinit>` **调用 OptiFine 自己的 `net.optifine.util.MathUtils`**,
+而那个探针罐里根本没有任何 `net/optifine/**`。于是类初始化失败 → 前面那三步二分法得到的结论
+("在 FML 10 管道里替换一个类本身就会炸")**是错的**,作废:炸的是缺类,不是替换。
+
+### 真正的坑:军规罐子(Early Service jar)的加载器看不见游戏类
+
+把 OptiFine 自己的类**放进同一个 payload 罐子**再跑(`srg/net/optifine/**` 之外另加普通路径的
+`net/optifine/**`),FML 的日志说得很清楚:
+
+```
+Found 1 early service jars (out of 1)
+Loading FML Early Services:  - mods/optifine-payload-fml10-withown.jar
+```
+
+也就是说这个罐子被当成"早期服务罐",里面的类由一个普通 `URLClassLoader` 加载,而那个加载器
+**一个游戏类都看不见**:
+
+```
+java.lang.NoClassDefFoundError: net/minecraft/world/level/chunk/ChunkAccess
+	at FML Early Services//net.optifine.reflect.Reflector.<clinit>(Reflector.java:143)
+Caused by: java.lang.ClassNotFoundException: net.minecraft.world.level.chunk.ChunkAccess
+	at java.net.URLClassLoader.findClass(URLClassLoader.java:445)
+```
+
+(`Client` 里的那条旧注释记的 1.21.11 上的 `ValueOutput` 失败,根因就是这个,不是"某个加载器恰好没配好"。)
+
+**修法:拆成两个 mod 文件**
+
+1. `optifine-payload-fml10.jar` —— 还是早期服务罐:处理器两个类 + 两个 service 文件 +
+   `META-INF/neoforge.mods.toml` + `srg/**`(要装到游戏类上的成品类,1233 个)。
+2. `optifine-own-classes.jar` —— **普通** mod 文件(`neoforge.mods.toml`,modId `optifine`),
+   装 OptiFine 自己的 `net/optifine/**`(716 个)、`assets/minecraft/**`、以及
+   `net/minecraftforge/**` 桩类。
+
+这一拆之后,`Reflector` 变成 `TRANSFORMER/optifine@1.0.0/net.optifine.reflect.Reflector`,
+能正常解析游戏类,`net.minecraft.util.Mth.<clinit>` 也拿到了 `MathUtils`。
+
+### 还差一层:Forge API 桩类必须在那第二个罐子里
+
+拆开之后的第一个失败是帧计算阶段要去解析一个不存在的类:
+
+```
+Caused by: java.lang.RuntimeException: Cannot find class net/minecraftforge/common/extensions/IForgeLivingEntity
+	at net.neoforged.fml.classloading.transformation.TransformerClassWriter.computeHierarchyFromFile(...:149)
+	at org.objectweb.asm.Frame.merge(...)
+	at ...ClassTransformer.transform(...:126)
+	at TRANSFORMER/optifine@1.0.0/net.optifine.reflect.Reflector.<clinit>(Reflector.java:172)
+```
+
+把 rig 里已经准备好的 `work\1.21.9\stubs`(87 个 `net/minecraftforge/**` 桩类)加进
+`optifine-own-classes.jar` 就好了。注意这与 1.20.1 那次踩的坑方向相反:那次把桩类塞进
+**加载器罐**导致模块 `ResolutionException`,这里的正确位置是**普通 mod 文件**。
+
+### 结果:1.21.9 上 OptiFine 已经在运行
+
+```
+===== VERDICT: FAILED =====
+  Setting user        : True
+  [OptiFine] lines    : 32
+```
+
+`latest.log` 里是完整的 OptiFine 自述:
+
+```
+[OptiFine] OptiFine_1.21.9_HD_U_J7_pre2
+[OptiFine] Build: 20251002-002421
+[OptiFine] LWJGL: 3.4.0 Win32 WGL Null EGL OSMesa VisualC DLL
+[OptiFine] OpenGL: AMD Radeon RX 7800 XT, version 3.3.0 Core Profile Context 25.12.1.251128
+[OptiFine] Maximum texture size: 16384x16384
+[OptiFine] Checking for new version
+```
+
+也就是说:在这条线上 OptiFine 自己的代码真的被加载、被初始化、并且读到了显卡信息。
+**这不是验收通过**(下面还有两个拦路的),但它把"FML 10 上 OptiFine 能不能活"这个问题答成了"能"。
+
+### 剩下的两个拦路石(都已定位)
+
+1. **`Options.loadOfOptions` 数组越界**(stderr,渲染线程):
+   `ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1`
+   at `net.minecraft.client.Options.loadOfOptions(Options.java:3174)`。
+   游戏目录里有一个 1826 字节的 `optionsof.txt`,是先前某个版本写下的;先怀疑它,清掉再看。
+2. **NeoForge 给游戏类补的成员被整类替换吃掉了**:
+   `NoSuchMethodError: 'java.util.List net.minecraft.server.packs.resources.ReloadableResourceManager.getListeners()'`
+   at `net.neoforged.neoforge.client.event.AddClientReloadListenersEvent.<init>`。
+   现代 NeoForge 是把补丁直接打进游戏类的,OptiFine 那份编译结果里当然没有这个方法。
+   这正是 1.20.x 那条线上 `keep-runtime.txt` 要干的事,**FML 10 的处理器还没有这套计划**——
+   下一步就是给它做一份 1.21.9 的 keep-runtime 计划并把计划支持补进处理器。
