@@ -3742,12 +3742,29 @@ java.lang.IncompatibleClassChangeError: class net.minecraft.client.player.Abstra
 顺带把"拿未修改的 OptiFine jar 做对照"这条也跑了:1.20.4 上 FML **同样拒绝**它
 (`InvalidLauncherSetupException: Invalid Services found OptiFine`),所以那条对照路走不通,上面的第 4 件才是可用的证据。
 
-**下一步有三条明确的路,按代价排序**:(a) 查 OptiFine 这份补丁的基线到底是谁 —— 若 Forge 1.20.4 的
-`Entity.java.patch` 去掉了这三个 `final`,那 OptiFine 的载荷是**为 Forge 运行时**编的,本线要么给这三个成员加
-"drop/保留运行时版本"的能力,要么整类保留运行时版本;(b) 本分支 loader 现有的 `keep-runtime.txt` **只支持成员级**
-(`owner|name|desc` 保留游戏侧方法体,**没有**整类保留、也没有删除成员的语义),所以 (a) 里那条路需要在 loader 里
-加东西,不是改个计划文件就行;(c) 换 1.20.4 的另一个 OptiFine 构建(`I8_pre4`)不解决问题:两个构建**都**带
-`patch/srg/net/minecraft/client/player/AbstractClientPlayer.class.xdelta`(已对两个 jar 的条目表逐个数过)。
+**再往下量了一层,把一个看似合理的解释也否掉了**(这三条同样都在本机):
+
+- "OptiFine 的 1.20.4 载荷是为 **Forge** 运行时而编的、Forge 去掉了那三个 `final`" —— **否掉**:把 Forge
+  `1.20.4-49.0.50` 的 userdev 拉下来(3 049 360 字节),`patches/net/minecraft/world/entity/Entity.java.patch`
+  644 行里**没有一处** `getX()` / `getY()` / `position()`;所以 Forge 的 Entity 同样保留 final,这条解释不成立。
+- 三个重写也**不是从基类继承来的**:原版混淆的 `AbstractClientPlayer`(`fsg`)里 `dr()/dt()/du()` 一个都没有 ——
+  也就是说它们是 OptiFine 打补丁之后**出现在载荷这一份里**的。
+- 换一个 1.20.4 的 OptiFine 构建也不解决问题:两个构建**都**带
+  `patch/srg/net/minecraft/client/player/AbstractClientPlayer.class.xdelta`(`I7` 4948 条补丁项、`I8_pre4` 4956 条,
+  两份条目表已逐个数过)。
+- 由此引出一个**尚未查清、但可以直接查**的问题:OptiFine 那个补丁项声明它期望的基类 md5 是
+  `333d156789338d0c6aa2d03c185d7e5c`,而本机三个可比对象都不等于它 —— 原版混淆的 `fsg` 是
+  `8e0794226d9b58d2a96e4d239633f049`,官方名的那份(`client-…-srg.jar` = 我们的 runtime)是
+  `725926563b191db3a72ff932c5d08d15`,我们打出来的载荷是 `0463369702b81a349470dfd4ef8f8d2b`。**这份基类在磁盘上没有
+  任何一份对应物**,说明 `OptifinePipeline` 喂给 `optifine.Patcher` 的基类是它自己映射出来的中间态;那条补丁究竟
+  是不是打在 OptiFine 期望的那份上、`Patcher` 的 md5 校验在这个流程里起什么作用,**本轮没有查**,而它决定了上面
+  那条 ICCE 到底是"OptiFine 的本意"还是"我们的映射喂错了基类"。
+
+**下一步因此改成先查管线、再决定改不改 loader**(按代价排序):(a) 读本仓库 `optifine` 包里
+`OptifinePipeline` / `Patcher` 的调用面,弄清基类怎么来、md5 不匹配时会发生什么;(b) 若基类确实与 OptiFine 期望的
+不一致,先修管线;(c) 若一致,再给 loader 加"整类保留运行时版本 / 删除成员"的能力 —— 注意本分支的
+`keep-runtime.txt` **只支持成员级**(`owner|name|desc` 保留游戏侧方法体),没有整类保留、也没有删除成员的语义,
+所以 (c) 是真要写代码的。
 
 ### 五、边界
 
