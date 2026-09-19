@@ -432,6 +432,19 @@ public final class PatchedClassTransformer implements NodeTransformer {
 
 	private static final String CRASH_REPORT = "net/minecraft/CrashReport";
 
+	/**
+	 * {@code -Doptifineoforge.strictInterfaceKeep=true} restores the older, blunter rule: never install a
+	 * payload copy of an interface the runtime adds members to, whatever kind the payload's copy is.
+	 *
+	 * <p>The refusal is now limited to the case that actually breaks the class format - a payload
+	 * <em>class</em> replacing a runtime <em>interface</em>. Measured on 1.20.4, the blunt form left
+	 * {@code net.minecraft.client.renderer.texture.atlas.SpriteResourceLoader} as a copy carrying SRG member
+	 * names (its dump showed f_260482_ / m_292996_ / m_294584_), while the payload's copy of the same class is
+	 * an interface with the same shape in the runtime's own names - so a caller delivered with official names
+	 * could not resolve {@code create(Collection)}.</p>
+	 */
+	private static final boolean STRICT_INTERFACE_KEEP = Boolean.getBoolean("optifineoforge.strictInterfaceKeep");
+
 	@Override
 	public ClassNode transform(ClassNode input) {
 		logModulesOnce();
@@ -547,7 +560,8 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		// 0x9 being public static with no final, which no interface field may be. Normalising the
 		// modifiers would have made the class loadable and left it broken in the way described above, so
 		// the class is not installed at all.
-		if((patched.access & Opcodes.ACC_INTERFACE) != 0 && RESTORED_CLASSES.contains(patched.name)) {
+		if(((patched.access & Opcodes.ACC_INTERFACE) != 0 && (input.access & Opcodes.ACC_INTERFACE) == 0
+				|| STRICT_INTERFACE_KEEP) && RESTORED_CLASSES.contains(patched.name)) {
 			LOGGER.info("Left " + patched.name.replace('/', '.') + " alone: the runtime adds members to that "
 					+ "interface, and installing OptiFine's copy would replace the static initialiser that "
 					+ "fills them");

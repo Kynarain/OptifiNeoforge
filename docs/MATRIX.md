@@ -3954,7 +3954,44 @@ public interface net.minecraft.client.renderer.texture.atlas.SpriteResourceLoade
 **下一步**:把 1.21.x 的**装载期改名**这一档移植到 1.20.x(或者退一步:对我们明确知道会以 SRG 名出现的类,在装载期把名字改回来)。
 这是 1.20.4 现在唯一的阻塞。
 
-### 十七、边界
+### 十八、放开"同类接口换装"之后:1.20.4 **进到渲染循环了**(730 行 `[OptiFine]`)
+
+上一轮量到"交付出去的接口带 SRG 名、而载荷那份其实是官方名的同形接口"之后,本轮把 loader 里那条拒绝规则**收窄到真正会坏的情形**
+(`object` 侧是接口、载荷侧是**类**,或者显式 `-Doptifineoforge.strictInterfaceKeep=true`),同类换装改为允许
+(运行时给该接口加的成员仍由成员恢复补回,日志里那条 `Restored 1 members` 就是它)。实测结果:
+
+| 指标 | 之前 | 本轮 |
+|---|---|---|
+| `[OptiFine]` 行数 | 74 | **730** |
+| 载入阶段 | `Minecraft.<init>` | **渲染循环**(`Minecraft.run → runTick → GameRenderer.render → frameInit`) |
+| 崩溃报告 | 1 | 1 |
+
+也就是说 1.20.4 现在**已经进游戏主循环并在画第一帧**,`SpriteResourceLoader.create` 那条 `NoSuchMethodError` 随之消失 ✔。
+
+**新的(也是更靠后的)阻塞**仍然是同一类名字问题,但出现在另一个类上:
+
+```
+java.lang.NoSuchMethodError: 'void com.mojang.blaze3d.systems.RenderSystem$AutoStorageIndexBuffer$IndexGenerator.m_157487_(it.unimi.dsi.fastutil.ints.IntConsumer...)'
+  at RenderSystem$AutoStorageIndexBuffer.m_157476_(RenderSystem.java:1373)
+  at VertexBuffer.m_231223_(VertexBuffer.java:164) -> LevelRenderer.createStars(LevelRenderer.java:791)
+```
+
+顺带量到一个关键数字(`SrgMemberMap --emit`,本机):**交付的载荷里还有 114 个成员是 SRG 名**
+(其中 90 个"表里没有对应项"、43 个"类在表里但成员不在"),样本如
+`net/minecraft/client/gui/Gui$DisplayEntry.f_302553_`、`DebugScreenOverlay.m_280186_`。
+这说明**离线改名并没有把载荷改干净**,剩下的这些名字就是接下来每走到一个新类都会撞上的东西。
+
+**下一步**:把那 114 个成员逐个对着 joined.tsrg / obf-official 两张表查清楚"为什么没被改"(描述符/嵌套类/合成成员三种可能),
+把离线改名补到能覆盖它们;或者把装载期改名(1.21 那一档)按"声明+引用都改"的形式移植过来。修完这一档,1.20.4 就只剩
+`sound engine` 与"0 崩溃报告"两条判据了。
+
+### 十九、边界
+
+- **1.20.6 仍是本分支唯一实测通过的版本**;1.20.4 本轮进到**渲染循环**(730 行 `[OptiFine]`、`Setting user` ✓、
+  stderr 0 字节),仍有 1 份崩溃报告,原因是载荷里还留着 114 个 SRG 名成员;1.20.1 / 1.20.2 未跑。
+- 本轮改了 loader 一条判定(同类接口换装允许、`-Doptifineoforge.strictInterfaceKeep=true` 可退回旧行为),并新增
+  `-Doptifineoforge.dump=<dir>` 调试开关;两者都不参与任何线的验收判据。
+
 
 - **1.20.6 仍是本分支唯一实测通过的版本**;1.20.4 推进到 `Setting user` ✓、74 行 `[OptiFine]`、stderr 0 字节,
   仍有 1 份崩溃报告,根因本轮已锁定(交付出去的接口带 SRG 名,缺少装载期改名这一档);1.20.1 / 1.20.2 未跑。
