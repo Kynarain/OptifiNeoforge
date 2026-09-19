@@ -98,14 +98,26 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 			// ASM's Type.getClassName() keeps it too.
 			result.add(new Target(name.replace('/', '.')));
 		}
+		// Classes the payload does not carry but a repair has to touch. FML only asks this processor about
+		// the names it declares here, so a repair on a class with no payload copy is unreachable otherwise -
+		// and net/minecraft/tags/ItemTags is exactly that case: OptiFine resolves a method on it by
+		// reflection, and there is no OptiFine copy of the class to install.
+		for(String name : REPAIR_ONLY_TARGETS) {
+			result.add(new Target(name.replace('/', '.')));
+		}
 		return result;
 	}
+
+	/** Targets this processor repairs without installing anything over them. */
+	private static final java.util.Set<String> REPAIR_ONLY_TARGETS =
+			java.util.Set.of("net/minecraft/tags/ItemTags");
 
 	@Override
 	public void transform(ClassNode node, SimpleTransformationContext context) {
 		probeLayers();
 		byte[] bytes = payload().get(node.name);
 		if(bytes == null) {
+			repairLegacyTagCreator(node);
 			return;
 		}
 		ClassNode finished = new ClassNode();
@@ -250,6 +262,82 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 					+ "listener list stays frozen");
 			return;
 		}
+	}
+
+	/**
+	 * Puts back the two-argument {@code ItemTags.create(String, String)} that OptiFine resolves by reflection.
+	 *
+	 * <p>Measured on 1.21.9, and every step of this was read rather than guessed. OptiFine's {@code Reflector}
+	 * holds</p>
+	 *
+	 * <pre>ForgeItemTags         = new ReflectorClass(ItemTags.class)
+	 * ForgeItemTags_create  = ForgeItemTags.makeMethod("create", String.class, String.class)</pre>
+	 *
+	 * <p>and OptiFine's compiled {@code DyeColor} constructor calls it for every colour:</p>
+	 *
+	 * <pre>47: getstatic Reflector.ForgeItemTags_create
+	 * 57: ldc "forge"                       // the namespace Forge used
+	 * 70: invokevirtual ReflectorMethod.call([Object])   // null when the method is not there
+	 * 76: putfield dyesTag:Lnet/minecraft/tags/TagKey;</pre>
+	 *
+	 * <p>but the 1.21.9 runtime has only {@code create(ResourceLocation)}, so the reflector reports
+	 * "Method not present: net.minecraft.tags.ItemTags.create", the call returns null, and every
+	 * {@code DyeColor.dyesTag} is null. That is what kills NeoForge's own mod construction, several steps
+	 * later and in a class of its own:</p>
+	 *
+	 * <pre>663: putstatic Tags$Items.DYES_BLACK   (= DyeColor.BLACK.getTag())
+	 * NullPointerException: Cannot invoke "net.minecraft.tags.TagKey.toString()" because "tag2" is null
+	 *   at net.neoforged.neoforge.common.TagConventionLogWarning.createForgeMapEntry(...:556)
+	 *   at net.neoforged.neoforge.common.TagConventionLogWarning.&lt;clinit&gt;(...:201)
+	 *   at net.neoforged.neoforge.common.NeoForgeMod.&lt;init&gt;(NeoForgeMod.java:585)</pre>
+	 *
+	 * <p>{@code MissingTargets --stub} cannot see this one, and that is why the plans came back clean: the
+	 * reference is a string in a reflector field, not a bytecode reference to a game member. So the method is
+	 * generated here. The namespace is mapped the way the ModLauncher lines' {@code ConventionTags} maps it -
+	 * NeoForge renamed the convention namespace from {@code forge} to {@code c} in 1.21, and without that the
+	 * tag would be a different, empty tag rather than the one NeoForge's own {@code Tags} class holds.</p>
+	 */
+	private static void repairLegacyTagCreator(ClassNode installed) {
+		if(!"net/minecraft/tags/ItemTags".equals(installed.name)) {
+			return;
+		}
+		String legacy = "(Ljava/lang/String;Ljava/lang/String;)Lnet/minecraft/tags/TagKey;";
+		if(hasMethod(installed.methods, "create", legacy)) {
+			return;
+		}
+		if(!hasMethod(installed.methods, "create",
+				"(Lnet/minecraft/resources/ResourceLocation;)Lnet/minecraft/tags/TagKey;")) {
+			LOGGER.warn("OptiFine payload: " + installed.name.replace('/', '.') + " has no create(ResourceLocation) "
+					+ "to delegate to; OptiFine's reflective tag lookup stays unresolved and every DyeColor tag "
+					+ "stays null");
+			return;
+		}
+		MethodNode method = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "create", legacy, null, null);
+		org.objectweb.asm.tree.LabelNode useAsIs = new org.objectweb.asm.tree.LabelNode();
+		org.objectweb.asm.tree.LabelNode call = new org.objectweb.asm.tree.LabelNode();
+		method.instructions.add(new org.objectweb.asm.tree.LdcInsnNode("forge"));
+		method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.ALOAD, 0));
+		method.instructions.add(new org.objectweb.asm.tree.MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/String",
+				"equals", "(Ljava/lang/Object;)Z", false));
+		method.instructions.add(new org.objectweb.asm.tree.JumpInsnNode(Opcodes.IFEQ, useAsIs));
+		method.instructions.add(new org.objectweb.asm.tree.LdcInsnNode("c"));
+		method.instructions.add(new org.objectweb.asm.tree.JumpInsnNode(Opcodes.GOTO, call));
+		method.instructions.add(useAsIs);
+		method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.ALOAD, 0));
+		method.instructions.add(call);
+		method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.ALOAD, 1));
+		method.instructions.add(new org.objectweb.asm.tree.MethodInsnNode(Opcodes.INVOKESTATIC,
+				"net/minecraft/resources/ResourceLocation", "fromNamespaceAndPath",
+				"(Ljava/lang/String;Ljava/lang/String;)Lnet/minecraft/resources/ResourceLocation;", false));
+		method.instructions.add(new org.objectweb.asm.tree.MethodInsnNode(Opcodes.INVOKESTATIC, installed.name,
+				"create", "(Lnet/minecraft/resources/ResourceLocation;)Lnet/minecraft/tags/TagKey;", false));
+		method.instructions.add(new org.objectweb.asm.tree.InsnNode(Opcodes.ARETURN));
+		method.maxStack = 2;
+		method.maxLocals = 2;
+		installed.methods.add(method);
+		LOGGER.info("OptiFine payload: added the reflective tag creator " + installed.name.replace('/', '.')
+				+ ".create(String, String), because OptiFine resolves it by name and the runtime has only "
+				+ "create(ResourceLocation); \"forge\" is mapped onto NeoForge's \"c\"");
 	}
 
 	/**

@@ -844,3 +844,69 @@ Exception message: java.lang.NullPointerException: Cannot invoke "net.minecraft.
 
 另外把这一轮"条件保留 `<clinit>`"的实测结果记清楚:**它没有解决这一处**(改完再跑,仍然是同一个 NPE),
 所以"保留运行时 `<clinit>`"既不是充分条件也不是充分修法;这一处的根因在上面那条链上,不在 `<clinit>` 的取舍。
+## 1.21.9 通过验收:四检查项全中,并且跑了两次
+
+### 最后一处根因:OptiFine 用反射找一个 1.21.9 已经没有的方法
+
+上一节停在 `Tags$Items.DYES_BLACK` 为 null。整条链这一轮全部读出来了:
+
+NeoForge 的 `Tags$Items.<clinit>` 是
+```
+657: getstatic   net/minecraft/world/item/DyeColor.BLACK
+660: invokevirtual DyeColor.getTag:()Lnet/minecraft/tags/TagKey;
+663: putstatic   DYES_BLACK
+```
+而 `getTag()` 返回的是 `DyeColor` 构造器里赋的那个字段,payload 里那次赋值长这样:
+```
+47: getstatic     net/optifine/reflect/Reflector.ForgeItemTags_create
+57: ldc           "forge"                                  <- Forge 时代的命名空间
+70: invokevirtual net/optifine/reflect/ReflectorMethod.call([Ljava/lang/Object;)Ljava/lang/Object;
+73: checkcast     net/minecraft/tags/TagKey
+76: putfield      dyesTag:Lnet/minecraft/tags/TagKey;
+```
+OptiFine 的 `Reflector.<clinit>` 里那个句柄是
+`ForgeItemTags_create = ForgeItemTags.makeMethod("create", String.class, String.class)`,
+指向 `net.minecraft.tags.ItemTags.create(String, String)` —— **而 1.21.9 的运行时只有 `create(ResourceLocation)`**,
+于是 `ReflectorMethod.call` 返回 null(日志里那句 `[OptiFine] (Reflector) Method not present:
+net.minecraft.tags.ItemTags.create` 就是它),`dyesTag` 为 null,`DYES_BLACK` 为 null,`TagConventionLogWarning`
+在自己的 `<clinit>` 里炸掉,NeoForge 报"has failed to load correctly"。
+
+**注意这一处 `MissingTargets --stub` 结构上看不到**:那不是一条字节码里对游戏成员的引用,而是反射器字段里的一个
+**字符串**。所以修法是处理器**生成**这个方法:往 `ItemTags` 上加
+`public static TagKey<Item> create(String namespace, String path)`,内部把 Forge 时代的 `forge` 映射成
+NeoForge 的 `c`(与 ModLauncher 线上 `ConventionTags` 同一套规则),再委托给运行时的 `create(ResourceLocation)`。
+生成的字节码是 `LDC "forge"; ALOAD 0; String.equals; IFEQ; LDC "c"; GOTO; ALOAD 0; ...`。
+
+`ItemTags` **不在 payload 里**(payload 没有这个类的副本),所以处理器新增了一个"只修不换"的目标集合
+`REPAIR_ONLY_TARGETS`:`targets()` 里声明它,`transform()` 在没有 payload 字节时只跑修复。
+
+### 结果:验收四项全中,且可重复
+
+同一条命令跑两次,两次逐项相同:
+
+```
+===== VERDICT: STARTED =====
+  Setting user        : True
+  Sound engine started: True
+  new crash reports   : 0
+  stderr bytes        : 0
+  [OptiFine] lines    : 365
+```
+
+日志侧面证据:`OpenGL API ERROR` **0** 行、`NeoForge mod loading, version 21.9.16-beta` 成功、
+`[OptiFine] OptiFine_1.21.9_HD_U_J7_pre2` 完整自述、且**标题界面确实在跑**——
+`RealmsNotificationsScreen.<init>` 会调 `RealmsAvailability.get()`,而那个界面只由 `TitleScreen` 构造
+(它自己用 `inTitleScreen()` 判断当前界面是 `TitleScreen`),日志里正好有这条:
+`[IO-Worker-1/ERROR] [com.mojang.realmsclient.RealmsAvailability/]: Couldn't connect to realms`
+(离线机器的正常结果,不是错误)。
+
+### 必须一起记下来的口径
+
+* **`-NoEarlyWindow` 是 rig 设置**:FML 的早期加载画面与 OptiFine 的贴图工作抢同一个 GL 上下文,
+  开着它客户端会死在 `SimpleBufferBuilder "Already building"`。关掉它是 FML 自己的开关
+  (`earlyWindowControl=false`),而**其它线的跑法里它是开着的**——所以这条线的成绩要按这个前提读。
+* 启动入口是 rig 的诊断入口点 `DiagnosticClient`(同一条 `Entrypoint.startup` 管道,只是把异常打到
+  stderr)。用它的原因写在 `launch-fml10.ps1` 与 `DiagnosticClient` 的注释里:官方入口点
+  `net.neoforged.fml.startup.Client` 把异常交给一个**模态对话框**,什么也不打印。
+* 这条线的 payload 不随仓库发布(`srg/**` 是 OptiFine 打过补丁的游戏类),rig 侧由
+  `build-fml10-payload.ps1` 用仓库自己的离线工具产出。
