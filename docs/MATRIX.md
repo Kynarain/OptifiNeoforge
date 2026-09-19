@@ -3903,7 +3903,27 @@ java.lang.RuntimeException: java.lang.IncompatibleClassChangeError:
 **下一步**:把"把载荷成员补进交付类"这一档移植到 1.20.x(或先查清 `SpriteResourceLoader` 到底有没有被换装、为什么换装后两个签名不共存),
 再跑 1.20.4。这已经是**最后几处之一**:判据里 `Setting user` 已经为真,缺的是 `Sound engine started` 与"0 崩溃报告"。
 
-### 十三、边界
+### 十四、`SpriteResourceLoader.create` 这一处量到的细节(仍未解决)
+
+把现场逐层扒开后,事实是这样的(全部本机实测):
+
+- 报错原文:`NoSuchMethodError: '...atlas.SpriteResourceLoader net.minecraft.client.renderer.texture.atlas.SpriteResourceLoader.create(java.util.Collection)'`;
+- **运行时那份 `SpriteResourceLoader` 是接口**,并且**确实声明**了 `public static create(Collection)`;
+- 载荷那份是**类**(OptiFine 的补丁早于它变成接口),所以我们的 loader **故意不换装**它,理由写在日志里:
+  `Left ... SpriteResourceLoader alone: the runtime adds members to that interface, and installing OptiFine's copy would replace the static initialiser that fills them` —— 这个判断本身是对的(把接口换成类会直接坏掉);
+- 其后 loader 又对它做了一次成员恢复(`Restored 1 members ... from its donor`),而它在 jar 里那份 donor 是**裁剪过的副本**(里面根本没有 `create`);
+- 交付出去的那份(在 loader jar 里,`optifineoforge/patched/...`)**带着** `public static create(Collection)`,
+  调用方(被换装的 `SpriteLoader`)用的也是 `InterfaceMethodref ... create:(Ljava/util/Collection;)...`。
+
+也就是说"两个签名都在"却仍然 `NoSuchMethodError` —— 所以**问题不在签名不匹配**,而在"运行期实际解析到的那份类里没有这个方法"。
+下一步要做的诊断很具体:**把换装/恢复之后的最终类 dump 出来看**(这一分支还没有 dump 开关,1.21.x 有),确认接口上的 `create` 是否被成员恢复或访问计划改写掉;
+第二个候选是解析发生在另一个模块/另一份副本上。这一步没做完,所以 1.20.4 仍停在 1 份崩溃报告上。
+
+### 十五、边界
+
+- **1.20.6 仍是本分支唯一实测通过的版本**;1.20.4 本轮推进到 `Setting user` ✓、74 行 `[OptiFine]`、stderr 0 字节,
+  仍有 1 份崩溃报告(下一条已精确定位到 `SpriteResourceLoader`,细节见上节,根因未结);1.20.1 / 1.20.2 未跑。
+
 
 - **1.20.6 仍是本分支唯一实测通过的版本**;1.20.4 本轮推进到 `Setting user` ✓、74 行 `[OptiFine]`、stderr 0 字节,
   仍有 1 份崩溃报告(下一条已定位为 `SpriteResourceLoader.create` 的签名问题);1.20.1 / 1.20.2 未跑。
