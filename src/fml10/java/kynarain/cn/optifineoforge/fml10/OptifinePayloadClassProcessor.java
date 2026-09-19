@@ -305,13 +305,30 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 		if(hasMethod(installed.methods, "create", legacy)) {
 			return;
 		}
-		if(!hasMethod(installed.methods, "create",
-				"(Lnet/minecraft/resources/ResourceLocation;)Lnet/minecraft/tags/TagKey;")) {
-			LOGGER.warn("OptiFine payload: " + installed.name.replace('/', '.') + " has no create(ResourceLocation) "
-					+ "to delegate to; OptiFine's reflective tag lookup stays unresolved and every DyeColor tag "
-					+ "stays null");
+		// The delegate is found rather than named, because the class it takes changed name inside this line's
+		// own span: 1.21.9 has create(ResourceLocation), 1.21.11 has create(Identifier). The first version of
+		// this repair hardcoded ResourceLocation and therefore did nothing on 1.21.11, where it said so itself -
+		//   OptiFine payload: net.minecraft.tags.ItemTags has no create(ResourceLocation) to delegate to;
+		//   OptiFine's reflective tag lookup stays unresolved and every DyeColor tag stays null
+		// - and the client then died in NeoForge's TagConventionLogWarning exactly as 1.21.9 had.
+		MethodNode delegate = null;
+		for(MethodNode method : installed.methods) {
+			if(!"create".equals(method.name) || (method.access & Opcodes.ACC_STATIC) == 0) {
+				continue;
+			}
+			if(org.objectweb.asm.Type.getArgumentTypes(method.desc).length == 1
+					&& method.desc.endsWith(")Lnet/minecraft/tags/TagKey;")) {
+				delegate = method;
+				break;
+			}
+		}
+		if(delegate == null) {
+			LOGGER.warn("OptiFine payload: " + installed.name.replace('/', '.') + " has no one-argument static "
+					+ "create to delegate to; OptiFine's reflective tag lookup stays unresolved and every "
+					+ "DyeColor tag stays null");
 			return;
 		}
+		String location = org.objectweb.asm.Type.getArgumentTypes(delegate.desc)[0].getInternalName();
 		MethodNode method = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "create", legacy, null, null);
 		org.objectweb.asm.tree.LabelNode useAsIs = new org.objectweb.asm.tree.LabelNode();
 		org.objectweb.asm.tree.LabelNode call = new org.objectweb.asm.tree.LabelNode();
@@ -326,18 +343,18 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 		method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.ALOAD, 0));
 		method.instructions.add(call);
 		method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.ALOAD, 1));
-		method.instructions.add(new org.objectweb.asm.tree.MethodInsnNode(Opcodes.INVOKESTATIC,
-				"net/minecraft/resources/ResourceLocation", "fromNamespaceAndPath",
-				"(Ljava/lang/String;Ljava/lang/String;)Lnet/minecraft/resources/ResourceLocation;", false));
+		method.instructions.add(new org.objectweb.asm.tree.MethodInsnNode(Opcodes.INVOKESTATIC, location,
+				"fromNamespaceAndPath", "(Ljava/lang/String;Ljava/lang/String;)L" + location + ";", false));
 		method.instructions.add(new org.objectweb.asm.tree.MethodInsnNode(Opcodes.INVOKESTATIC, installed.name,
-				"create", "(Lnet/minecraft/resources/ResourceLocation;)Lnet/minecraft/tags/TagKey;", false));
+				"create", "(L" + location + ";)Lnet/minecraft/tags/TagKey;", false));
 		method.instructions.add(new org.objectweb.asm.tree.InsnNode(Opcodes.ARETURN));
 		method.maxStack = 2;
 		method.maxLocals = 2;
 		installed.methods.add(method);
 		LOGGER.info("OptiFine payload: added the reflective tag creator " + installed.name.replace('/', '.')
-				+ ".create(String, String), because OptiFine resolves it by name and the runtime has only "
-				+ "create(ResourceLocation); \"forge\" is mapped onto NeoForge's \"c\"");
+				+ ".create(String, String) delegating to " + location.replace('/', '.')
+				+ ".fromNamespaceAndPath + create, because OptiFine resolves it by name; \"forge\" is mapped onto "
+				+ "NeoForge's \"c\"");
 	}
 
 	/**

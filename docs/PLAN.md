@@ -1005,3 +1005,45 @@ OptiFine 正式版 jar 已在 rig 里(`OptiFine_1.21.11_HD_U_J9.jar`,8 045 116 �
 `maven.neoforged.net:443` 这一轮仍然连不上(25 秒超时)。所以 1.21.11 卡在**环境**上,不是代码上:
 网络恢复后跑 `add-line.ps1 -InstallOnly -Mc 1.21.11 -NeoForge 21.11.45 -MountPoint fml10`,
 再用 1.21.10 同样的 `-RuntimeJar` 路径(从 NeoForm 缓存取)跑 `prepare-fml10-line.ps1`,即可按同一套流程验证。
+## 1.21.11 通过验收:FML 10 三条线全部跑通
+
+```
+===== VERDICT: STARTED =====
+  Setting user        : True
+  Sound engine started: True
+  new crash reports   : 0
+  stderr bytes        : 107      <- 与它的无 mod 对照跑逐字节相同(同一行 log4j 环境告警)
+  [OptiFine] lines    : 273
+```
+
+### 两处只有 1.21.11 才暴露出来的东西
+
+1. **`ResourceLocation` 在这一版叫 `Identifier`**。反射式 tag creator 的委托目标原本写死成
+   `create(ResourceLocation)`,于是处理器自己在日志里说了实话:
+   `net.minecraft.tags.ItemTags has no create(ResourceLocation) to delegate to; OptiFine's reflective tag
+   lookup stays unresolved and every DyeColor tag stays null`,客户端随即死在与 1.21.9 一模一样的
+   `TagConventionLogWarning` NPE 上。改成**动态找委托**:在 `ItemTags` 里找那个"一个参数、返回 `TagKey`
+   的静态 `create`",取它的参数类型做 `fromNamespaceAndPath`,所以 1.21.9 找到 `ResourceLocation`、
+   1.21.11 找到 `Identifier`,同一个修复覆盖两条线。
+2. **安装器能跑,但缺一个坐标**:`maven.neoforged.net` 的 **IPv4 路由是坏的**(curl 25 秒超时),
+   **IPv6 通**(`curl -6` 拿到 200)。用 -6 取到 21.11.45 的安装器与 neoform zip 之后,
+   安装器日志最后是 `Successfully installed client into launcher`,并且留下了
+   `libraries\net\neoforged\minecraft-client-patched\21.11.45\minecraft-client-patched-21.11.45.jar`
+   —— **FML 10 的游戏 jar 就是它**。它只有游戏类(29191 个条目,没有 `net/neoforged/**`),所以运行时视图里
+   NeoForge 自己的类从 `-universal.jar` 补进来(`net/neoforged/neoforge/attachment/AttachmentHolder` 就在那里),
+   这份合并结果作为 `-RuntimeJar` 交给 `prepare-fml10-line.ps1`。
+   顺带说明:我之前按"缺省安装器产物"报的那两条(`client-*-srg.jar`、`neoforge-<ver>-client.jar`)
+   对 FML 10 线**不是必须的**——真正被加载的是 `minecraft-client-patched-<ver>.jar`。
+
+### FML 10 三条线的最终成绩(当前处理器修订,同一套计划)
+
+| 线 | NeoForge | 判据 | `[OptiFine]` 行 | stderr | 备注 |
+|---|---|---|---|---|---|
+| 1.21.9 | `21.9.16-beta` | 四项全中 | 365 | 0 字节 | 两次一致 |
+| 1.21.10 | `21.10.64` | 四项全中 | 356 | 0 字节 | 未为该线改一行处理器代码 |
+| 1.21.11 | `21.11.45` | 四项全中 | 273 | 107 字节 | 与无 mod 对照跑**逐字节相同** |
+
+三条线共同的 rig 前提:**关掉 FML 的早期加载画面**(`earlyWindowControl=false`)——开着它三条线都会死在
+FML 自己的 `SimpleBufferBuilder "Already building"`(与 OptiFine 的贴图工作抢同一个 GL 上下文);
+启动入口用 `DiagnosticClientAny`(不引用任何 FML API、全反射,因此同时适配 loader 10.0.14 与 10.0.32,
+后者的 `startup` 返回 `Entrypoint$StartupResult` 而不是 `FMLLoader`)。
