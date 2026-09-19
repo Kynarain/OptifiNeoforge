@@ -73,3 +73,22 @@ OptiFine 的 `optifine.OptiFineTransformationService` 只依赖 `cpw.mods.modlau
 - 线内也要按版本立据:十个版本的结论不能互相顶替,写文档时要说清是哪一个版本;`J6` / `J7` 这种同号系列尤其容易混。
 - 文档与实测口径要一致:没在真实游戏里验证过的东西写成计划,不写成结论。
 - OptiFine 的 jar 不进仓库,也不随产物分发。
+
+## 2026-09-19/20:1.21.9 这条线的侦察结果(本轮实测)
+
+在**本机重建的 rig** 上做了两件事的确认,结论是"加载器这一半已经能造,缺的是另外两半":
+
+1. **加载器构建可以过**:在本分支上执行
+
+   .\gradlew jar -Pmc=1.21.9 -Pneoforge=21.9.16-beta -Pmountpoint=fml10
+
+   得到 uild/libs/OptifiNeoforge-1.0.0+mc1.21.9.jar(129 356 字节)—— 也就是本文件上面那段注释说的
+   "loader-side tools and the mod skeleton alone",与预期一致 ✔。
+2. **缺的两半**:
+   a. **FML 10 的 ClassProcessor 要打包进载荷 jar**:26.x 分支的 src/fml10 只有两个类
+      (OptifinePayloadClassProcessor / OptifinePayloadLocator),按注释它们要由 rig **编译进载荷 jar**
+      (带着 OptiFine 的类),而不是编译进加载器 jar —— rig 目前没有这一步。
+   b. **1.21.9+ 没有 ModLauncher**,而 rig 的 launch.ps1 是围绕 ModLauncher 写的(module path、-p、
+      --launchTarget、ignoreList 等)—— 要跑这三条线,得给 rig 加一条 FML 10 的启动路径。
+
+这两件事都**没有做**,所以 1.21.9 / 1.21.10 / 1.21.11 仍然是未实测的。
