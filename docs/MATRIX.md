@@ -3816,9 +3816,30 @@ getfield      net/minecraft/client/Minecraft.gameDirectory
 3. 另一条互不排斥的路:让 OptiFine 的 `Config`/`Shaders` 在 `Minecraft` 实例就绪之后再初始化,即把"谁先碰它"的顺序
    改回来 —— 这需要在 loader 侧找一个更晚的挂点,而不是改 OptiFine。
 
-### 八、边界
+### 八、这一轮又排除了两条,并给 loader 加了一个"初始化/调用点追踪"开关
 
-- **1.20.6 仍然是本分支唯一实测通过的版本**;1.20.4 本轮把类定义那一处修好、走得更远,但**仍未通过**;1.20.1 / 1.20.2 未跑。
+1. **`AbstractTexture.setFilter` 不是触发点(实测)。** 用成员级 keep 计划
+   (`net/minecraft/client/renderer/texture/AbstractTexture<TAB>setFilter<TAB>(ZZ)V`,日志确认
+   `Kept the game's body of ...` 生效)把载荷那一段 `Config.getMipmapType()` 调用换回游戏侧实现后,**崩溃点没变**
+   (仍是 `CrashReporter → Shaders.<clinit>`,10 行 `[OptiFine]`)。
+2. **loader 追不到 OptiFine 自己的类(实测,很重要)。** 新加的
+   `-Doptifineoforge.traceInit=<内部名>[,<名>...]` 会在被追踪类的 `<clinit>` 和"含 `net/optifine/Config` 调用的方法"
+   开头插入 `new Throwable().printStackTrace()`。对 `net/optifine/Config` 用这个开关:**既没有 `Replaced
+   net.optifine.Config` 那行换装日志,也没有任何追踪输出** —— 说明 `net/optifine/**` 根本不经过我们的 transformer,
+   它们是作为**模块**(栈帧里的 `srg` 就是模块名)直接加载的。因此"在 OptiFine 自己的类里插桩"这件事,loader 侧做不到,
+   只能离线改写载荷 jar。
+3. 用 `-Doptifineoforge.traceInit=*`(追踪**每一个**会调用 `Config` 的交付类)跑一次:52 个类被插桩成功,但**崩溃前
+   没有任何一个插桩点被执行** ⇒ **构造期第一次碰 `Config` 的不是我们交付的任何游戏类**。这一条把范围收得很窄:
+   触发来自 OptiFine 自己的类在启动阶段的某次初始化/调用(候选如 3.758 秒就初始化了的
+   `net/optifine/reflect/Reflector` 那一套反射解析 —— `Class.forName(String)` 是会初始化目标类的)。
+
+**结论**:要再往前推,只能**离线**在载荷 jar 里给 `srg/net/optifine/Config.class` 插桩(需要一个小 ASM 工具,
+把栈打到 `System.err`/游戏日志),或者换一条线。这两条都记在下面的"下一步"里。
+
+### 九、边界
+
+- **1.20.6 仍然是本分支唯一实测通过的版本**;1.20.4 修好了类定义、走得更远,当前阻塞是"构造期过早初始化 OptiFine 的
+  `Config`/`Shaders`",范围已缩到"触发者不是任何被交付的游戏类";1.20.1 / 1.20.2 未跑。
 - 本轮新增的 loader 能力是**通用**的(任何线都能用 `drop-members.txt`),但**只有 1.20.4 实测用过它**;
   `-Doptifineoforge.skipPayload=true` 是调试开关,不参与任何线的验收判据。
 - **没有发布任何东西**;已发布的 jar 没有重建。

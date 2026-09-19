@@ -24,6 +24,8 @@ import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
@@ -398,6 +400,21 @@ public final class PatchedClassTransformer implements NodeTransformer {
 	 */
 	private static final boolean SKIP_PAYLOAD = Boolean.getBoolean("optifineoforge.skipPayload");
 
+	/**
+	 * {@code -Doptifineoforge.traceInit=<internal name>[,<internal name>...]} prints a stack trace at the
+	 * start of that class's static initialiser, and at the start of every method of it that calls
+	 * {@code net/optifine/Config}. It answers "who touches OptiFine's Config, and how early" without a
+	 * debugger in the loop, which is what the 1.20.4 failure needed: Config is initialised during
+	 * Minecraft's constructor, its own static initialiser pulls in net.optifine.shaders.Shaders, and Shaders
+	 * cannot be initialised before the game instance exists. The trace goes through System.err, which the
+	 * game redirects into its own log.
+	 *
+	 * <p>Only classes this transformer delivers can be traced. Measured on 1.20.4: OptiFine's own classes do
+	 * not come through here at all - naming {@code net/optifine/Config} produces no trace and no "Replaced"
+	 * line - so the traced side has to be a game class.</p>
+	 */
+	private static final String TRACE_INIT = System.getProperty("optifineoforge.traceInit");
+
 	@Override
 	public ClassNode transform(ClassNode input) {
 		logModulesOnce();
@@ -608,9 +625,63 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		input.methods = methods;
 		keepRuntimeBodies(input, originalMethods);
 		dropMembers(input);
+		traceInit(input);
 		LOGGER.info("Replaced " + input.name.replace('/', '.') + " with OptiFine's patched version ("
 				+ fields.size() + " fields, " + methods.size() + " methods)");
 		return input;
+	}
+
+	/** Puts a stack trace in front of the traced class's initialiser and of its Config call sites. */
+	private static void traceInit(ClassNode input) {
+		if(TRACE_INIT == null || !traced(input.name)) {
+			return;
+		}
+		int traced = 0;
+		for(MethodNode method : input.methods) {
+			boolean initialiser = "<clinit>".equals(method.name);
+			if(initialiser || callsOptiFineConfig(method)) {
+				injectTrace(method);
+				traced++;
+			}
+		}
+		if(traced > 0) {
+			LOGGER.info("Tracing " + traced + " method(s) of " + input.name.replace('/', '.')
+					+ " that run during startup or call OptiFine's Config");
+		}
+	}
+
+	private static boolean traced(String internalName) {
+		for(String candidate : TRACE_INIT.split(",")) {
+			// "*" traces every class this transformer delivers that calls Config, which is how the 1.20.4
+			// question was answered after naming classes produced no trace: guessing which of the delivered
+			// classes reaches Config first is what the trace is for.
+			if("*".equals(candidate.trim()) || candidate.trim().equals(internalName)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Whether this method contains a call to {@code net/optifine/Config}. */
+	private static boolean callsOptiFineConfig(MethodNode method) {
+		if(method.instructions == null) {
+			return false;
+		}
+		for(AbstractInsnNode instruction : method.instructions) {
+			if(instruction instanceof MethodInsnNode call && call.owner.startsWith("net/optifine/Config")) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static void injectTrace(MethodNode method) {
+		InsnList trace = new InsnList();
+		trace.add(new TypeInsnNode(Opcodes.NEW, "java/lang/Throwable"));
+		trace.add(new InsnNode(Opcodes.DUP));
+		trace.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/Throwable", "<init>", "()V", false));
+		trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Throwable", "printStackTrace", "()V", false));
+		method.instructions.insert(trace);
 	}
 
 	/**
