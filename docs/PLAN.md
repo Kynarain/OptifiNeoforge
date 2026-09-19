@@ -264,3 +264,24 @@ eoforge.mods.toml、那个成品类——
 也就是说:jar 本身没问题、locator 没问题、元数据没问题、类也没问题,**唯一让 FML 10 关闭自己的就是"处理器真的去装类"这一步**。
 剩下要查的就只有 OptifinePayloadClassProcessor 的安装实现与 FML 10 扫描/持有 jar 的方式之间的相互作用
 (它自己去读同一个 jar 的那段代码是最可疑的地方,之前那条 zip file closed 也指向这里)。
+### 1.21.9 这一轮收口(下一步的实验已经指名)
+
+已经站住的部分:
+
+- **启动方式** ✔:launch-fml10.ps1(rig),无 mod 对照 VERDICT: STARTED;
+- **载荷投递** ✔:载荷 jar 被 FML 10 发现,locator 服务、
+eoforge.mods.toml、srg/** 成品类都按设计工作
+  (OptiFine payload: 517 finished game classes → 逐条 installed ...);
+- **唯一卡点** ✗:只要那条 ClassProcessor 服务文件在,处理器一开始装类,FML 10 就 Closing FML Loader
+  (无异常、stderr 0;把服务文件去掉则一切正常跑 Setting user —— 这一步已经把范围钉死了)。
+
+下一轮该做的实验(按代价排序):
+
+1. **把服务文件留着,但让 	argets() 返回空集**:这样能区分"FML 10 不喜欢**有处理器注册**"和
+   "FML 10 不喜欢**处理器真的装类**"这两件事 —— 本文件里 	argets() 的形状很直白(遍历 payload().keySet()
+   造 Target),改一行就能试;
+2. 若上一步证明是"装类"本身,RU 可疑处是 	ransform 里把成品 ClassNode 覆盖到 
+ode 上的那段
+   (FML 10 的扫描线程可能正在读同一批 jar),再逐层缩小;
+3. 另一条互不排斥的路:不注册处理器,改用**事先把成品类覆盖进游戏 jar**(rig 层面做完),让这条线像 1.20.x/1.21.x
+   那样"不改类也能跑",代价是失去了运行期换装。
