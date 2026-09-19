@@ -3750,15 +3750,32 @@ SRG 名随之消失。下一步因此收敛成两件互相独立的事:(a) 把 1
 
 也就是说:**换装与成员恢复都成功返回了**,崩溃发生在"这个被换装的类第一次被游戏使用/初始化"的时候。
 
-### 五、尚未验证的假设(下一步要证或证伪的那一条)
+### 五、把位置夹到"谁在构造期初始化了 OptiFine 的着色器类"(并且更正了上一版的一个错判)
 
-成员恢复里那行 `Initialised N restored static fields in X` 说明恢复**会写静态字段**,而写静态字段会让 JVM 先跑
-`X.<clinit>`。若 OptiFine 打过补丁的 `AbstractTexture` 的静态初始化里会碰到 OptiFine 自己的 `Shaders`,就会正好
-产生我们看到的那个 `NullPointerException`(读 `Minecraft.getInstance().gameDirectory`,而此时我们还在
-`Minecraft` 的构造过程里)—— **上游 OptiFine 不会这么早初始化 `Shaders`**,这一点是我们这条流程独有的次序差异。
-要证的顺序很清楚:(a) 用 `javap -c -p` 看载荷里那份 `AbstractTexture` 的 `<clinit>` 到底碰了谁;
-(b) 若确实是"写静态字段触发过早初始化",就得让静态恢复**不触发类初始化**(反射写静态字段一定会触发,需要用
-`Unsafe`/`VarHandle` 那条路),或把静态恢复推迟到该类第一次被真正使用时。
+用 `-Xlog:class+init=info` 再跑一次,崩溃前**最后初始化的类**是这一串(4.714–4.716 秒,紧随 `AbstractTexture`
+换装之后):
+
+```
+net/optifine/shaders/ProgramStage
+net/optifine/shaders/Program
+net/optifine/shaders/ProgramStack
+net/optifine/shaders/config/Property
+net/optifine/shaders/config/PropertyDefaultTrueFalse
+```
+
+也就是说,**在 `Minecraft` 的构造过程里,OptiFine 的着色器机制就已经被初始化了**,而 `Shaders.<clinit>`(它去读
+`Minecraft.getInstance().gameDirectory`)在那时必然是 null —— 所以那个 NPE **很可能就是原始异常本身**,不只是崩溃
+报告路径上的次生错误(时间也吻合:类初始化在 4.71 秒,崩溃报告相关的异常在 5.04 秒之后)。
+
+**更正上一版的一个错判**:我先前写"成员恢复会写静态字段、从而强制 `X.<clinit>`"—— 读代码后**不成立**。1.20.x 的
+`MemberRestoreTransformer` 并不在运行期写静态字段,它是把 donor 的静态初始化**内联进被换装类的 `<clinit>`**
+(源码里那条注释写着"value is inlined into the class's own static initialiser rather than called through a separate
+method");日志里的 `Initialised N restored static fields in X` 只是**换装期**打的字,不代表运行期提前初始化了 X。
+
+所以下一步的问题变得很具体:**上游 OptiFine 是靠什么保证 `Shaders` 不在构造期被初始化,而我们这条流程为什么提前碰到了它** ——
+候选是"被换装的某个类在构造期就调到了 `net/optifine/Config`"(载荷里 `AbstractTexture` 的字节码里确实有
+`net/optifine/Config.getMipmapType()`),而 `Config.<clinit>` 会不会链到着色器类,是下一步要用
+`-Xlog:class+init=debug`(带初始化上下文)或直接 `javap -c` 看 `Config` 的 `<clinit>` 来定的。
 
 ### 六、边界
 
