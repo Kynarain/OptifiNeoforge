@@ -19,6 +19,7 @@ import java.util.Set;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
@@ -442,7 +443,7 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		// Giving the runtime's overlay that one method keeps both halves working.
 		stubMissing(input);
 		if(SKIP_PAYLOAD) {
-			return input;
+			return finish(input);
 		}
 		if(KEEP_RUNTIME_CLASSES.contains(input.name)) {
 			// The whole class stays the runtime's, which is the only form of the keep plan that can express
@@ -455,18 +456,18 @@ public final class PatchedClassTransformer implements NodeTransformer {
 			// crash report that triggered it is being written, so the report never appears.
 			LOGGER.info("Kept the runtime's whole " + input.name.replace('/', '.')
 					+ " instead of OptiFine's patched copy");
-			return input;
+			return finish(input);
 		}
 		ClassNode patched;
 		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(PREFIX + input.name + ".class")) {
 			if(stream == null) {
-				return input;
+				return finish(input);
 			}
 			patched = new ClassNode();
 			new ClassReader(stream.readAllBytes()).accept(patched, 0);
 		} catch(IOException e) {
 			LOGGER.warn("could not read the patched " + input.name + ": " + e);
-			return input;
+			return finish(input);
 		}
 
 		// A payload class is only a patch of this one if it really is the same class, and the superclass
@@ -550,7 +551,7 @@ public final class PatchedClassTransformer implements NodeTransformer {
 			LOGGER.info("Left " + patched.name.replace('/', '.') + " alone: the runtime adds members to that "
 					+ "interface, and installing OptiFine's copy would replace the static initialiser that "
 					+ "fills them");
-			return input;
+			return finish(input);
 		}
 
 		// Content in place rather than returning OptiFine's node: the transformers after this one in
@@ -659,7 +660,35 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		traceCrash(input);
 		LOGGER.info("Replaced " + input.name.replace('/', '.') + " with OptiFine's patched version ("
 				+ fields.size() + " fields, " + methods.size() + " methods)");
-		return input;
+		return finish(input);
+	}
+
+	/**
+	 * {@code -Doptifineoforge.dump=<dir>} writes every class this transformer delivers, after all of its
+	 * passes, into that directory as {@code <internal name>.class}.
+	 *
+	 * <p>It answers questions about the bytes that are actually delivered rather than about the jar they came
+	 * from. Measured on 1.20.4: net.minecraft.client.renderer.texture.atlas.SpriteResourceLoader declares
+	 * {@code public static create(Collection)} in the runtime interface <em>and</em> in the payload, the
+	 * caller is delivered with an InterfaceMethodref to exactly that descriptor, and the game still fails to
+	 * resolve it - so the delivered class has to be read back.</p>
+	 */
+	private static final String DUMP_DIR = System.getProperty("optifineoforge.dump");
+
+	private static ClassNode finish(ClassNode node) {
+		if(DUMP_DIR == null) {
+			return node;
+		}
+		try {
+			java.nio.file.Path target = java.nio.file.Path.of(DUMP_DIR, node.name + ".class");
+			java.nio.file.Files.createDirectories(target.getParent());
+			ClassWriter writer = new ClassWriter(0);
+			node.accept(writer);
+			java.nio.file.Files.write(target, writer.toByteArray());
+		} catch(Exception e) {
+			LOGGER.warn("could not dump " + node.name + ": " + e);
+		}
+		return node;
 	}
 
 	/**

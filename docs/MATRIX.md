@@ -3919,7 +3919,47 @@ java.lang.RuntimeException: java.lang.IncompatibleClassChangeError:
 下一步要做的诊断很具体:**把换装/恢复之后的最终类 dump 出来看**(这一分支还没有 dump 开关,1.21.x 有),确认接口上的 `create` 是否被成员恢复或访问计划改写掉;
 第二个候选是解析发生在另一个模块/另一份副本上。这一步没做完,所以 1.20.4 仍停在 1 份崩溃报告上。
 
-### 十五、边界
+### 十六、根因锁定:交付出去的那份接口带的是 **SRG 名**(dump 开关量到的)
+
+本轮给 1.20.x 的 loader 加了 `-Doptifineoforge.dump=<dir>`(把**所有经过全部处理之后**真正交付的类写出来),
+它一把就把上一轮那个"两个签名都在却 `NoSuchMethodError`"解开了。对 `SpriteResourceLoader` 的 dump 是:
+
+```
+public interface net.minecraft.client.renderer.texture.atlas.SpriteResourceLoader {
+  public static final org.slf4j.Logger f_260482_;              <- SRG 名
+  public static ... m_292996_(java.util.Collection<...>)       <- SRG 名(这就是 create)
+  public abstract ... m_294584_(ResourceLocation, Resource)    <- SRG 名(这就是 loadSprite)
+  private static ... lambda$create$0(Collection, ResourceLocation, Resource)
+  static {};
+}
+```
+
+而**磁盘上每一份**都写的是官方名(逐个 `javap` 对照):
+
+| 来源 | 成员名 |
+|---|---|
+| `client-1.20.4-…-srg.jar` | `LOGGER` / `create` / `loadSprite`(官方名) |
+| `neoforge-20.4.251-client.jar` | `LOGGER` / `create` / `loadSprite` + NeoForge 加的 `loadSprite(…, SpriteContentsConstructor)` |
+| 我们自己组的 `runtime-1.20.4.jar` | 同上 |
+
+也就是说:**运行期实际定义的那份接口被人换成了 SRG 名版本**,而调用方(我们交付的、已改名成官方名的 `SpriteLoader`)
+按官方名去解析 ⇒ `NoSuchMethodError` ✔。我们的 loader 日志显示它**故意没换装**这个类
+(接口 + 运行时给它加了成员),所以这个 SRG 名版本不是我们投递的 —— 它来自**装载期**:OptiFine 自己的 transformer 会按
+`patch/srg/**` 在加载时重新打补丁,而那份补丁里的名字就是 SRG(1.21 线记录过的同一个现象)。1.21 用
+**装载期改名**(`SrgNameTable` + `-Doptifineoforge.renameSrg`,默认开)压住它,而**这一分支没有这一档**。
+
+顺带把一个候选修法否掉了:**把重打包 jar 里的 `patch/**` 全部删掉**(保留 1620 条其它条目)之后启动,`[OptiFine]` 行数从
+74 **掉回 60** —— 说明 OptiFine 装载期补丁本身是**有用的**(去掉它反而更差),所以要修的是**名字**,不是"禁止它打补丁"。
+
+**下一步**:把 1.21.x 的**装载期改名**这一档移植到 1.20.x(或者退一步:对我们明确知道会以 SRG 名出现的类,在装载期把名字改回来)。
+这是 1.20.4 现在唯一的阻塞。
+
+### 十七、边界
+
+- **1.20.6 仍是本分支唯一实测通过的版本**;1.20.4 推进到 `Setting user` ✓、74 行 `[OptiFine]`、stderr 0 字节,
+  仍有 1 份崩溃报告,根因本轮已锁定(交付出去的接口带 SRG 名,缺少装载期改名这一档);1.20.1 / 1.20.2 未跑。
+- 本轮新增的调试开关 `-Doptifineoforge.dump=<dir>` 是通用的,不参与任何线的验收判据。
+
 
 - **1.20.6 仍是本分支唯一实测通过的版本**;1.20.4 本轮推进到 `Setting user` ✓、74 行 `[OptiFine]`、stderr 0 字节,
   仍有 1 份崩溃报告(下一条已精确定位到 `SpriteResourceLoader`,细节见上节,根因未结);1.20.1 / 1.20.2 未跑。
