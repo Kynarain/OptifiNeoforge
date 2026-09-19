@@ -104,3 +104,23 @@ et/neoforged/neoforgespi/transformation/ClassProcessor.class ——
 - **仍然缺的**:① 按本文件上面的注释,这两个类要和 OptiFine 的类一起**打进载荷 jar**(rig 没有这一步);
   ② **1.21.9+ 的启动路径**(没有 ModLauncher,launch.ps1 那套 module path / --launchTarget 都不适用)。
   ②是这三条线唯一的大件,做完才能谈"实测"。
+### 再补充:FML 10 的启动路径侦察(实测到这里,尚未打通)
+
+装好 NeoForge **21.9.16-beta** 之后看了它自己的 profile,量到:
+
+- mainClass 是 **
+et.neoforged.fml.startup.Client**(不是 cpw.mods.bootstraplauncher.BootstrapLauncher),
+  **没有 ModLauncher**,也**没有** --launchTarget / module path —— 只有三个 --fml.* 参数
+  (
+eoForgeVersion / mcVersion / 
+eoFormVersion),其余按父 profile(1.21.9.json)的常规游戏参数给。
+- 按这条路径手工拼 classpath 起了一次**无 mod 的对照**:
+  进程**能起来并活着超过 90 秒**,也写出了 logs/latest.log ✔ —— 但 FML 自己的后台扫描报
+  java.lang.IllegalStateException: zip file closed(BackgroundScanHandler → CompositeJarContents.visitContent
+  → Scanner.scan),即"扫描某个 jar 时它已经被关掉"。也就是说**手工拼的 classpath 不足以让 FML 10 接管这些 jar**,
+  官方启动器显然是按另一种方式把 jar 交给它的。
+- 顺带澄清一个假警报:按 profile 解析 classpath 时会看到 30 个"缺失"的 jar,但那**全是别的平台的 natives**
+  (linux / macos ✗),rig 的 etch-libraries.ps1 本来就按规则跳过它们,Windows 上不需要。
+
+**结论**:1.21.9+ 的三条线要能实测,还差"按 FML 10 期望的方式准备并启动"这件事 —— 本轮没打通,
+所以 1.21.9 / 1.21.10 / 1.21.11 仍然是**未实测**。
