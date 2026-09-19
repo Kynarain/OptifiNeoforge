@@ -24,9 +24,12 @@
 > `Setting user`、0 崩溃报告与 **stderr 0 字节**都与上表**逐字一致**,但 `[OptiFine]` 行数是 **231 而不是 222**:
 > 差 9 行,两次独立运行都是 231。同一台机器上 1.21 / 1.21.1 也是 +9、1.21.6 / 1.21.7 / 1.21.8 是 +7,而
 > 1.21.3 / 1.21.4 与记录完全相等 —— 记录里的 `latest.log` 不在仓库里,所以多出来的是哪几行无法从这边归因。
-> **1.20.4 在本机没有通过**:装配走通,启动死在载荷的 SRG 引用没改名
-> (`NoSuchMethodError: ... Component.m_237115_(java.lang.String)`),下一步是取到 1.20.4 的 `joined.tsrg` 后先跑
-> `SrgRemap`。命令、数字与边界都在 `docs/MATRIX.md` 的 2026-09-19 一节。
+> **1.20.4 在本机没有通过**:装配走通、载荷的 SRG→官方名改名也做完了(从 Forge maven 取 MCPConfig
+> `1.20.4-20231207.112700` 的 `joined.tsrg`,再用 rig 的 `proguard-to-tsrg.ps1` 造 obf→official 表),原先那条
+> `NoSuchMethodError: Component.m_237115_(java.lang.String)` 随之消失,但载入阶段停在
+> `IncompatibleClassChangeError: AbstractClientPlayer overrides final method Entity.getY()`(`javap` 已确认:override
+> 是 OptiFine 自己补丁带的,而运行时那份 `Entity.getY()` 是 final)。命令、数字与边界都在 `docs/MATRIX.md` 的
+> 2026-09-19 一节。
 
 - mod id `optifineoforge`,仅客户端。
 - **一个 jar 只对应一个 MC 版本**:这条线跨了四个版本,NeoForge 坐标、Java 版本与运行期命名空间在每个版本上都不同,不能混用,也不能拿别的线的 jar 顶替。

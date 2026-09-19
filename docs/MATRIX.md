@@ -3706,11 +3706,27 @@ NeoForge `20.4.251`(ModLauncher 10、Java 17)+ `OptiFine_1.20.4_HD_U_I7.jar`:装
 java.lang.NoSuchMethodError: 'net.minecraft.network.chat.MutableComponent net.minecraft.network.chat.Component.m_237115_(java.lang.String)'
 ```
 
-这是**载荷里的 SRG 引用没改名**的典型形态(第二节量到的 7.4% 就是它)。修法与本文档记的一致:交给 loader 之前先用
-`SrgRemap` 把 SRG 名改成官方名。本机缺的**不是**工具,而是 **1.20.4 的 `joined.tsrg`**(MCPConfig 的 `mcp_config`
-缓存里只有 1.21.x 各版本,1.20.4 没有),而 `SrgMemberMap.build` 要的正是它 + NeoForm 的 merged 表;后者可以用 rig 里
-已有的 `proguard-to-tsrg.ps1` 从 `minecraft_1.20.4_client_mappings.txt` 生成,前者要另外取。**这就是 1.20.4 的下一
-步**,不是猜的。
+这是**载荷里的 SRG 引用没改名**的典型形态(第二节量到的 7.4% 就是它)。
+
+**随后就把这一步做了** —— 这是本轮 1.20.4 的进展:从 Forge maven 取到 MCPConfig `1.20.4-20231207.112700`
+的 `joined.tsrg`(注意版本串**不是** NeoForm 的 `20240627.114801`,拿后者去下载是 404),用 rig 的
+`proguard-to-tsrg.ps1` 把 Mojang 的 `client-1.20.4-…-mappings.txt` 转成 obf→official 的 tsrg2(7787 类 /
+35 236 字段 / 68 037 方法),再对**载荷 jar 与重打包后的 OptiFine jar 各跑一次** `SrgRemap`:OptiFine 那侧改了
+3462 个方法名与 1400 个字段名、3 个无法解析;载荷那侧有 252 个字段与 137 个方法"表里没有对应项"、52 个"成员形状
+变了"。重新组装后启动,**上一条 `NoSuchMethodError` 消失**,载入阶段推进到下一处:
+
+```
+java.lang.IncompatibleClassChangeError: class net.minecraft.client.player.AbstractClientPlayer
+  overrides final method net.minecraft.world.entity.Entity.getY()D
+```
+
+用 `javap` 量到的三件事(全部在本机):载荷里的 `AbstractClientPlayer` **确实**声明了 `m_20185_()`(改名后即
+`getY()`),而且**未改名的载荷里就有** —— 所以那是 OptiFine 自己补丁带的方法,不是改名造的;OptiFine 的 jar 里
+**没有** `entity/Entity.class` 的补丁项、载荷里也没有这个类,所以 Entity 只能来自运行时;而 1.20.4 三个客户端变体
+里唯一带这个类的 `client-1.20.4-…-srg.jar` 中,`Entity.getY()` 是 **final**。也就是说,载荷给出的 override 与运行时
+的 final 声明在这份组装下不能共存。**下一步不是猜**:最干净的一次对照实验是同一个实例**只放未修改的 OptiFine
+jar**(1.20.4 上 FML 还接受它,1.20.6 起才拒绝),看同一个类定义错误是否照样出现 —— 若照样出现,差异就不在我们
+交付的载荷上,而在 OptiFine 自己那套换装里。
 
 ### 五、边界
 
