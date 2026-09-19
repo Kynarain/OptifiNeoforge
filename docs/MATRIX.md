@@ -4186,7 +4186,36 @@ java.lang.VerifyError: Bad <init> method call
    于是 id 永远是 0、查找永远返回 null ⇒ 保留**游戏侧原本的 `children.get(name)`** 就是修法(`keep-runtime-1.20.2.txt`
    里那一行成员级条目)。
 
-### 三十三、边界
+### 三十四、1.20.1 的前两处阻塞(已诊断,未通过)
+
+1.20.1 是这条线上唯一走 `net.neoforged:forge:1.20.1-47.1.106` 坐标的版本(Java 17、ModLauncher 10),
+本轮把工具链装上(安装器照样要 seed:第一轮 25 个坐标)、装配也走通了 —— 但启动有两处早失败,都已定位:
+
+1. **装配阶段的一个**line 分界 **被量了出来**:`SrgRemap` 直接**拒绝**改名并给出理由 ——
+   `refusing to rewrite: this runtime is SRG-named (49689 members match m_/f_), so the payload needs no rewriting on this line`。
+   也就是说 **1.20.1 的运行时本身还是 SRG 名**(Forge 时代),载荷也是 SRG ⇒ **这条线不需要改名**
+   (`add-line.ps1` 的 `-SrgMappings` 只适用于 1.20.2 及以后的 1.20.x)。装配本身因此很干净:
+   42355 条引用里只有 **3** 条缺失、`--stub` 补 0 个(3 条留给 loader)。
+2. **第一次启动死在模块解析**:`java.lang.module.ResolutionException: Modules OptifiNeoforge.mc1._20._1.registered and
+   net.minecraftforge.eventbus export package net.minecraftforge...` —— 我们在 loader jar 里塞了 **Forge API 桩**
+   (`ForgeApiShims` 产出的 `net/minecraftforge/**`),而 1.20.1 的 FML 自己就有真的 `net.minecraftforge.**`(它还导出了
+   同一个包)⇒ 拆掉 `-StubDir` 之后这一条消失 ✔。
+3. **第二次启动死在 OptiFine 自己的 jar 处理代码与 Forge 版本的错配**:
+   `NoSuchMethodError: 'void cpw.mods.jarhandling.impl.SimpleJarMetadata.<init>(String, String, Supplier, ...)'`
+   ← `optifine.OptiFineJar.<init>`(LAYER SERVICE/optifine)。也就是这份 OptiFine 1.20.1 构建所依赖的
+   **securejarhandler / fancymodloader 比 Forge `47.1.106` 自带的新**。下一步是换成 `47.2.x` 的安装器再试
+   (分支文档里也提过 47.2.x 带 `fancymodloader 47.2.2`),这是**未完成**的一项。
+
+### 三十五、边界
+
+- 实测通过:**1.20.6**、**1.20.4**、**1.20.2**(后两条标题界面由 `setScreen` 追踪确认)。
+- **1.20.1**:装配已过(3/42355 缺失引用),启动停在 OptiFine 与 Forge `47.1.106` 的 securejarhandler 错配,
+  下一步换 `47.2.x`;**未通过**。
+- 1.21 / 1.21.9 / 1.21.10 / 1.21.11 / 26.1.2 未跑。
+- rig 侧本轮改了三处:重打包用的 OptiFine jar 自动改名(1.20.2 起)、`prepare-line`/`add-line` 的
+  universal/client jar 路径改成跟随 `-InstallerArtifact`(1.20.1 的 `forge` 坐标)、以及 `-InstallOnly`。
+- **没有发布任何东西**;已发布的 jar 没有重建。
+
 
 - 本分支实测通过:**1.20.6**、**1.20.4**、**1.20.2**(后两条的标题界面由 `setScreen` 追踪直接测到)。
 - **1.20.1** 尚未尝试(它是这条线上唯一走 `net.neoforged:forge:1.20.1-47.1.106` 坐标、Java 17、ModLauncher 10 的版本,
