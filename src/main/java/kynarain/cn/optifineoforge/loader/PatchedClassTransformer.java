@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.LinkedHashMap;
@@ -653,11 +654,81 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		input.methods = methods;
 		keepRuntimeBodies(input, originalMethods);
 		dropMembers(input);
+		applyAccessPlan(input);
 		traceInit(input);
 		traceCrash(input);
 		LOGGER.info("Replaced " + input.name.replace('/', '.') + " with OptiFine's patched version ("
 				+ fields.size() + " fields, " + methods.size() + " methods)");
 		return input;
+	}
+
+	/**
+	 * Members this runtime widened and the payload did not, from {@code optifineoforge/runtime-access.txt} as
+	 * {@code owner<TAB>name<TAB>desc<TAB>access}.
+	 *
+	 * <p>NeoForge widens members with its own access transformer at load time, so those widenings are in no
+	 * jar the offline tools can see; PayloadDrift reads them out of {@code META-INF/accesstransformer.cfg} and
+	 * the build embeds the result. Measured on 1.20.4 without it:
+	 * {@code IllegalAccessError: class net.neoforged.neoforge.client.NeoForgeRenderTypes$Internal tried to
+	 * access method 'net.minecraft.client.renderer.RenderType$...'} during ClientHooks.initClientHooks, from
+	 * inside Minecraft's constructor - the same failure the 1.21 line hit with RenderType.create.</p>
+	 */
+	private static final String RUNTIME_ACCESS = "/optifineoforge/runtime-access.txt";
+
+	/** {@code owner|name|desc} to the wider access word. */
+	private static final Map<String, Integer> ACCESS_PLAN = loadAccessPlan();
+
+	private static Map<String, Integer> loadAccessPlan() {
+		Map<String, Integer> result = new HashMap<>();
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(RUNTIME_ACCESS)) {
+			if(stream == null) {
+				return Map.of();
+			}
+			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+				String[] parts = line.split("\t");
+				if(parts.length == 4) {
+					try {
+						result.put(parts[0] + "|" + parts[1] + "|" + parts[2], Integer.decode(parts[3].trim()));
+					} catch(NumberFormatException e) {
+						LOGGER.warn("unreadable access in " + RUNTIME_ACCESS + ": " + line);
+					}
+				}
+			}
+		} catch(IOException e) {
+			LOGGER.warn("could not read " + RUNTIME_ACCESS + ": " + e);
+		}
+		if(!result.isEmpty()) {
+			LOGGER.info("Access plan: " + result.size() + " member(s) the runtime widened");
+		}
+		return Map.copyOf(result);
+	}
+
+	/** Widen the delivered members the plan names, by the same wider-of-two rule the swap itself uses. */
+	private static void applyAccessPlan(ClassNode input) {
+		if(ACCESS_PLAN.isEmpty()) {
+			return;
+		}
+		int applied = 0;
+		for(MethodNode method : input.methods) {
+			Integer wanted = ACCESS_PLAN.get(input.name + "|" + method.name + "|" + method.desc);
+			if(wanted != null) {
+				int narrowed = method.access;
+				method.access = wider(method.access, wanted);
+				applied += method.access == narrowed ? 0 : 1;
+			}
+		}
+		for(FieldNode field : input.fields) {
+			Integer wanted = ACCESS_PLAN.get(input.name + "|" + field.name + "|" + field.desc);
+			if(wanted != null) {
+				int narrowed = field.access;
+				field.access = wider(field.access, wanted);
+				applied += field.access == narrowed ? 0 : 1;
+			}
+		}
+		if(applied > 0) {
+			LOGGER.info("Widened " + applied + " member(s) of " + input.name.replace('/', '.')
+					+ " to the runtime's access");
+		}
 	}
 
 	/** Prints the throwable a crash report is built from, at the moment it is built. */

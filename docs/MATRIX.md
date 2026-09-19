@@ -3876,7 +3876,38 @@ java.lang.RuntimeException: java.lang.IncompatibleClassChangeError:
 (日志 `Kept the runtime's whole com.mojang.blaze3d.platform.GlDebug ...`),但它**没有**改变崩溃 —— 因为真正的阻塞在别处(见上)。
 
 
-### 十一、边界
+### 十二、1.20.4 的重大进展:装配顺序错了(已修),并把"访问计划"移植进 loader
+
+本轮把 1.20.4 从"启动即崩、只有 0–10 行 `[OptiFine]`"推到 **`Setting user` ✓、74 行 `[OptiFine]`、stderr 0 字节**,
+并且**第一次拿到了可读的崩溃报告**。两处根因都在我们自己这边,都已修并实测:
+
+1. **装配顺序**:`SrgRemap`(SRG→官方名)必须在**任何计划生成之前**跑,而且要同时作用于**载荷 jar 与重打包用的 OptiFine jar**。
+   先前顺序是"先 `MissingTargets --stub`、后改名",于是 SRG 载荷对着官方名运行时报出 **3178/43162 条引用缺失**,
+   `--stub` 往载荷自己的类上补了 **228 个**假成员(其中 `BlockState.codec` 用实例方法盖住了继承来的 static 方法,
+   就是上一轮那条 `IncompatibleClassChangeError`)。改成"先改名"之后:缺失引用 **63/43162**、stub **46 个** ✔。
+   另外重打包用的 OptiFine jar 也必须先改名(实测:未改名时 `srg/net/optifine/CrashReporter.class` 里还留着 SRG 名,
+   启动直接 `NoSuchMethodError: CrashReport.m_127524_()`)。
+   这两步已经写进 rig 的 `prepare-line.ps1`(新增 `-SrgMappings` / `-ObfOfficial`)与 `add-line.ps1`(透传)。
+2. **访问计划在 1.20.x 的 loader 里根本没被读**:`build-jars` 一直把 `runtime-access.txt` 嵌进 jar,但这个分支
+   `PatchedClassTransformer` 的资源常量里没有它 —— 于是 NeoForge 自己放宽过的成员在交付出去的类上仍然是窄的,
+   启动死在 `IllegalAccessError: NeoForgeRenderTypes$Internal tried to access method 'RenderType$...'`。
+   本轮把这一档补上了(`RUNTIME_ACCESS` 资源常量 + `applyAccessPlan`,用与换装同一套"取更宽可见性"的规则),
+   实测启动从 60 行推进到 **74 行**、该 `IllegalAccessError` 消失。
+
+**现在停在下一处(已定位)**:`NoSuchMethodError` 指向 `SpriteResourceLoader.create(...)`。逐个 `javap` 对照后看到:
+两个版本的 `create(Collection)` 都在,但 **私有 lambda 的形状不同** —— 运行时那份是
+`lambda$create$0(Collection, ResourceLocation, Resource, SpriteContentsConstructor)`(NeoForge 多一个参数),
+载荷那份是 vanilla 的三参数版本。也就是说"调用方要的签名只有载荷有"这一类问题在 1.20.x 上也存在 ——
+1.21 那条线是用**把载荷的成员补到交付出去的类上**(`addPayloadMembers` 那一档)解决的,而这一分支**还没有**这一档。
+
+**下一步**:把"把载荷成员补进交付类"这一档移植到 1.20.x(或先查清 `SpriteResourceLoader` 到底有没有被换装、为什么换装后两个签名不共存),
+再跑 1.20.4。这已经是**最后几处之一**:判据里 `Setting user` 已经为真,缺的是 `Sound engine started` 与"0 崩溃报告"。
+
+### 十三、边界
+
+- **1.20.6 仍是本分支唯一实测通过的版本**;1.20.4 本轮推进到 `Setting user` ✓、74 行 `[OptiFine]`、stderr 0 字节,
+  仍有 1 份崩溃报告(下一条已定位为 `SpriteResourceLoader.create` 的签名问题);1.20.1 / 1.20.2 未跑。
+
 
 - **1.20.6 仍然是本分支唯一实测通过的版本**;1.20.4 的阻塞本轮**定位到我们自己的流水线**(stub 阶段给载荷自己的类补了
   一个非 static 成员),修法明确但**尚未修**,所以 1.20.4 仍未通过;1.20.1 / 1.20.2 未跑。
