@@ -124,3 +124,22 @@ eoFormVersion),其余按父 profile(1.21.9.json)的常规游戏参数给。
 
 **结论**:1.21.9+ 的三条线要能实测,还差"按 FML 10 期望的方式准备并启动"这件事 —— 本轮没打通,
 所以 1.21.9 / 1.21.10 / 1.21.11 仍然是**未实测**。
+### FML 10 侦察的第三批实测:它其实走得很远,然后在 0.8 秒内自己关掉
+
+把启动参数补全(--gameDir/--assetsDir/--assetIndex/--username 等,只留 libraries 在 classpath 上,不再把 client jar
+塞进去)之后,FML 10 的日志显示:
+
+- Starting FancyModLoader version 10.0.14 (CLIENT in PROD) ✔
+- Loading ImmediateWindowProvider fmlearlywindow + **GL info: AMD Radeon RX 7800 XT GL version 3.3.0 Core**
+  —— 也就是说**它真的开了早期窗口并拿到了 GL 信息** ✔
+- Mod List: Minecraft 1.21.9 (minecraft) / NeoForge 21.9.16-beta (neoforge) ✔
+- Building game content classloader: minecraft (composite(jar(client-1.21.9-...-srg.jar))) ... ✔
+- **紧接着一行就是 Closing FML Loader** —— 从启动到关闭只有约 **0.8 秒**,而且之前**没有任何 ERROR**;
+  那条 An error occurred scanning file ...client-1.21.9-...-srg.jar(zip file closed)是**关闭之后**才出现的,
+  也就是**结果而不是原因**。
+
+顺带否掉一个我先前的猜测:"client jar 也在 classpath 上"导致冲突 —— 去掉之后(只留 libraries)**现象完全一样** ✗。
+
+**下一步**(记录在这里,便于接着做):用 -Xlog:exceptions=trace 把主线程那个"安静退出"的原因抓出来
+(这个手法在本会话里已经用成功过一次:1.20.4 的原始异常就是这么挖出来的),或者对照 NeoForge 官方启动器
+在 profile 之外还做了什么。
