@@ -3836,12 +3836,52 @@ getfield      net/minecraft/client/Minecraft.gameDirectory
 **结论**:要再往前推,只能**离线**在载荷 jar 里给 `srg/net/optifine/Config.class` 插桩(需要一个小 ASM 工具,
 把栈打到 `System.err`/游戏日志),或者换一条线。这两条都记在下面的"下一步"里。
 
-### 九、边界
+### 十、原始崩溃终于看到了 —— 而且是我们自己流水线造成的(1.20.4 的关键发现)
 
-- **1.20.6 仍然是本分支唯一实测通过的版本**;1.20.4 修好了类定义、走得更远,当前阻塞是"构造期过早初始化 OptiFine 的
-  `Config`/`Shaders`",范围已缩到"触发者不是任何被交付的游戏类";1.20.1 / 1.20.2 未跑。
-- 本轮新增的 loader 能力是**通用**的(任何线都能用 `drop-members.txt`),但**只有 1.20.4 实测用过它**;
-  `-Doptifineoforge.skipPayload=true` 是调试开关,不参与任何线的验收判据。
+前面那些 `Config`/`Shaders` 的 NPE **全都发生在崩溃报告里**(追踪栈显示它们的调用者是
+`Minecraft.fillSystemReport → SystemReport.setDetail → GlDebug.<clinit> → GlDebug.makeIgnoredErrors`,以及
+`CrashReporter.extendCrashReport`),所以它们只是**次生错误** —— 这也解释了为什么崩溃报告一直写不出来。为了绕开这条
+死循环,新加了两个调试开关:
+
+- `-Doptifineoforge.traceInit=<名>[,<名>|*]`:在被追踪类的 `<clinit>` 与其"调用/访问 `net/optifine/Config`"的方法开头
+  打印标记行与栈(**注意输出落在进程 stderr**,不是 `latest.log` —— 我先前按 `latest.log` 找,误判成"没有插桩点运行");
+- `-Doptifineoforge.traceCrash=true`:在 `CrashReport.forThrowable` 开头打印那个 throwable,绕开 OptiFine 的崩溃回调。
+
+`traceCrash` 一把就把**原始异常**拿了出来:
+
+```
+java.lang.RuntimeException: java.lang.IncompatibleClassChangeError:
+  Expected static method 'com.mojang.serialization.Codec
+  net.minecraft.world.level.block.state.BlockState.codec(com.mojang.serialization.Codec, java.util.function.Function)'
+  at net.minecraft.world.level.block.state.BlockState.<clinit>(BlockState.java:19)
+  ... Blocks.<clinit> → FireBlock.bootStrap → Bootstrap.bootStrap → Main.main:157
+```
+
+**根因也量出来了,而且在我们这一侧**(逐阶段 `javap` 对照):
+
+| 阶段 | `BlockState` 里的相关成员 |
+|---|---|
+| OptiFine 补丁输出(`optifine-patched.jar`) | 只有字段 `f_61039_`,**没有** `m_61127_` |
+| 我们的 `MissingTargets --stub` 之后(`optifine-patched-stubbed.jar`) | 多出一个 **`public`(非 static)** `Codec m_61127_(Codec, Function)` |
+| 改名后交给 loader 的那一份 | `CODEC` 字段 + **非 static** 的 `codec(Codec, Function)` |
+
+也就是说:**`MissingTargets --stub` 给一个"载荷自己的类"补了一个成员,而且补成了实例方法**,而该类自己的 `<clinit>`
+是用 `invokestatic` 调它的 ⇒ `IncompatibleClassChangeError: Expected static method` ✔。这正是从第一轮起就挡住 1.20.4
+的那次崩溃。
+
+**下一步(明确)**:让 stub 阶段不要给载荷自己的类补成员(或至少保留 `static` 标志),再重跑装配与启动。这条修好之后,
+1.20.4 才有继续往前的可能。
+
+顺带记下本轮另一个新能力:**整类保留运行时版本**(`keep-runtime.txt` 的 `owner<TAB>*` 形式)已实现并在 1.20.4 上实测生效
+(日志 `Kept the runtime's whole com.mojang.blaze3d.platform.GlDebug ...`),但它**没有**改变崩溃 —— 因为真正的阻塞在别处(见上)。
+
+
+### 十一、边界
+
+- **1.20.6 仍然是本分支唯一实测通过的版本**;1.20.4 的阻塞本轮**定位到我们自己的流水线**(stub 阶段给载荷自己的类补了
+  一个非 static 成员),修法明确但**尚未修**,所以 1.20.4 仍未通过;1.20.1 / 1.20.2 未跑。
+- 本轮新增的 loader 能力是**通用**的(任何线都能用 `drop-members.txt`、`keep-runtime.txt` 的整类形式、`traceInit` /
+  `traceCrash` 两个调试开关),但**只有 1.20.4 实测用过它们**。
 - **没有发布任何东西**;已发布的 jar 没有重建。
 
 ## 2026-09-19(晚间):在本机重建的 rig 上跑 1.20.6(实测与记录的差异),以及 1.20.4 的实测阻塞

@@ -27,6 +27,8 @@ import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.FieldNode;
+import org.objectweb.asm.tree.LdcInsnNode;
+import org.objectweb.asm.tree.VarInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 
@@ -415,6 +417,19 @@ public final class PatchedClassTransformer implements NodeTransformer {
 	 */
 	private static final String TRACE_INIT = System.getProperty("optifineoforge.traceInit");
 
+	/**
+	 * {@code -Doptifineoforge.traceCrash=true} prints the throwable that starts a crash report, before
+	 * anything else touches it. It exists because on 1.20.4 the report never materialises: OptiFine's own
+	 * crash callback (CrashReporter.extendCrashReport) reaches net.optifine.shaders.Shaders, whose
+	 * {@code <clinit>} reads {@code Minecraft.getInstance().gameDirectory} - null for a crash during
+	 * startup - so the report dies and the original throwable is never printed anywhere. Injecting a
+	 * {@code printStackTrace()} into {@code CrashReport.forThrowable} recovers it, since every crash goes
+	 * through that factory.
+	 */
+	private static final boolean TRACE_CRASH = Boolean.getBoolean("optifineoforge.traceCrash");
+
+	private static final String CRASH_REPORT = "net/minecraft/CrashReport";
+
 	@Override
 	public ClassNode transform(ClassNode input) {
 		logModulesOnce();
@@ -426,6 +441,19 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		// Giving the runtime's overlay that one method keeps both halves working.
 		stubMissing(input);
 		if(SKIP_PAYLOAD) {
+			return input;
+		}
+		if(KEEP_RUNTIME_CLASSES.contains(input.name)) {
+			// The whole class stays the runtime's, which is the only form of the keep plan that can express
+			// "OptiFine's copy of this class must not be delivered at all". Needed for a class whose patched
+			// copy does something the runtime cannot survive, where keeping a member body or deleting a
+			// member is not enough because the offending code is the class's own static initialiser.
+			// Measured on 1.20.4: OptiFine's GlDebug.<clinit> calls its own makeIgnoredErrors, that method
+			// reads net.optifine/Config, Config's static initialiser pulls in net.optifine.shaders.Shaders,
+			// and Shaders.<clinit> reads Minecraft.getInstance().gameDirectory - which is null while the
+			// crash report that triggered it is being written, so the report never appears.
+			LOGGER.info("Kept the runtime's whole " + input.name.replace('/', '.')
+					+ " instead of OptiFine's patched copy");
 			return input;
 		}
 		ClassNode patched;
@@ -626,9 +654,28 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		keepRuntimeBodies(input, originalMethods);
 		dropMembers(input);
 		traceInit(input);
+		traceCrash(input);
 		LOGGER.info("Replaced " + input.name.replace('/', '.') + " with OptiFine's patched version ("
 				+ fields.size() + " fields, " + methods.size() + " methods)");
 		return input;
+	}
+
+	/** Prints the throwable a crash report is built from, at the moment it is built. */
+	private static void traceCrash(ClassNode input) {
+		if(!TRACE_CRASH || !CRASH_REPORT.equals(input.name)) {
+			return;
+		}
+		for(MethodNode method : input.methods) {
+			if(!"forThrowable".equals(method.name)
+					|| !"(Ljava/lang/Throwable;Ljava/lang/String;)Lnet/minecraft/CrashReport;".equals(method.desc)) {
+				continue;
+			}
+			InsnList trace = new InsnList();
+			trace.add(new VarInsnNode(Opcodes.ALOAD, 0));
+			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Throwable", "printStackTrace", "()V", false));
+			method.instructions.insert(trace);
+			LOGGER.info("Tracing the throwable behind every crash report");
+		}
 	}
 
 	/** Puts a stack trace in front of the traced class's initialiser and of its Config call sites. */
@@ -640,7 +687,7 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		for(MethodNode method : input.methods) {
 			boolean initialiser = "<clinit>".equals(method.name);
 			if(initialiser || callsOptiFineConfig(method)) {
-				injectTrace(method);
+				injectTrace(method, input.name);
 				traced++;
 			}
 		}
@@ -662,21 +709,34 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		return false;
 	}
 
-	/** Whether this method contains a call to {@code net/optifine/Config}. */
+	/** Whether this method touches {@code net/optifine/Config} - by a call or by a field access. */
 	private static boolean callsOptiFineConfig(MethodNode method) {
 		if(method.instructions == null) {
 			return false;
 		}
 		for(AbstractInsnNode instruction : method.instructions) {
+			// Both shapes matter, and the first version of this only looked at calls: measured on 1.20.4,
+			// tracing every delivered class that *calls* Config left the crash unexplained, and a static
+			// field of Config is just as good a way to initialise it.
 			if(instruction instanceof MethodInsnNode call && call.owner.startsWith("net/optifine/Config")) {
+				return true;
+			}
+			if(instruction instanceof FieldInsnNode field && field.owner.startsWith("net/optifine/Config")) {
 				return true;
 			}
 		}
 		return false;
 	}
 
-	private static void injectTrace(MethodNode method) {
+	private static void injectTrace(MethodNode method, String owner) {
 		InsnList trace = new InsnList();
+		// A plain line first: the first version of this injected only printStackTrace, and its absence could
+		// have meant either "the site never ran" or "stderr is not where this ends up". The line settles
+		// which of the two it is.
+		trace.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "err", "Ljava/io/PrintStream;"));
+		trace.add(new LdcInsnNode("OPF-TRACE " + owner.replace('/', '.') + "." + method.name));
+		trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println",
+				"(Ljava/lang/String;)V", false));
 		trace.add(new TypeInsnNode(Opcodes.NEW, "java/lang/Throwable"));
 		trace.add(new InsnNode(Opcodes.DUP));
 		trace.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/Throwable", "<init>", "()V", false));
@@ -728,6 +788,30 @@ public final class PatchedClassTransformer implements NodeTransformer {
 
 	/** {@code owner|name|desc} for each member that keeps the game's body. */
 	private static final Set<String> KEEP_RUNTIME_MEMBERS = loadKeepRuntime();
+
+	/** Owners whose whole class stays the runtime's, from the {@code owner<TAB>*} form of the same file. */
+	private static final Set<String> KEEP_RUNTIME_CLASSES = loadKeepRuntimeClasses();
+
+	private static Set<String> loadKeepRuntimeClasses() {
+		Set<String> result = new HashSet<>();
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(KEEP_RUNTIME)) {
+			if(stream == null) {
+				return Set.of();
+			}
+			for(String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+				String[] parts = line.split("\t");
+				if(parts.length == 2 && "*".equals(parts[1].trim())) {
+					result.add(parts[0].trim());
+				}
+			}
+		} catch(IOException e) {
+			LOGGER.warn("could not read " + KEEP_RUNTIME + " for whole-class keeps: " + e);
+		}
+		if(!result.isEmpty()) {
+			LOGGER.info("Classes keeping the runtime's whole version: " + result.size());
+		}
+		return Set.copyOf(result);
+	}
 
 	private static Set<String> loadKeepRuntime() {
 		Set<String> result = new HashSet<>();
