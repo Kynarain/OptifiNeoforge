@@ -959,3 +959,49 @@ NeoForge 的 `c`(与 ModLauncher 线上 `ConventionTags` 同一套规则),再委
 **下一步**:网络恢复后重跑 `add-line.ps1 -InstallOnly`(neoform zip 已就位,可能就能补齐三个客户端变体),
 再跑 `prepare-fml10-line.ps1 -Mc 1.21.10 -NeoForge 21.10.64 -OptifineJar <jar>`,最后按脚本末尾打印的命令启动。
 这个脚本里的每一步都是 1.21.9 上量过的同一条链,所以剩下的风险集中在"安装能不能补齐"这一件上。
+## 1.21.10 通过验收:同一套计划,零改动
+
+```
+===== VERDICT: STARTED =====
+  Setting user        : True
+  Sound engine started: True
+  new crash reports   : 0
+  stderr bytes        : 0
+  [OptiFine] lines    : 356
+```
+
+两次跑法逐项一致(`[OptiFine] OptiFine_1.21.10_HD_U_J7_pre11`、`OpenGL API ERROR` 0 行、标题界面标志
+`RealmsAvailability` 在跑、无崩溃报告、stderr 0 字节)。**这条线没有为它改一行处理器代码**:
+成员恢复、reparent 计划、keep-runtime、stub 计划、精灵集合修复、反射式 tag creator 全部原样生效,
+这正是把这些东西做成"计划驱动"的价值。
+
+### 这一轮为 1.21.10 解决的三件事
+
+1. **安装缺件换了一条路**。maven.neoforged.net 从这台机器上连不上,安装器始终报
+   `libraries: fetched 1, already present 1577, failed 1`,`libraries\net\minecraft\client\1.21.10-…` 的
+   slim/extra/srg 与 `neoforge-21.10.64-client.jar` 都拿不到。**ModDevGradle 自己的 NeoForm 运行时早就把
+   等价物算出来了**:
+   `~/.gradle/caches/neoformruntime/intermediate_results/compiledWithNeoForge_<hash>_output.jar`
+   —— 一个 jar 里同时有打补丁后的游戏类(`net/minecraft/**`)和 NeoForge 自己的类
+   (`net/neoforged/neoforge/**`),13323 个条目,是 "overlay + srg client" 的超集。
+   `prepare-fml10-line.ps1` 因此加了 `-RuntimeJar`:给它就跳过安装器那两个成品。同样地,
+   neoform zip 也从 Gradle 模块缓存补种进 `libraries\net\neoforged\neoform\1.21.10-20251010.172816\`。
+   **这是拿缓存里的等价产物替代缺失下载,记下来是因为它不是"官方安装"那条路。**
+2. **诊断入口点要跨 FML 版本**。FML 10.0.32(NeoForge 21.10.64)把 API 换了:
+   `startup(...)` 返回 `Entrypoint$StartupResult`(不再是 `FMLLoader`)、
+   `createMainMethodCallable(StartupResult, String)`、关闭走 `StartupResult.close()`。
+   按 10.0.14 编译的诊断类第一行就死:
+   `NoSuchMethodError: 'FMLLoader … .startup(String[], boolean, Dist, boolean)'`。
+   新的 `DiagnosticClientAny` **不引用任何 FML API**,全部用反射找方法,所以两条线共用一个类。
+3. **`-NoEarlyWindow` 同样适用**:开着早期加载画面时,1.21.10 死在与 1.21.9 一模一样的
+   `SimpleBufferBuilder "Already building"`(FML 早期画面与 OptiFine 的贴图工作抢 GL 状态)。
+   另外 `-NoEarlyWindow` 现在要求 `config\fml.toml` 已存在——第一次启动会写它,所以新线要先不带这个开关跑一次。
+
+### 1.21.11 的状态:缺一个装不了件
+
+OptiFine 正式版 jar 已在 rig 里(`OptiFine_1.21.11_HD_U_J9.jar`,8 045 116 字节),Gradle 模块缓存里也有
+`neoforge-21.11.45-universal.jar` / `-userdev.jar`,但**没有 `neoforge-21.11.45-installer.jar`**,
+而 `versions\neoforge-21.11.45\neoforge-21.11.45.json` 这个 profile(库清单与 JVM/游戏参数)只有安装器能生成;
+`maven.neoforged.net:443` 这一轮仍然连不上(25 秒超时)。所以 1.21.11 卡在**环境**上,不是代码上:
+网络恢复后跑 `add-line.ps1 -InstallOnly -Mc 1.21.11 -NeoForge 21.11.45 -MountPoint fml10`,
+再用 1.21.10 同样的 `-RuntimeJar` 路径(从 NeoForm 缓存取)跑 `prepare-fml10-line.ps1`,即可按同一套流程验证。
