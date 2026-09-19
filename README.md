@@ -12,7 +12,7 @@
 
 | Minecraft | NeoForge | 产物 | OptiFine 构建 | Java | 状态(实测) |
 |---|---|---|---|---|---|
-| 26.1.2 | `26.1.2.109` | `OptifiNeoforge-1.0.0+mc26.1.2.jar` | `preview_OptiFine_26.1.2_HD_U_K1_pre2.jar` | 25 | 已验证 · 已发布(`[OptiFine]` 3478 行、`processClass` 795 次、stderr 107 字节 = 对照跑、无崩溃报告;挂载点是 OptiFine 自带的) |
+| 26.1.2 | `26.1.2.109` | `OptifiNeoforge-1.0.0+mc26.1.2.jar` | `preview_OptiFine_26.1.2_HD_U_K1_pre2.jar` | 25 | 已验证 · 已发布(`processClass` **795 次**、stderr 107 字节 = 对照跑、无崩溃报告;挂载点是 OptiFine 自带的。2026-09-19 在重建后的 rig 上重跑复现四项判据,`[OptiFine]` 行数那次是 **352** 而不是 3478,这个差别没有解释,见 `docs/DEVELOPMENT.md`) |
 
 - mod id `optifineoforge`,仅客户端。
 - 26.1 起游戏**未混淆**,官方名即运行名,因此这一线没有映射表要处理。
