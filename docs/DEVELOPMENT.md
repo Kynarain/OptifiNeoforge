@@ -1685,3 +1685,62 @@ net.neoforged.fml.ModLoadingException: Loading errors encountered:
 处理器,它不做这件事,所以**换父类(含构造器 chain 重写)、成员回填、shim 都必须在离线阶段写进
 并进 OptiFine jar 的 `srg/**` 成品类**。这就是本项目在这一线上的那份工作,本轮还没有做,
 所以 26.1.2 **没有通过验收**。
+## 2026-09-19(重建后的 rig):26.1.2 在这一版上跑通,配方与实测数字
+
+上一次记录是更早会话里的 3478 行 / `processClass` 795 次。这一轮在**重新搭起来的** rig 上从头装配了一遍,
+**四项判据全部复现**,并且 `processClass` 次数与那次记录**完全一致**:
+
+```
+===== VERDICT: STARTED (started: Setting user + Sound engine started)
+  Setting user        : True
+  Sound engine started: True
+  new crash reports   : 0
+  stderr bytes        : 107      <- 与"不带任何 mod"的对照跑同一行、同长度
+  [OptiFine] lines    : 352
+  processClass 行数    : 795     <- 与更早的记录相同
+  handlesClass 行数    : 7369
+  OpenGL API ERROR    : 0 行
+```
+
+**如实写下的两点差异**:① `[OptiFine]` 行数这一次是 **352**,不是记录里的 3478 —— 我没有解释这个差别
+(没有那份旧日志可比);`processClass` 与 `handlesClass` 的次数则是对得上的。
+② 导航栏里的 `[OptiFine] OptiFine_26.1.2_...` 版本横幅这一次**没有**出现(1.21.9/10/11 那三条线都打了),
+但处理器的 `processClass` 明确在跑(见下)。stderr 的 107 字节是 log4j 的
+`Advanced terminal features are not available in this environment` 一行,**本模组自己写 0 字节**;
+对照跑同样只有这一行(另一次对照量到 104,差别只是时间戳尾数的位数)。
+
+### 这一轮装配出来的配方(每一步都是量出来的)
+
+1. **NeoForge `26.1.2.109`** 用安装器装(Java **25**,FML **11.0.15**)。注意这台机器上
+   `maven.neoforged.net` 的 **IPv4 连不上、IPv6 能连**(`curl -6` 拿到 200),安装器自己的下载器用 IPv4
+   时会报 `failed 1`。
+2. **OptiFine `preview_OptiFine_26.1.2_HD_U_K1_pre2.jar`**(7,797,229 字节,与 `docs/DEVELOPMENT.md`
+   记的字节数一致)从第三方镜像取。
+3. **元数据**:`META-INF/mods.toml`(Forge 时代,`loaderVersion="[14,)"`)换成 `neoforge.mods.toml`
+   (`loaderVersion="[1,)"`);`META-INF/services/cpw.mods.modlauncher.api.ITransformationService` 去掉
+   (这一版没有 ModLauncher)。**`optifine/Patcher`、`optifine/xdelta/**`、`optifine/json/**` 必须保留** ——
+   删掉它们,`OptiFineBaseTransformer.<init>` 立刻 `NoClassDefFoundError: optifine/Patcher`,
+   处理器实例化失败,OptiFine 完全不生效。
+4. **离线流水线**(全部来自本仓库,`src/main/java/kynarain/cn/optifineoforge/optifine/`):
+   `OptifinePipeline` → 566 个成品类(net/minecraft 486);
+   `HierarchyPlan` → `reparent.txt`(1 个类:`BlockEntity` 到 `AttachmentHolder`,构造器 `()V`);
+   `ReparentPayload` → 换父类 + 构造器 chain 重写 + 保留运行时的接口(工具自己的日志逐条列出);
+   `MemberRestorePlan` → 224 条计划 / 73 个 donor;`RestoreMembers` → **256 个成员 / 72 个类**。
+5. **把这些成品并进 OptiFine 的 jar**:`srg/**`(成品类)**和 `assets/**`**(OptiFine 打过的资源)。
+   两者缺一不可,而且都是量出来的:
+   * 只并类不并资源 → 每个资源都要走 `optifine.Patcher.applyPatch`,于是
+     `java.io.IOException: Base resource not found: assets/minecraft/models/block/template_glass_pane_*.json`
+     刷 13,367 字节 stderr(判据要求 stderr 与对照一致,所以那一次不算通过);并上 `assets/**` 之后回到 107 字节。
+   * 不并任何东西 → 每个类都报 `Base resource not found: net/minecraft/…`(一次跑 866,068 字节 stderr),
+     OptiFine 全程不生效(0 行 `[OptiFine]`)。
+6. **第二个 mod 罐子 `optifine-own-classes.jar`**(OptiFine 自己的类 + Forge shim),并且**必须剔除
+   `META-INF/services/net.neoforged.**`** —— 那两个服务文件一在,FML 就把这个罐子当**早期服务罐**,
+   其中的类由一个看不见游戏类的加载器加载,于是 `net.optifine.reflect.Reflector.<clinit>` 抛
+   `NoClassDefFoundError: net.minecraft.world.level.chunk.ChunkAccess`、刚打补丁的
+   `net.minecraft.util.Mth.<clinit>` 抛 `net/optifine/util/MathUtils` 找不到。
+   (`OptifinePipeline` 拆出的 classpath jar 原样保留 `META-INF/services/**`,所以这一步是必须的。)
+7. **启动**:这一版 profile 的主类仍是 `net.neoforged.fml.startup.Client`,所以 1.21.x 那套
+   `launch-fml10.ps1` 直接用(给它加了 `-JavaExe`,这一线要 JDK 25;入口点用全反射的
+   `DiagnosticClientAny`,因为官方入口点把启动期异常交给一个什么都不打印的模态对话框)。
+   mods 里放的就是上面那两个罐子 —— **本项目的加载器不在其中**,挂载点是 OptiFine 自带的
+   `OptiFineClassProcessor`。
