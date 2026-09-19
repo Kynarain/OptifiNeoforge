@@ -1107,3 +1107,21 @@ VerifyError: Bad type on operand stack
 它不会做这件事,所以那一套(换父类 + 构造器 chain 重写、成员回填、shim)**必须在离线阶段就写进
 并进 OptiFine jar 的 `srg/**` 成品类里**——这正是 `26.x` 文档里写的"本项目贡献的是离线流水线"。
 本轮还没有做这一步,因此 26.1.2 **没有通过验收**,只是从"完全不动"推进到了"OptiFine 在跑、卡在换父类"。
+### 更正:上一节说 26.1.2 卡在换父类,那个已经做完了
+
+本节前面的"26.1.2 还差什么"写在同一天早一些的时候。之后离线那一步做完了,26.1.2 **四项判据全部通过**:
+`VERDICT: STARTED` + `Setting user` + `Sound engine started` + 无崩溃报告 + stderr 107 字节(= 对照跑那一行),
+`processClass` **795 次**(与 `26.x` 更早的记录一致),`[OptiFine]` 行数这一次是 352(与那份记录的 3478 不同,
+**没有解释**,如实写在 `26.x` 的 `docs/DEVELOPMENT.md` 和 README 里)。
+
+离线那一套的做法:仓库自己的 `OptifinePipeline` → `HierarchyPlan` → `ReparentPayload` →
+`MemberRestorePlan` → `RestoreMembers`,再把成品 **`srg/**` 与 `assets/**` 一起**并进 OptiFine 的 jar
+(只并类不并资源会刷 13,367 字节的 `Base resource not found: assets/...`),外加第二个 mod 罐子
+`optifine-own-classes.jar`(OptiFine 自己的类 + shim,且必须剔除 `META-INF/services/net.neoforged.**`,
+否则它会被当成早期服务罐、其类由一个看不见游戏类的加载器加载)。完整配方在 `26.x` 的
+`docs/DEVELOPMENT.md`。
+
+至此 **15 条线全部在本机重建后的 rig 上跑过四项判据**(1.20.1 / 1.20.2 / 1.20.4 / 1.20.6、
+1.21 / 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8、1.21.9 / 1.21.10 / 1.21.11、26.1.2),
+逐条的数字在各自的 README 与分支文档里,三条 FML 10 线与 26.1.2 的 rig 前提(关掉 FML 早期加载画面、
+诊断入口点、以及"安装器拿不到时用 NeoForm 缓存产物替代"这件事)也都写在同一处。
