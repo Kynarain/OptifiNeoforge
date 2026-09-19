@@ -143,3 +143,30 @@ eoFormVersion),其余按父 profile(1.21.9.json)的常规游戏参数给。
 **下一步**(记录在这里,便于接着做):用 -Xlog:exceptions=trace 把主线程那个"安静退出"的原因抓出来
 (这个手法在本会话里已经用成功过一次:1.20.4 的原始异常就是这么挖出来的),或者对照 NeoForge 官方启动器
 在 profile 之外还做了什么。
+### 重大一步:FML 10 的启动路径**打通了**(无 mod 对照已进到标题界面路径)
+
+上一节记的"0.8 秒安静退出"找到原因了 —— 是**我漏了 profile 里的 JVM 参数**,不是 FML 或 OptiFine 的问题:
+
+- 父 profile(1.21.9.json)的 rguments.jvm 里有四个 **natives 相关属性**:
+  -Djava.library.path、-Djna.tmpdir、-Dorg.lwjgl.system.SharedLibraryExtractPath、-Dio.netty.native.workdir
+  (都指向 rig 的 
+atives),另有 -Xss1M 与 -Dminecraft.launcher.brand/version;
+- 子 profile(NeoForge)额外给 --add-opens java.base/java.lang.invoke=ALL-UNNAMED 与
+  --add-exports jdk.naming.dns/com.sun.jndi.dns=java.naming。
+
+把这些**全部**给上之后(其余同前一节:只把 profile 的 libraries 放进 -cp、-DlibraryDirectory 指向 rig 的
+libraries、mainClass 用 
+et.neoforged.fml.startup.Client、游戏参数用父 profile 那套),
+**无 mod 对照跑起来了**:
+
+`
+[Render thread/INFO] [net.minecraft.client.Minecraft/]: Setting user: Dev
+[Render thread/INFO] [net.minecraft.client.sounds.SoundEngine/SOUNDS]: Sound engine started
+`
+
+进程活着(70 秒后由我主动结束)、日志 12 010 字节 ✔。也就是说 **1.21.9 这条线的启动方式不再是未知数了** ✔
+—— 这是 1.21.9 / 1.21.10 / 1.21.11 三条线此前最大的拦路石。
+
+**注意边界**:这是**无 mod 对照**(没有 OptiFine、没有本项目的载荷),所以它既不等于"这三条线通过",也不改变
+那三条线"未实测"的状态。还差的两件仍是:① 把 26.x 的 src/fml10(两个类,已实测可编译)按注释**打进载荷 jar**;
+② 在 rig 里把上面这套参数固化成一条 **FML 10 的启动路径**(launch.ps1 目前只懂 ModLauncher)。
