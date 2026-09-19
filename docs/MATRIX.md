@@ -4128,7 +4128,39 @@ stderr 14 481 / 14 608 / 14 643 / 14 481 字节(记录是 14 481,两次逐字节
 **这台机器上必须记住的三个坑**:`natives\` 是所有线共用、会串 LWJGL 版本(1.20.1–1.20.4 是 3.3.2,1.20.6+ 是 3.3.3);
 崩过的 JVM 会留在后台占着 `glfw.dll`,重装 natives 前要收掉;`[OptiFine]` 行数在 rig 的合并输出里是 `latest.log` 的 **2 倍**。
 
-### 二十九、边界
+### 三十、开始第三条线:1.20.2(装配一次过,启动还差一步)
+
+按第二十八节那套 recipe 走 1.20.2(NeoForge `20.2.88`、ModLauncher 10、Java 17、用户自己的
+`preview_OptiFine_1.20.2_HD_U_I7_pre1.jar`),装配**第一次就过**:缺失引用 **22 / 42845**、假 stub **17**、
+访问计划 106 行、接口计划 15 行、成员恢复 220 条 —— 与 1.20.4 同一量级(23 / 18)✔。
+
+启动遇到的第一个坑是**老问题的新实例**:`NoSuchMethodError: 'java.lang.Throwable net.minecraft.CrashReport.m_127524_()'`,
+来自 OptiFine 自己的 `CrashReporter` —— 也就是**重打包用的那份 OptiFine jar 也必须做 SRG→官方名改名**
+(1.20.4 上我是手工做的,这次把它写进了 `add-line.ps1`,给 `-SrgMappings` 那条路径自动生成 `downloads\of-<mc>-official.jar` ✔)。
+改名之后(SrgRemap 报 `rewrote 3445 method and 1378 field names, 0 could not be resolved`)启动推进到 **6 行 `[OptiFine]`** ✔。
+
+现在停在下一处(已量到):
+
+```
+java.lang.VerifyError: Bad <init> method call
+  at net.minecraft.Util.memoize(Util.java:972)
+  at net.minecraft.world.level.block.PinkPetalsBlock.<clinit>(PinkPetalsBlock.java:31)
+  → Blocks.<clinit> → FireBlock.bootStrap → Bootstrap.bootStrap → Main.main:156
+```
+
+`net/minecraft/Util` 的 `memoize(Function)` / `memoize(BiFunction)` 在载荷与运行时**两边都在、都是 static** ✔,
+`stubs-full.txt` 与成员恢复计划里也**没有** `Util` 的条目 ✔ —— 所以问题在**交付出去的那份 `Util` 里某个方法的字节码**
+(验证是按类做的,报错只是碰巧落在 `memoize` 这一帧上)。要么是改名把某个 `<init>` 调用改错了目标,要么是别的成员被替换后形状不对。
+**下一步**:用 `-Doptifineoforge.dump=` 把交付的 `Util` 拿出来,与运行时的 `Util` 逐方法 `javap -c` 对照,找出那条坏的 `<init>` 调用。
+
+### 三十一、边界
+
+- 实测通过:**1.20.6**(像素确认标题界面)、**1.20.4**(判据 + `setScreen` 确认,像素抓帧是过期帧)。
+- **1.20.2**:装配已过、启动推进到 6 行 `[OptiFine]`,当前阻塞是 `Util` 的 `VerifyError`(根因未结)。
+- 未跑:1.20.1、1.21、1.21.9、1.21.10、1.21.11、26.1.2。
+- `[OptiFine]` 行数与记录的差异**未查明**;`add-line.ps1` 新增了"重打包用 OptiFine jar 自动改名"这一步(1.20.2 起)。
+- **没有发布任何东西**;已发布的 jar 没有重建。
+
 
 - 本分支实测通过:**1.20.6**(像素确认标题界面)与 **1.20.4**(判据 + `setScreen` 确认,像素抓帧是过期帧)。
 - 未实测:1.20.1 / 1.20.2 / 1.21 / 1.21.9 / 1.21.10 / 1.21.11 / 26.1.2。
