@@ -3650,3 +3650,78 @@ ClassFormatError: Illegal field modifiers in class
   (第二节那条修法还没做)。
 - 其余 13 条线没有跑,**没有发布任何东西**。
 
+## 2026-09-19:在本机重建的 rig 上跑 1.20.6(实测与记录的差异),以及 1.20.4 的实测阻塞
+
+原始 rig(`optifineoforge-test`)在这台机器上**不存在**,所以这一轮是**从零重建**一个等价 rig:下载原版客户端
+与 NeoForge 安装器、把本仓库的离线流水线(`kynarain.cn.optifineoforge.optifine`)跑在**用户自己的** OptiFine jar
+上、再用 rig 的 `launch.ps1` 起一次真实客户端。OptiFine 不随仓库分发,所以载荷必须现场生成 —— 这一轮从头到尾
+没有用过任何别人预打包的 OptiFine 载荷。
+
+### 一、1.20.6:判据逐项(记录 vs 本机实测)
+
+目标:`1.20.6` / NeoForge `20.6.141`(ModLauncher 11、Java 21)/ `preview_OptiFine_1.20.6_HD_U_J1_pre18.jar`。
+
+| 判据 | 记录 | 本机实测 | 结论 |
+|---|---|---|---|
+| `VERDICT` | `STARTED` | `STARTED` | 一致 |
+| `Setting user` | ✓ | ✓(`Setting user: Dev`) | 一致 |
+| 本次运行的崩溃报告 | 0 | 0 | 一致 |
+| stderr | 0 字节 | 0 字节 | 一致 |
+| `[OptiFine]` 行数(`latest.log`) | 222 | **231** | **不一致(+9)** |
+
+- 231 是**可复现**的:两次独立运行都是 231(rig 打印的 462 是合并输出 = stdout+stderr+latest.log,正好 2×)。
+- 这 +9 **不是**这条线独有:同一台机器上 1.21 与 1.21.1 是 +9、1.21.6 / 1.21.7 / 1.21.8 是 +7,而 1.21.3 与
+  1.21.4 与记录**完全相等**。**记录里的 `latest.log` 不在仓库里**,所以"多出来的是哪 9 行"无法从这边归因;
+  按现有证据看更可能是环境差异(驱动/资源包枚举),不是载荷差异。
+- 本机这 231 行的构成(按消息形状分组):`(Reflector) Class not present` 40、`Scaled non power of` 18、
+  `(Reflector) Method not present` 17、`Multitexture: false` 14、`Animated sprites` 14、`Scaled too small
+  texture` 12、`(Reflector) Field not present` 12、`Unknown resource pack type` 11,其余是 CTM 与贴图集类。
+- 窗口另用 rig 的 `capture-window.ps1` 抓过一次(`PrintWindow=True`,窗口标题 `Minecraft* 1.20.6`)。它与两条
+  **已确认是标题界面**的截图(控制组、1.21.8)同类:292 个颜色桶、最大桶只占 11%、含 0.09% 近黄色像素
+  (标题界面的 splash 文字);而 1.21 卡在加载遮罩时抓到的形态是 87 个桶、最大桶占 84%、均值 `233,73,83`。
+  判据里的 `Sound engine started` 也为真 —— 1.21 卡在遮罩时**没有**这一行。
+
+### 二、这条线上"1.20.6 起不再需要"的东西,本轮是实测到的
+
+1. **载荷命名空间**:`MissingTargets` 扫这份载荷是 **43918 条游戏成员引用、只有 23 条在运行时里找不到**(0.05%),
+   而同一工具在同一台机器上扫 **1.20.4** 的载荷是 **43162 条里 3178 条找不到**(7.4%)。所以 1.20.4 的载荷是
+   SRG 名、1.20.6 的载荷已经是官方名 —— 与本文档"1.20.6+ 自然空转"的判断一致,这次是量出来的,不是推的。
+   直接后果:1.20.6 这一条线**不需要** `SrgNameTable` / `SrgRemap` 这一步(1.20.4 需要,见第四节)。
+2. **keep 计划为空**:`PayloadDrift` 为 1.20.6 提出的 `keep-runtime.proposed.txt` 是 0 行(1.21 那条线要手写),
+   接口计划 13 行、访问计划 104 行、成员恢复 285 条 / 77 个 donor、`reparent.txt` 1 行、运行时 stub 3 条。
+
+### 三、`optionsof.txt` 在 1.20.6 上也确实是必需的(实测)
+
+把游戏目录里的 `optionsof.txt` 移走后重跑:客户端在 OptiFine 自己的 Options 加载处抛异常(日志尾部有栈),
+`[OptiFine]` 行数变成 233,即**这不是一次干净运行**。放回该文件后同一套 jar 回到 `STARTED`。所以"某些构建的空
+游戏目录会炸"这条已知限制,在 1.20.6 / J1_pre18 上同样成立。
+
+### 四、1.20.4:装配成功,启动死在一处,原因已定位
+
+NeoForge `20.4.251`(ModLauncher 10、Java 17)+ `OptiFine_1.20.4_HD_U_I7.jar`:装配本身走通(载荷 427 个游戏类、
+成员恢复 6009 条 / 371 个类、接口计划 12 行、访问计划 1 行、stub 228 条 + 2035 条留给 loader),但启动在
+`net.minecraft.commands.BrigadierExceptions.<clinit>` 处死:
+
+```
+java.lang.NoSuchMethodError: 'net.minecraft.network.chat.MutableComponent net.minecraft.network.chat.Component.m_237115_(java.lang.String)'
+```
+
+这是**载荷里的 SRG 引用没改名**的典型形态(第二节量到的 7.4% 就是它)。修法与本文档记的一致:交给 loader 之前先用
+`SrgRemap` 把 SRG 名改成官方名。本机缺的**不是**工具,而是 **1.20.4 的 `joined.tsrg`**(MCPConfig 的 `mcp_config`
+缓存里只有 1.21.x 各版本,1.20.4 没有),而 `SrgMemberMap.build` 要的正是它 + NeoForm 的 merged 表;后者可以用 rig 里
+已有的 `proguard-to-tsrg.ps1` 从 `minecraft_1.20.4_client_mappings.txt` 生成,前者要另外取。**这就是 1.20.4 的下一
+步**,不是猜的。
+
+### 五、边界
+
+- 本轮**实测通过**的是 1.20.6(判据四项里三项与记录逐字一致,`[OptiFine]` 行数 +9 已如实写明);**1.20.4 未通过**,
+  停在上面那条 `NoSuchMethodError`;1.20.1 / 1.20.2 这一轮**没有跑**。
+- 1.21.x 线本轮在另一份记录里推进(1.21 – 1.21.8 六条线实测、1.21 的资源重载阻塞仍未解),26.x 线这一轮没碰。
+- 为了能重跑,rig 被改动的地方(全部在 rig 内、不在仓库里):`add-line.ps1` 增加了 `-ModLauncher`(1.20.x 用
+  `-Pmodlauncher` 而不是 `-Pmountpoint`)、`-TargetJavaVersion`(1.20.6 必须 `21`,否则 Gradle 报
+  "No matching variant of net.neoforged:neoform:1.20.6-… compatible with Java 17")、安装器坐标的 `-InstallerArtifact`
+  (1.20.1 是 `forge`)、"Gradle 构建成功才算产物"的检查(一次失败的构建会留下同名旧 jar,用它启动等于测错对象),
+  以及**没有** SRG 表的线不再硬塞 `-SrgTableFile`;另新增 `get-optifine.ps1`(OptiFine 的下载要先用 adloadx 页
+  换取一次性 token,再打 `downloadx`)。
+- **没有发布任何东西**;已发布的 jar 没有重建。
+

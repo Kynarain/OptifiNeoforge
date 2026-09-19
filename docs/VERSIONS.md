@@ -8,11 +8,15 @@
 |---|---|---|---|---|---|
 | `1.20.1` | `net.neoforged:forge:1.20.1-47.1.106` | 17 | 14(2 正式版 + 12 preview) | SRG(待确认) | `META-INF/mods.toml`(待确认) |
 | `1.20.2` | `net.neoforged:neoforge:20.2.93` | 17 | 1(0 正式版 + 1 preview) | SRG(待确认) | `META-INF/mods.toml`(待确认) |
-| `1.20.4` | `net.neoforged:neoforge:20.4.251` | 17 | 11(1 正式版 + 10 preview) | SRG(待确认) | `META-INF/mods.toml`(待确认) |
-| `1.20.6` | `net.neoforged:neoforge:20.6.141` | 21 | 3(0 正式版 + 3 preview) | SRG 或官方名(待确认) | `META-INF/neoforge.mods.toml`(待确认) |
+| `1.20.4` | `net.neoforged:neoforge:20.4.251` | 17 | 11(1 正式版 + 10 preview) | **SRG(2026-09-19 实测)** | `META-INF/mods.toml`(待确认) |
+| `1.20.6` | `net.neoforged:neoforge:20.6.141` | 21 | 3(0 正式版 + 3 preview) | **官方名(2026-09-19 实测)** | `META-INF/neoforge.mods.toml`(2026-09-19 实测:重打包后能加载) |
 
 - NeoForge 版本是各线在 `maven.neoforged.net` 元数据里的**最新构建**(核对时间见文末),不是"已验证可用"的版本。
-- **元数据文件名与运行期命名空间这两列都是预期值**,列在这里是为了说明这条线内部有分界,而不是结论;确切切换点见待确认一节。
+- **元数据文件名这一列在 1.20.1 / 1.20.2 / 1.20.4 上仍是预期值**;命名空间这一列现在有两个实测点(见下),分界
+  落在 **1.20.6**,与原先的判断一致 —— 但这是量出来的,不是推出来的。
+- 命名空间的实测方式(`MissingTargets`,对同一个运行时扫两份 OptiFine 载荷):1.20.4 是 **43 162 条游戏成员引用里
+  3 178 条在运行时里找不到**(7.4%,即载荷写的是 SRG 名),1.20.6 是 **43 918 条里只有 23 条找不到**(0.05%,即
+  官方名)。1.20.4 的启动失败也正好落在这里:`NoSuchMethodError: Component.m_237115_(String)`。
 - 1.20.1 的 NeoForge 是 Forge 时代的产物,坐标是 `net.neoforged:forge:1.20.1-47.1.106`(该线最新的 `47.1.x`),与 1.20.2 起的 `net.neoforged:neoforge` 不同。
 
 ## 全线共有的参数
@@ -165,10 +169,10 @@ OptiFine 在 1.20 系列里只发布了 1.20.1、1.20.2、1.20.4、1.20.6 的构
 ## 待确认(骨架阶段的已知缺口)
 
 - **`mods.toml` → `neoforge.mods.toml` 的确切切换点:已结清**(见上"五处分界"第 3 条)。1.20.1 – 1.20.4 只读 `META-INF/mods.toml`,1.20.6 两个名字都读 —— 也就是说 20.2.x / 20.4.x **并不**接受 `neoforge.mods.toml`,原先"预期只读旧名"这一半是对的,而"是否已经两种都认"这一问的答案是否。
-- **运行期命名空间的确切切换点**:预期 1.20.x 这条线是 **SRG**,官方名大约从 1.20.5/1.21 前后开始。本线的 1.20.6 到底属于哪一侧(还是要同时处理两套)没有核实,`docs/PLAN.md` 里的补丁管线要按这个结论才定得下来。**别与"五处分界"第 4 条混起来**:那条查的是 FML 的 **API 包名**(编译期的事),这条是 Minecraft 类的 **运行期名**(补丁负载按哪套命名空间存放),两者互不相干。
+- **运行期命名空间的确切切换点:已量到两个端点(2026-09-19)。** 用 `MissingTargets` 拿同一个运行时扫两份载荷:1.20.4 是 43 162 条游戏成员引用里 **3 178 条找不到**(7.4% → SRG 名),1.20.6 是 43 918 条里 **23 条找不到**(0.05% → 官方名)。所以切换点在 **1.20.4 与 1.20.6 之间**,1.20.6 属于官方名那一侧(原先"大约从 1.20.5/1.21 前后"的预期方向对、落点偏晚)。1.20.1 与 1.20.2 仍**未实测**,只能按 1.20.4 类推。**别与"五处分界"第 4 条混起来**:那条查的是 FML 的 **API 包名**(编译期的事),这条是 Minecraft 类的 **运行期名**(补丁负载按哪套命名空间存放),两者互不相干。
 - **元数据的字段要求**:各版本 `mods.toml` / `neoforge.mods.toml` 的必填字段(`loaderVersion` 的取值范围、`modLoader` 取值等)需要对着对应 NeoForge 版本的文档核对。**已核对一部分**:读各版 NeoForge 自己产物里的元数据,`loaderVersion` 分别是 1.20.1 的 `[24,]`、20.2.88 与 20.4.251 的 `[1,]`、20.6.141 的 `[3,]`,`modLoader` 都是 `javafml`,登记的 mod id 见上表。本分支模板写 `loaderVersion = "[1,)"`,对四者都成立 —— 它声明的是"本 mod 接受哪些 FML",不是"本 mod 要求哪个 FML"。
-- **OptiFine 的 ModLauncher 服务是否还会被自动发现**:Forge 时代由 `ModDirTransformerDiscoverer` 从 `mods/` 里发现第三方的 `ITransformationService`。NeoForge 20.2 / 20.4 / 20.6 是否保留这条发现路径、1.20.1 的 `net.neoforged:forge` 是否与之一致,都需要实测;若不再支持,就得改走 NeoForge 自己的转换 API。
-- **OptiFine 侧的补丁负载**:这四个版本的 OptiFine jar 用的是哪种命名空间的补丁,以及 `optifine.Patcher` 在 Forge 时代的客户端 jar 上是否仍按老流程工作,未验证。
+- **OptiFine 的 ModLauncher 服务是否还会被自动发现:1.20.4 与 1.20.6 已实测为"会"。** 两个版本的启动日志里都有 `OptiFineTransformationService.onLoad` / `initialize`,且 1.20.6 上服务列表是 `[mixin, OptiFine, mixin-synthetic-package, fml, OptifiNeoforge]` —— 我们自己的服务排在 OptiFine 之后,与 1.21.x 线观测到的顺序一致。无需改走 NeoForge 自己的转换 API。
+- **OptiFine 侧的补丁负载**:`optifine.Patcher` 在本仓库的离线管线里对 1.20.4 与 1.20.6 两版客户端都按老流程工作(产出 `srg/**` 下的补丁类,1.20.4 427 个 / 1.20.6 426 个游戏类),命名空间那一问见上面第一行的实测。
 - **1.20.2 的唯一 preview**:`I7_pre1` 是否带上完整补丁负载、能否作为移植对象,未验证;这是本线最薄的一环。
 - **1.20.1 的 `47.1.x` 与 20.x 的差异边界:部分结清。** 已实测相同:两者都用 `cpw.mods:modlauncher:10.0.9`,元数据文件名都是 `META-INF/mods.toml`。已实测不同:FML 的 API 包名、事件总线坐标(`net.minecraftforge:eventbus` 对 `net.neoforged:bus`)、登记的 mod id(`forge` 对 `neoforge`)。这三处本分支都已按目标处理(源码根 + 显式类路径 + 元数据占位符)。类转换 API 一侧是否还有别的差异,仍未核实。
 - **"正式版"不等于"可用"**:构建列表只说明构建存在,不代表能在 NeoForge 上跑通。本线四条都已有实机启动记录,逐条见 `docs/MATRIX.md`。
