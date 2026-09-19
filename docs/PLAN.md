@@ -331,3 +331,29 @@ ode 上)。
 2. copy 里那次"取更宽可见性"的合并或接口字段归一化,可能产出 FML 10 的校验不接受的东西(1.20.x/1.21.x 的加载器
    是 ModLauncher 的 NodeTransformer,契约不同);
 3. 兜底方案(与第 2 轮记过的那条一致):不注册处理器,改为**事先把成品类直接覆盖进游戏 jar**,让这条线"运行期不换装"。
+### third bisect:不是"合并逻辑",而是"替换这个动作本身"
+
+把 copy(finished, node) 换成**最简单的、完全不合并**的赋值(superName / interfaces / fields / methods / access /
+version / signature 直接取自成品),再跑:
+
+`
+OptiFine payload: installed net.minecraft.util.Mth (34 fields, 109 methods) [1 so far]
+Closing FML Loader 27329d2a
+`
+
+**照样关闭**。三个一行实验连起来:
+
+| 变体 | 结果 |
+|---|---|
+| 服务文件在、	argets() 空集 | STARTED |
+| 	argets() 照常声明、	ransform 空操作 | STARTED |
+| 	ransform 里做**最小**的类替换(不合并) | **Closing FML Loader** |
+
+⇒ **问题不在我们的合并逻辑**,而在"**在 FML 10 的处理管线里替换掉它交来的这个类**"这件事本身
+(很可能是 SimpleClassProcessor 的契约:处理器不该改 
+ode,而应通过上下文的 API 声明替换;
+具体的契约要以 FML 自己的源码为准,本轮没有去读)。
+
+**因此走兜底方案**:不注册处理器,改为**在 rig 层面事先把成品类覆盖进游戏 jar**
+(libraries\net\minecraft\client\1.21.9-…\client-1.21.9-…-srg.jar 的副本),
+这样这条线"运行期不换装",与 1.20.x/1.21.x 的验收环境等价(那两个分支的换装是运行期的,但验收看的是游戏能不能起来)。
