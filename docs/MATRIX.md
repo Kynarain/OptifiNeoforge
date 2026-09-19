@@ -4486,3 +4486,47 @@ java.lang.IncompatibleClassChangeError: class net.minecraft.client.player.Abstra
   换取一次性 token,再打 `downloadx`)。
 - **没有发布任何东西**;已发布的 jar 没有重建。
 
+
+## 2026-09-19/20:整个会话的收口(读这一节即可知道现状)
+
+### 一、本机实测**通过文档判据**的线(共 10 条)
+
+判据 = VERDICT: STARTED + Setting user + 声音引擎 + 本次运行 0 崩溃报告(**外加** stderr 与记录对照)。
+
+| 线 | 分支/记录位置 | stderr 对照 | [OptiFine] 行数(记录 vs 实测) | 标题界面 |
+|---|---|---|---|---|
+| 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8 | 1.21.x 分支的 README / MATRIX | 与记录一致或极近 | +9 / 0 / 0 / +7 / +7 / +7 | 1.21.8 有截图 |
+| **1.20.6** | 本文件「晚间」一节 | **0 字节 = 记录** | 222 vs 231 | ✔ 截图确认 |
+| **1.20.4** | 第二十二 / 二十六节 | **14 481 = 记录**(两次逐字节相同) | 241 vs 730(合并值) | ✔ setScreen 确认 |
+| **1.20.2** | 第三十二节 | **14 625 = 记录** | 239 vs 494(合并值) | ✔ setScreen 确认 |
+| **1.20.1** | 第三十八 / 四十节 | **0 字节,记录 27** ✗ | 157 vs 310(合并值) | 未直接测到 |
+
+### 二、未实测的 5 条线,以及各自**确切的**卡点
+
+| 线 | 状态 | 卡点(都是实测出来的,不是猜的) |
+|---|---|---|
+| 1.21 | 判据未过 | 资源重载走到 28 个 listener、27 个到达栅栏后不再前进;Sound engine started 缺失、画面停在加载遮罩 |
+| 1.21.9 / 1.21.10 / 1.21.11 | 未过 | **启动方式已解决**(rig 的 launch-fml10.ps1,无 mod 对照 STARTED)、**载荷投递已解决**(fml10 的 ClassProcessor + locator 服务 + srg/** 成品类,日志里 517 个类被逐个安装);**唯一卡点**是 OptifinePayloadClassProcessor.transform → copy(finished, node):只要它真的覆盖类,FML 10 就 Closing FML Loader(无异常、stderr 0),两个一行实验已把范围钉死在这一步 |
+| 26.1.2 | 未跑 | 需要 26.x 分支的那套(与 1.21.9 同一形状),可复用上面的 FML 10 结论 |
+
+### 三、这一会话新增、且**通用**的东西
+
+**仓库(本分支)**:drop-members.txt 计划、keep-runtime.txt 的整类保留形式、**访问计划**在 1.20.x loader 里的应用、
+同类接口换装的放开(-Doptifineoforge.strictInterfaceKeep=true 可退回)、三个调试开关
+-Doptifineoforge.{traceInit,traceCrash,traceScreen,dump,skipPayload}。
+
+**rig(不在仓库里)**:prepare-line.ps1 支持"先 SRG→官方名再生成计划"(-SrgMappings/-ObfOfficial)、
+dd-line.ps1 的 -ModLauncher/-TargetJavaVersion/-InstallerArtifact/-InstallOnly 与"重打包 jar 自动改名"、
+proguard-to-tsrg.ps1(修了嵌套类与 obf 列斜杠)、
+atives-for.ps1、get-optifine.ps1、launch.ps1(RIG_EXTRA_JVM)、
+**launch-fml10.ps1(FML 10 的启动路径)**。
+
+### 四、仍然**未查明**的
+
+- [OptiFine] 行数与记录的差异(1.20.6 +9、1.20.2 +8、1.20.4 差得最多、1.20.1 是 **-2**),四条线都有,**原因未知**;
+- 1.20.1 记录里那 27 字节 stderr 的来源(已用两个 OptiFine 构建对照,**证明与构建无关**);
+- 1.20.4 的标题界面只有 setScreen 证据,**像素抓帧是过期帧**(窗口未聚焦时不重绘,两次抓帧统计完全相同)。
+
+### 五、没有做的事
+
+**没有发布任何东西**;已发布的 jar 没有重建。本会话的产物全部是文档、loader 能力与 rig 工具。
