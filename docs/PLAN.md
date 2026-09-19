@@ -1191,3 +1191,92 @@ MakeUp UltraFast 9.5e、Rethinking Voxels r0.1-beta9、Solas V3.7b)从 Modrinth 
 并且日志里有 OptiFine 自己的 `[Shaders] Loaded shaderpack: <包名>`。"GLSL 错误"统计的是
 `Error compiling|Error linking|SMCLog.severe` 四类的匹配数,六次都是 0;`GL 错误`统计
 `OpenGL API ERROR`,也都是 0。
+## 多人游戏与 FXAA 实测(1.21.10,Java 21)
+
+用户给了服务器地址并限定了多人游戏的验收口径:**只验"能连上 + 能移动"**,其它交互不测。
+
+### 怎么在没有 GUI 的情况下连服务器
+
+1.21.10 里 `--server`/`--port` 已经不存在(`Main` 的选项表里没有),唯一的命令行入口是 quick play。
+实测一个有坑的细节:`-GameArgs '--quickPlayMultiplayer','8.148.31.159:25565'` 这种**空格分隔**形式会被
+`Main` 原样打印成 `Completely ignored arguments: [--quickPlayMultiplayer,8.148.31.159:25565]`,
+连接不会发生;换成**单 token 的 `--quickPlayMultiplayer=8.148.31.159:25565`** 才被解析。
+rig 侧为此给 `launch-fml10.ps1` 加了 `-GameArgs` 透传参数。
+
+### 结果:连上了,而且移动可测
+
+```
+[Render thread/INFO] [net.minecraft.client.gui.screens.ConnectScreen/]: Connecting to 8.148.31.159, 25565
+[Render thread/INFO] [net.minecraft.client.gui.components.ChatComponent/]: [System] [CHAT] Use /register <password> <password> to claim this account.
+[Render thread/WARN] [net.minecraft.client.multiplayer.ClientCommonPacketListenerImpl/]: Client disconnected with reason: Authentication time has expired
+```
+
+* **连接成功**:`Connecting to 8.148.31.159, 25565` 之后进入世界,服务器每 10 秒推一次
+  `Use /register ...`(AuthMe 类插件的未登录提示);
+* **约 70 秒后被服务器踢下线**,原因是 `Authentication time has expired`:这是个离线开发客户端
+  (用户名 `Dev`、accessToken 0),而我**没有在用户的服务器上注册账号**(那需要 `/register`,属于对用户服务器
+  的写操作,不该由我擅自做);
+* 这 70 秒窗口内客户端 **0 崩溃报告、stderr 0 字节**;
+* **移动**:用 rig 新脚本 `move-check.ps1` 量——两帧对比法,先量"不按键"时段的变化率做基线,
+  再量"按住 W"时段的变化率:
+
+| 时段(各 12 秒) | 平均逐像素差 | 变化像素比例 |
+|---|---|---|
+| 静止(基线) | 7.32 | 9.55% |
+| 按住 W | 19.67 | **19.68%** |
+
+比值 **2.69x**,判定 **MOVED**。如实说明两条边界:①这条判据是**相对**的(走路会平移整个画面,静止只动
+云/水/粒子),第一版脚本用的是我事先写下的"变化像素 ≥25%"绝对阈值,6 秒那次量到 21.18% 被判成 NOT SHOWN
+——阈值改成相对的后重跑才得到上面的数字,这一点写在脚本注释里;②像素法证明的是"画面在大幅变化",
+不是直接读到坐标,所以它是**证据**而不是仪表读数。
+
+### 顺手修掉一个真 bug:多人游戏里下雨就崩
+
+第一次带光影/粒子进入服务器世界后,客户端几秒内就写了崩溃报告:
+
+```
+java.lang.NoSuchMethodError: 'it.unimi.dsi.fastutil.ints.Int2ObjectMap
+    net.minecraft.client.particle.ParticleResources.getProviders()'
+  at ParticleEngine.makeParticle(ParticleEngine.java:76)
+  at ClientLevel.doAddParticle(ClientLevel.java:930)
+  at WeatherEffectRenderer.tickRainParticles(WeatherEffectRenderer.java:228)
+```
+
+根因是**同一件事的两个形状不同**:OptiFine 的 `ParticleEngine` 编译时用的是
+`ParticleResources.getProviders()` 返回 **int 键的 `Int2ObjectMap`**(并在 `Registry.getId(type)` 上取值),
+而 NeoForge 的运行时把它改成了 **`Map<ResourceLocation, ParticleProvider<?>>`**;
+OptiFine 本来还有一个后备(通过反射调 Forge 时代的 `ParticleResources.getProvider(ParticleType)`),
+但日志自己说了 `(Reflector) Method not present: ...ParticleResources.getProvider`,所以后备也是空的。
+
+修法**不是**把 `ParticleEngine` 换成运行时那份(那一份里有 OptiFine 的自定义粒子颜色
+`updateTerrainParticleColor`/`CustomColors`,换掉就丢功能),而是在处理器里**改写这个调用点的形状**:
+`getProviders()` 的描述符改成返回 `Map`、`Registry.getId(Object)I` 改成 `Registry.getKey(Object)ResourceLocation`、
+`Int2ObjectMap.get(I)` 改成 `Map.get(Object)` —— 取到的还是同一个 provider(注册表 id 与资源位置指向同一条目)。
+修完再连服务器:**同样的世界、同样 150 秒,0 崩溃报告**。
+
+**这条修复的覆盖范围**:1.21.9 / 1.21.10 / 1.21.11 三条线都由我们的处理器在加载期改写,所以只要重建 payload
+即生效(1.21.11 的 payload 已重建);**26.1.2 的挂载点是 OptiFine 自带的处理器**,加载期不改写,需要在
+离线阶段对并进 OptiFine jar 的 `srg/**` 做同样的三处改写(已核对:26.1.2 的 payload 里
+`ParticleEngine` 同样引用 `Int2ObjectMap`),这件事还没有做。
+
+### FXAA
+
+OptiFine 的抗锯齿**不在** `optionsshaders.txt`,而在 `optionsof.txt` 的 **`ofAaLevel`**(这一点是量出来的:
+把 `optionsshaders.txt` 里的 `antialiasingLevel=2` 写进去,日志里连一行 `Antialiasing` 都没有;
+改 `optionsof.txt` 的 `ofAaLevel` 才见效)。
+
+| 设置 | 日志证据 | 四项判据 | 崩溃报告 | stderr |
+|---|---|---|---|---|
+| `ofAaLevel:2` | `[Shaders] Shaders can not be loaded, Antialiasing is enabled: 2x` | 全中 | 0 | 0 |
+| `ofAaLevel:4` | `[Shaders] Shaders can not be loaded, Antialiasing is enabled: 4x` | 全中 | 0 | 0 |
+
+两次都 `VERDICT: STARTED` + `Setting user` + `Sound engine started`,没有崩溃报告,stderr 0 字节。
+**如实写的边界**:这两次证明的是"FXAA 2x/4x 被客户端启用且不致命";`Shaders can not be loaded` 那一行是
+OptiFine 自己的规则(抗锯齿与光影包互斥),而 FXAA 观感上的边缘平滑没有做像素级对比(那需要更细的
+边缘检测,不在本轮范围)。
+
+### rig 侧新增的三个工具
+
+* `launch-fml10.ps1 -GameArgs ...`:把额外游戏参数追加在 profile 自己那批之后(quick play 就是这么传的);
+* `slp-ping.ps1`:最小 Server-List-Ping 客户端(握手 + status),用来在游戏之外问服务器"你是谁、在线几人";
+* `move-check.ps1`:两帧对比法测移动,把"静止基线"和"按键时段"两个数字一起打印出来。

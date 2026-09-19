@@ -132,6 +132,7 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 		int restored = restoreMembers(node);
 		repairFrozenReloadListeners(node);
 		repairSpriteCollection(node);
+		repairParticleProviderLookup(node);
 		installed++;
 		LOGGER.info("OptiFine payload: installed " + node.name.replace('/', '.') + " (" + finished.fields.size()
 				+ " fields, " + finished.methods.size() + " methods" + (restored == 0 ? "" : ", " + restored
@@ -196,6 +197,82 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 					+ installed.name.replace('/', '.') + "; OptiFine's sprite collection stays off the call path "
 					+ "and the atlas stitch will wait for it forever");
 		}
+	}
+
+	/**
+	 * Rewrites the one call in OptiFine's {@code ParticleEngine} that asks the runtime for a particle provider in
+	 * a shape the runtime no longer has.
+	 *
+	 * <p>Measured on 1.21.10, on a multiplayer server, and it is what made the client unusable there - it died a
+	 * few seconds into the world, the moment rain particles were created:</p>
+	 *
+	 * <pre>NoSuchMethodError: 'it.unimi.dsi.fastutil.ints.Int2ObjectMap
+	 *     net.minecraft.client.particle.ParticleResources.getProviders()'
+	 *   at ParticleEngine.makeParticle(ParticleEngine.java:76)
+	 *   at ClientLevel.doAddParticle(...)  &lt;- WeatherEffectRenderer.tickRainParticles</pre>
+	 *
+	 * <p>OptiFine's copy of {@code makeParticle} does</p>
+	 *
+	 * <pre>getfield ParticleResources
+	 * invokevirtual ParticleResources.getProviders()Lit/unimi/dsi/fastutil/ints/Int2ObjectMap;
+	 * getstatic    BuiltInRegistries.PARTICLE_TYPE
+	 * invokeinterface Registry.getId(Object)I
+	 * invokeinterface Int2ObjectMap.get(I)Object</pre>
+	 *
+	 * <p>while NeoForge's {@code ParticleResources} declares
+	 * {@code Map&lt;ResourceLocation, ParticleProvider&lt;?&gt;&gt; getProviders()} - the int-keyed view is gone,
+	 * and so is the Forge-era {@code getProvider(ParticleType)} that OptiFine would otherwise have used through
+	 * its reflector (the log says so itself: "Method not present:
+	 * net.minecraft.client.particle.ParticleResources.getProvider").</p>
+	 *
+	 * <p>The rewrite keeps the lookup and changes its shape: the provider is read from the runtime's map by the
+	 * particle type's {@code ResourceLocation} instead of by registry id. That is the same provider the
+	 * int-keyed map held - the registry id and the resource location name the same entry - so OptiFine's custom
+	 * particle colours ({@code updateTerrainParticleColor}, {@code CustomColors}) stay on the path, which is why
+	 * the class is not simply dropped for the runtime's copy.</p>
+	 */
+	private static void repairParticleProviderLookup(ClassNode installed) {
+		if(!"net/minecraft/client/particle/ParticleEngine".equals(installed.name)) {
+			return;
+		}
+		for(MethodNode method : installed.methods) {
+			if(method.instructions == null) {
+				continue;
+			}
+			org.objectweb.asm.tree.MethodInsnNode getProviders = null;
+			org.objectweb.asm.tree.MethodInsnNode getId = null;
+			org.objectweb.asm.tree.MethodInsnNode mapGet = null;
+			for(org.objectweb.asm.tree.AbstractInsnNode instruction = method.instructions.getFirst();
+					instruction != null; instruction = instruction.getNext()) {
+				if(!(instruction instanceof org.objectweb.asm.tree.MethodInsnNode call)) {
+					continue;
+				}
+				if("getProviders".equals(call.name)
+						&& "net/minecraft/client/particle/ParticleResources".equals(call.owner)
+						&& call.desc.endsWith("Lit/unimi/dsi/fastutil/ints/Int2ObjectMap;")) {
+					getProviders = call;
+				} else if("getId".equals(call.name) && "net/minecraft/core/Registry".equals(call.owner)) {
+					getId = call;
+				} else if("get".equals(call.name) && "it/unimi/dsi/fastutil/ints/Int2ObjectMap".equals(call.owner)) {
+					mapGet = call;
+				}
+			}
+			if(getProviders == null || getId == null || mapGet == null) {
+				continue;
+			}
+			getProviders.desc = "()Ljava/util/Map;";
+			getId.name = "getKey";
+			getId.desc = "(Ljava/lang/Object;)Lnet/minecraft/resources/ResourceLocation;";
+			mapGet.owner = "java/util/Map";
+			mapGet.desc = "(Ljava/lang/Object;)Ljava/lang/Object;";
+			LOGGER.info("OptiFine payload: " + installed.name.replace('/', '.') + "." + method.name
+					+ " reads the particle provider through the runtime's Map keyed by resource location, because "
+					+ "OptiFine's copy asks for the removed int-keyed getProviders()");
+			return;
+		}
+		LOGGER.warn("OptiFine payload: " + installed.name.replace('/', '.') + " has no makeParticle shaped like the "
+				+ "one this repair knows; its particle provider lookup is left as OptiFine compiled it, which "
+				+ "throws NoSuchMethodError on the first particle");
 	}
 
 	/**
