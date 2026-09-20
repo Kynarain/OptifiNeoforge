@@ -1817,3 +1817,25 @@ OptiFine 的副本按"注册表 id 索引的 `Int2ObjectMap`"取值,而运行时
 - **必须把该工具接进这条线的装配步骤**:现在这条线的载荷是手工装配的(见上文配方),不把这一步写进
   配方,重建时这个修复就会丢。接线后要在本文件里补上实际调用的命令与它的输出。
 - 备份留在 `jars-26.1.2\optifine-26.1.2-neoforge.jar.before-particle-fix`,便于逐条目复算。
+### 发布前的一项校验(26.1.2 载荷)
+
+`ParticleProviderRepair` 是幂等的,而且**不静默**:载荷已经修好时,它会明说"没有可修的地方",并报出
+`makeParticle` 当前的形状。实测(rig 侧 `repair-26.1.2-payload.ps1 -DryRun`):
+
+```
+no method of ... ParticleEngine reads the particle provider through
+ParticleResources.getProviders()/Registry.getId()/Int2ObjectMap.get(),
+so nothing was repaired and the payload is left as it is
+makeParticle calls ParticleResources.getProviders()Ljava/util/Map;
+```
+
+所以**重建这条线的载荷之后、发布之前**,先跑一次 `repair-26.1.2-payload.ps1 -DryRun`:
+
+- 期望看到 "nothing was repaired" + `makeParticle calls ...getProviders()Ljava/util/Map;`
+  —— 这才说明这次重建把修复带上了;
+- 如果它反过来报"修了三处",说明这次重建**丢了**修复,必须先真跑一次(并复算逐条目 diff 只有
+  `srg/net/minecraft/client/particle/ParticleEngine.class` 一个条目不同),才能继续发布。
+
+该脚本在改写后会自己出证据:与 `.before-particle-fix` 的逐条目对比(条目数一致、无增删、只能差一个
+条目,否则以非零退出明确判"不是干净的修复"),外加该类的 `javap`。**jar 体积不是判据**:首次改写时
+10018170 -> 10170792 字节的变化纯粹来自重新压缩。
