@@ -50,7 +50,7 @@ import org.objectweb.asm.tree.MethodNode;
  * Class names need no rewriting - since 1.17 the payload already uses official class names and only
  * the members are SRG - so the table is keyed by the owner's official name.</p>
  *
- * <p>Two things about the join are easy to get wrong, and both were measured here rather than
+ * <p>Three things about the join are easy to get wrong, and all three were measured here rather than
  * reasoned about:</p>
  *
  * <ul>
@@ -58,10 +58,15 @@ import org.objectweb.asm.tree.MethodNode;
  *       only per name <em>and</em> descriptor, so a class with two overloads both called {@code a}
  *       collides when the key is the name alone - that is how {@code m_118316_}, which is
  *       {@code getSprite}, was first read as {@code dumpContents}. Both files write descriptors in
- *       the obfuscated namespace ({@code (Lahg;)Lgen;}), so they compare directly.</li>
+ *       the obfuscated namespace ({@code (Lahg;)Lgen;}), so they compare directly - but only after
+ *       the two spellings of a class name have been reduced to one, see {@link #canonical}.</li>
  *   <li><b>A reference's owner is not always the declaring class.</b> {@code invokevirtual
  *       BlockState.m_60734_} is legal for a member declared in a superclass, and the table is built
  *       from declaring classes, so a lookup that misses has to walk the hierarchy.</li>
+ *   <li><b>A member line's columns are not fixed by the header.</b> The third column is the member id
+ *       in one file and the member name in the other, so it - not the shape of the second column -
+ *       is what says whether a descriptor is present at all. Getting that wrong cost four members
+ *       their entry, all of them enum constants MCPConfig names {@code X}, {@code Y} and {@code Z}.</li>
  * </ul>
  *
  * <p>Descriptors are not part of the table's own key: one SRG name maps to one official name per
@@ -80,6 +85,9 @@ public final class SrgMemberMap {
 
 	/** A field descriptor, for the tsrg2 shape that carries one. */
 	private static final Pattern FIELD_DESCRIPTOR = Pattern.compile("^(\\[+)?([BCDFIJSZ]|L[^;]+;)$");
+
+	/** MCPConfig's third field column, the numeric member id, which a descriptor column never is. */
+	private static final Pattern MEMBER_ID = Pattern.compile("^\\d+$");
 
 	private final Map<String, Map<String, String>> fields;
 	private final Map<String, Map<String, String>> methods;
@@ -244,13 +252,50 @@ public final class SrgMemberMap {
 			return null;
 		}
 		boolean method = tokens[1].startsWith("(");
-		boolean withDescriptor = method || (tokens.length >= 3 && FIELD_DESCRIPTOR.matcher(tokens[1]).matches());
+		// A field line has three shapes and the third column is what tells them apart, not the second:
+		// MCPConfig writes "obf srg id", the obf->official table this project generates writes
+		// "obf official", and a NeoForm-style line would carry the type as "obf descriptor srg id". Reading
+		// the descriptor by shape alone made the enum constants MCPConfig calls X / Y / Z look like boolean
+		// fields with the id as their name. The id column is always numeric, so it decides.
+		boolean withDescriptor = method || (tokens.length >= 3
+				&& !MEMBER_ID.matcher(tokens[2]).matches() && FIELD_DESCRIPTOR.matcher(tokens[1]).matches());
 		if(withDescriptor) {
 			// obf descriptor name [id]
-			return tokens.length >= 3 ? new Member(tokens[0], tokens[2], method, tokens[1]) : null;
+			return new Member(tokens[0], tokens[2], method, canonical(tokens[1]));
 		}
 		// obf name [id], a field line with no descriptor
 		return new Member(tokens[0], tokens[1], false, null);
+	}
+
+	/**
+	 * The one spelling of a descriptor both files have to agree on, because the join is keyed by it.
+	 *
+	 * <p>A JVM descriptor names its classes with {@code /} and never with {@code .}, so the two are not two
+	 * spellings of one descriptor - a key built from one can never match a key built from the other.
+	 * Measured on 1.20.2: Mojang's own mappings leave some classes unrenamed
+	 * ({@code net.minecraft.server.MinecraftServer -> net.minecraft.server.MinecraftServer},
+	 * {@code com.mojang.blaze3d.platform.GlStateManager -> com.mojang.blaze3d.platform.GlStateManager}), the
+	 * obf->official table this rig generates writes those obfuscated names into descriptors as they are, and
+	 * all 102 members whose signature mentions such a class therefore never joined MCPConfig's side. The
+	 * rewrite then had no official name for them and left the SRG name in the reference - which is a
+	 * {@code NoSuchMethodError} the first time that code runs, not a table entry quietly missing.</p>
+	 */
+	private static String canonical(String descriptor) {
+		if(descriptor == null || descriptor.indexOf('.') < 0) {
+			return descriptor;
+		}
+		StringBuilder canonical = new StringBuilder(descriptor.length());
+		boolean inClassName = false;
+		for(int index = 0; index < descriptor.length(); index++) {
+			char character = descriptor.charAt(index);
+			if(character == 'L') {
+				inClassName = true;
+			} else if(character == ';') {
+				inClassName = false;
+			}
+			canonical.append(inClassName && character == '.' ? '/' : character);
+		}
+		return canonical.toString();
 	}
 
 	/**
