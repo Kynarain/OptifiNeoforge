@@ -172,7 +172,8 @@ public final class ForgeApiShims {
 										record(owner, shapes).instantiated = true;
 									}
 									record(owner, shapes).methods.put(methodName + " " + methodDesc,
-											new MethodReference(methodName, methodDesc, opcode == Opcodes.INVOKESTATIC));
+											new MethodReference(methodName, methodDesc,
+													opcode == Opcodes.INVOKESTATIC, isInterface));
 								}
 							};
 						}
@@ -198,14 +199,26 @@ public final class ForgeApiShims {
 		// The shape of a type is decided from how it is used first; see Shape.mustBeClass(). Only when
 		// nothing in the handover shows a class-only use does the older rule apply - reading OptiFine's
 		// own copy, which for a Forge type never exists - and then the interface fallback stands.
+		//
+		// The strongest evidence of all is the reference form the caller wrote. A call site whose constant
+		// pool entry is an InterfaceMethodref - ASM reports that as isInterface - can only resolve against
+		// an interface, and a class there raises
+		//   IncompatibleClassChangeError: Found class ..., but interface was expected
+		// Measured on 1.20.2, 1.20.4 and 1.21.8: their payload's ParticleEngine calls
+		// IClientBlockExtensions.of through an InterfaceMethodref and calls addHitEffects with
+		// invokeinterface, while the shipped shell was a class - because declaresItself() forced one for the
+		// DUMMY field Forge declares on that interface. A self-typed static field no longer forces a class:
+		// an interface can fill it in its own <clinit> with the same Noop implementation the factory returns.
 		try(ZipFile zip = new ZipFile(jars.get(jars.size() - 1).toFile())) {
 			for(String name : names) {
 				Shape shape = shapes.getOrDefault(name, new Shape());
-				boolean asInterface = (shape.mustBeClass() || declaresItself(shape, name)) ? false : isInterface(zip, name);
+				boolean asInterface = shape.mustBeClass() ? false
+						: (shape.callsThroughInterface() || (!declaresItself(shape, name) && isInterface(zip, name)));
 				stubs.put(name + ".class", stub(name, asInterface, shape));
-				if(asInterface && hasSelfTypedFactory(name, shape)) {
-					// The factory answers an instance of the type it belongs to, so a shell for that type is
-					// needed as well; written beside it so the two travel together into the jar.
+				if(asInterface && needsNoop(name, shape)) {
+					// The factory answers an instance of the type it belongs to, and a self-typed static
+					// constant is one too, so a shell for that type is needed as well; written beside it so
+					// the two travel together into the jar.
 					stubs.put(name + "$Noop.class", noopImplementation(name, shape));
 				}
 			}
@@ -362,16 +375,18 @@ public final class ForgeApiShims {
 		}
 		if(!selfTypedConstants.isEmpty()) {
 			// The constants are built by calling the no-argument constructor, so the shell has to have
-			// one even when the payload never referenced it.
-			if(written.add("<init>()V")) {
+			// one even when the payload never referenced it - unless it is an interface, which cannot be
+			// instantiated at all and whose constant is the Noop implementation beside it instead.
+			if(!isInterface && written.add("<init>()V")) {
 				writeConstructor(writer, internalName, "()V", tracksEmptiness);
 			}
+			String implementation = isInterface ? internalName + "$Noop" : internalName;
 			MethodVisitor clinit = writer.visitMethod(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
 			clinit.visitCode();
 			for(String constant : selfTypedConstants) {
-				clinit.visitTypeInsn(Opcodes.NEW, internalName);
+				clinit.visitTypeInsn(Opcodes.NEW, implementation);
 				clinit.visitInsn(Opcodes.DUP);
-				clinit.visitMethodInsn(Opcodes.INVOKESPECIAL, internalName, "<init>", "()V", false);
+				clinit.visitMethodInsn(Opcodes.INVOKESPECIAL, implementation, "<init>", "()V", false);
 				clinit.visitFieldInsn(Opcodes.PUTSTATIC, internalName, constant, "L" + internalName + ";");
 			}
 			clinit.visitInsn(Opcodes.RETURN);
@@ -394,6 +409,25 @@ public final class ForgeApiShims {
 	private static boolean hasSelfTypedFactory(String internalName, Shape shape) {
 		for(MethodReference method : shape.methods.values()) {
 			if(method.isStatic && selfTyped(method.desc, internalName)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Whether this shell has to have a concrete implementation of itself beside it.
+	 *
+	 * <p>Two things need one: a static factory that hands the type back (it must not answer null), and a
+	 * static field of the type's own type (the API's own constant, which a null would break just as badly).</p>
+	 */
+	private static boolean needsNoop(String internalName, Shape shape) {
+		if(hasSelfTypedFactory(internalName, shape)) {
+			return true;
+		}
+		String self = "L" + internalName + ";";
+		for(FieldReference field : shape.fields.values()) {
+			if(field.isStatic() && self.equals(field.desc())) {
 				return true;
 			}
 		}
@@ -556,6 +590,23 @@ public final class ForgeApiShims {
 			return extended || instantiated;
 		}
 
+		/**
+		 * Whether any recorded call site referenced this type as an interface.
+		 *
+		 * <p>{@code InterfaceMethodref} is a promise about the type: the caller's constant pool says
+		 * "interface", and the JVM refuses the call if a class is what resolves. This is the only piece of
+		 * evidence about the kind that comes from the handover rather than from a guess, so it wins over
+		 * {@link #declaresItself} - see {@link #generate}.</p>
+		 */
+		boolean callsThroughInterface() {
+			for(MethodReference method : methods.values()) {
+				if(method.interfaceRef()) {
+					return true;
+				}
+			}
+			return false;
+		}
+
 		/** How many members are named on this type. */
 		public int size() {
 			return fields.size() + methods.size();
@@ -565,7 +616,7 @@ public final class ForgeApiShims {
 	private record FieldReference(String name, String desc, boolean isStatic) {
 	}
 
-	private record MethodReference(String name, String desc, boolean isStatic) {
+	private record MethodReference(String name, String desc, boolean isStatic, boolean interfaceRef) {
 	}
 
 	/**

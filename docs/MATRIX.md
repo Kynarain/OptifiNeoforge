@@ -4817,3 +4817,92 @@ public class net.minecraftforge.client.extensions.common.IClientBlockExtensions 
 所以它的修复真的成立。种类判断应该来自**记录下来的调用点**(ASM 的 `visitMethodInsn` 本来就给了
 `isInterface`),而不是现在的"shape 里声明了自身类型的字段"——接口完全可以在自己的 `<clinit>` 里用
 Noop 实例填这种字段。**尚未修**,这是下一轮的第一件事。
+
+### 七、2026-09-21:外壳**种类**按调用点决定(已修),以及 1.20.2 第一次入世后当场暴露的下一件缺陷
+
+#### 1. 种类缺陷:量到的样子
+
+交付的载荷把 Forge 扩展类型当**接口**调用(1.20.2 自己的 `ParticleEngine`,`javap -p -c`):
+
+```
+3:  invokestatic  InterfaceMethod .../IClientBlockExtensions.of:(...)L.../IClientBlockExtensions;
+20: invokeinterface .../IClientBlockExtensions.addHitEffects:(...)Z
+```
+
+而**当时交付的 jar** 里同一个类型是**类**(1.20.2 / 1.20.4 / 1.21.8 都一样):
+
+```
+public class net/minecraftforge/client/extensions/common/IClientBlockExtensions     914 字节
+  public static IClientBlockExtensions DUMMY;
+  public IClientBlockExtensions();
+  public static IClientBlockExtensions of(BlockState);
+```
+
+常量池写的是 `InterfaceMethodref`、解析到的是类 → 第一次攻击/破坏方块预计
+`IncompatibleClassChangeError: Found class ..., but interface was expected`。
+
+#### 2. 修法与量测
+
+`ForgeApiShims`:`MethodReference` 增加 `interfaceRef` 字段(`visitMethodInsn` 的 `isInterface`,来自载荷自己
+的调用点),`Shape.callsThroughInterface()` 汇总,`generate()` 的种类规则改成
+
+```java
+asInterface = shape.mustBeClass() ? false
+        : (shape.callsThroughInterface() || (!declaresItself(shape, name) && isInterface(zip, name)));
+```
+
+也就是说:**调用点说是接口,就必须是接口**;`declaresItself()`(shape 里声明了自身类型的静态字段,
+Forge 的 `DUMMY` 就是)不再把整个类型压成类 —— 接口可以在自己的 `<clinit>` 里用 Noop 实例填那个字段,
+`needsNoop()` 也因此同时看"自类型静态工厂"和"自类型静态字段"。接口不再写构造器。
+
+量测(离线,同一对输入):
+
+| | 外壳 | Noop | `<clinit>` |
+|---|---|---|---|
+| 修前(1.20.2 jar 内) | `class`,914 字节,带 `DUMMY` + 匿名 `$1` | 无 | 造自身实例 |
+| 修后(1.20.2 重新生成) | **`interface`**,776 字节 | `IClientBlockExtensions$Noop` 687 字节 | `new ...$Noop` → `putstatic DUMMY` |
+| 修后(1.21.8 重新生成) | **`interface`**,921 字节 | 五个 Noop | 同上 |
+
+两套 stub 都过了数据流审计(1.20.2 54 个类、1.21.8 92 个类,0 findings)。
+
+#### 3. 1.20.2 重建 + 第一次入世
+
+重建后的 jar 1721113 字节,SHA-256
+`5757CFDFD697CB61FC2CD4794650336E55EBA323012801D46D79AC41403356F0`,审计 603 个类 0 findings,
+keep plan 18 行(含 `IntegratedServer initServer ()Z`),载荷里是**接口**外壳 + Noop。
+
+真机:这一条线**第一次**跑出入世行 ——
+
+```
+07:44:53.485 PlayerList: Dev[local:E:d62d77a2] logged in with entity id 115 at (-7.5, 76.0, 8.5)
+07:44:53.505 MinecraftServer: Dev joined the game
+```
+
+也就是说 join keep plan 在**第二条线**上成立(1.20.6 之外的第一条),配置阶段不再死在
+`ConfigSync.syncConfigs`。
+
+#### 4. 紧接着暴露的下一件缺陷(未修):**第一帧读 null 的玩家**
+
+入世一秒后客户端崩在**客户端侧的世界渲染**上(`crash-2026-09-21_07.44.55-client.txt`):
+
+```
+java.lang.NullPointerException: Cannot read field "oSpinningEffectIntensity" because "this.minecraft.player" is null
+  at net.minecraft.client.renderer.GameRenderer.renderLevel(GameRenderer.java:1619)
+```
+
+交付类里那条读没有判空(`javap -p -c` 自 jar 内的
+`optifineoforge/patched/net/minecraft/client/renderer/GameRenderer.class`):
+
+```
+233: aload_0
+234: getfield minecraft
+237: getfield Minecraft.player        <- 没有判空
+240: getfield LocalPlayer.oSpinningEffectIntensity:F
+```
+
+`minecraft.player` 为 null 的时刻正是客户端还停在 `GenericDirtMessageScreen`、客户端关卡已存在但玩家实体
+还没到的时候,于是世界的**第一帧**就死。崩溃前一共 11 个同形状的 `NullPointerException`
+(`player.getAbilities()`、`LocalPlayer.getInventory()`、`getRecipeBook()`、`position()`、
+`getDeltaMovement()`),说明有若干条 OptiFine 改过的渲染/tick 路径都无条件解引用玩家。1.20.6 没有暴露这一条
+(它的载荷连渲了 4.7 分钟),两条线的 `GameRenderer` 在这里不一样。**尚未修**,1.20.2 的下一件,
+1.20.4 很可能同形(未测)。
