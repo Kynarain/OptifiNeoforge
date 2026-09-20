@@ -203,6 +203,11 @@ public final class ForgeApiShims {
 				Shape shape = shapes.getOrDefault(name, new Shape());
 				boolean asInterface = (shape.mustBeClass() || declaresItself(shape, name)) ? false : isInterface(zip, name);
 				stubs.put(name + ".class", stub(name, asInterface, shape));
+				if(asInterface && hasSelfTypedFactory(name, shape)) {
+					// The factory answers an instance of the type it belongs to, so a shell for that type is
+					// needed as well; written beside it so the two travel together into the jar.
+					stubs.put(name + "$Noop.class", noopImplementation(name, shape));
+				}
 			}
 		}
 		return stubs;
@@ -307,6 +312,26 @@ public final class ForgeApiShims {
 				continue;
 			}
 			MethodVisitor body = writer.visitMethod(methodAccess, method.name, method.desc, null, null);
+			if(method.isStatic && selfTyped(method.desc, internalName)) {
+				// A static factory that hands back a value of the type that declares it must not answer
+				// null, because the caller's very next instruction uses the result. Measured on 1.20.6:
+				// IClientBlockExtensions.of(BlockState) returned null and OptiFine's ParticleEngine calls
+				// addHitEffects/addDestroyEffects on it immediately, so the client died with
+				//   NullPointerException: Cannot invoke "...addHitEffects(...)" because the return value of
+				//   "...IClientBlockExtensions.of(BlockState)" is null
+				//   at ParticleEngine.addBlockHitEffects(ParticleEngine.java:823) <- Minecraft.continueAttack
+				// on the first attack or block break of a session. An interface cannot be instantiated, so
+				// an interface gets a do-nothing implementation of itself beside it.
+				String implementation = isInterface ? internalName + "$Noop" : internalName;
+				body.visitCode();
+				body.visitTypeInsn(Opcodes.NEW, implementation);
+				body.visitInsn(Opcodes.DUP);
+				body.visitMethodInsn(Opcodes.INVOKESPECIAL, implementation, "<init>", "()V", false);
+				body.visitInsn(Opcodes.ARETURN);
+				body.visitMaxs(2, Math.max(1, Type.getArgumentsAndReturnSizes(method.desc) >> 2));
+				body.visitEnd();
+				continue;
+			}
 			body.visitCode();
 			switch(Type.getReturnType(method.desc).getSort()) {
 				case Type.VOID -> body.visitInsn(Opcodes.RETURN);
@@ -359,6 +384,81 @@ public final class ForgeApiShims {
 
 	/** The name of the field a shell uses to remember that it stands for the empty constant. */
 	private static final String EMPTY_FLAG = "optifineoforge$empty";
+
+	/** Whether a method with this descriptor hands back the very type that declares it. */
+	private static boolean selfTyped(String desc, String internalName) {
+		return ("L" + internalName + ";").equals(Type.getReturnType(desc).getDescriptor());
+	}
+
+	/** Whether any static call recorded on this type returns the type itself. */
+	private static boolean hasSelfTypedFactory(String internalName, Shape shape) {
+		for(MethodReference method : shape.methods.values()) {
+			if(method.isStatic && selfTyped(method.desc, internalName)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * A concrete do-nothing implementation of one interface shell, named {@code <interface>$Noop}.
+	 *
+	 * <p>It exists because an interface shell cannot answer a static factory of its own type with an
+	 * instance - an interface cannot be instantiated - and answering null crashes the caller, which is
+	 * what happened on 1.20.6 (see the comment on the factory body in {@link #stub}). The methods it
+	 * implements are the ones OptiFine was seen calling on the type; anything else it does not declare
+	 * throws {@code AbstractMethodError} if it is ever invoked, which is no worse than the
+	 * {@code NoSuchMethodError} a null would have produced one instruction later.</p>
+	 */
+	private static byte[] noopImplementation(String internalName, Shape shape) {
+		String noop = internalName + "$Noop";
+		ClassWriter writer = new ClassWriter(0);
+		writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC | Opcodes.ACC_SUPER, noop, null, "java/lang/Object",
+				new String[] {internalName});
+		writeConstructor(writer, noop, "()V", false);
+		java.util.Set<String> written = new java.util.HashSet<>();
+		written.add("<init>()V");
+		for(MethodReference method : shape.methods.values()) {
+			if(method.isStatic || "<init>".equals(method.name) || !written.add(method.name + method.desc)) {
+				continue;
+			}
+			writeDoNothing(writer, Opcodes.ACC_PUBLIC, method.name, method.desc);
+		}
+		writer.visitEnd();
+		return writer.toByteArray();
+	}
+
+	/** A method whose body is the do-nothing value for its return type. */
+	private static void writeDoNothing(ClassWriter writer, int access, String name, String desc) {
+		MethodVisitor body = writer.visitMethod(access, name, desc, null, null);
+		body.visitCode();
+		switch(Type.getReturnType(desc).getSort()) {
+			case Type.VOID -> body.visitInsn(Opcodes.RETURN);
+			case Type.BOOLEAN, Type.CHAR, Type.BYTE, Type.SHORT, Type.INT -> {
+				body.visitInsn(Opcodes.ICONST_0);
+				body.visitInsn(Opcodes.IRETURN);
+			}
+			case Type.LONG -> {
+				body.visitInsn(Opcodes.LCONST_0);
+				body.visitInsn(Opcodes.LRETURN);
+			}
+			case Type.FLOAT -> {
+				body.visitInsn(Opcodes.FCONST_0);
+				body.visitInsn(Opcodes.FRETURN);
+			}
+			case Type.DOUBLE -> {
+				body.visitInsn(Opcodes.DCONST_0);
+				body.visitInsn(Opcodes.DRETURN);
+			}
+			default -> {
+				body.visitInsn(Opcodes.ACONST_NULL);
+				body.visitInsn(Opcodes.ARETURN);
+			}
+		}
+		int locals = Type.getArgumentsAndReturnSizes(desc) >> 2;
+		body.visitMaxs(2, Math.max(1, locals));
+		body.visitEnd();
+	}
 
 	/**
 	 * A constructor that does nothing but chain to {@code Object}, for whatever arguments it takes.

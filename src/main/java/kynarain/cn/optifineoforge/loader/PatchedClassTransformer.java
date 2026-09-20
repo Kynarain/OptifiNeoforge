@@ -969,8 +969,21 @@ public final class PatchedClassTransformer implements NodeTransformer {
 			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
 					"(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
 			trace.add(new VarInsnNode(Opcodes.ALOAD, 1));
-			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Object", "getClass", "()Ljava/lang/Class;", false));
-			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Class", "getName", "()Ljava/lang/String;", false));
+			// String.valueOf, not getClass().getName(): setScreen is called with null as a matter of
+			// course. NeoForge's ClientHooks.popGuiLayer does it whenever the last GUI layer is popped,
+			// which is exactly what ReceivingLevelScreen.onClose does when a quick-play world finishes
+			// loading, and the unconditional getClass() then threw
+			//
+			//   NullPointerException: Cannot invoke "Object.getClass()" because "<parameter1>" is null
+			//     at Minecraft.setScreen <- ClientHooks.popGuiLayer <- Screen.onClose
+			//     <- ReceivingLevelScreen.tick
+			//
+			// one second AFTER a successful join - measured on 1.20.6, and it is why every tracer log of
+			// this rig stops at ReceivingLevelScreen. valueOf answers "null" instead, needs no branch (so
+			// no stack map frames have to be computed for the injected sequence) and keeps the class name
+			// in the line for every screen that is not null.
+			trace.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/lang/String", "valueOf",
+					"(Ljava/lang/Object;)Ljava/lang/String;", false));
 			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
 					"(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
 			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",

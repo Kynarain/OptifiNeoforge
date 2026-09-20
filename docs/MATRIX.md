@@ -4740,3 +4740,80 @@ rig 新增 `tools-src\StackAudit.java`(对 jar 里每个类的每个方法跑 AS
 `public boolean initServer()`,而载荷的 `initServer` 把 lifecycle 调用路由到 OptiFine 的 Reflector,
 类名用的是 Forge 的 `net.minecraftforge.server.ServerLifecycleHooks`,本运行期不存在)。1.20.2/1.20.4 的
 这一修复**都还没有真机跑过**,1.21.x 各线连 keep plan 都还没加。
+
+### 六、2026-09-21:入世后的两件新事都修了并跑过真机,同时量到一个"外壳种类"缺陷
+
+本轮改动(1.20.x 分支):
+`optifine/ForgeApiShims.java` 与 `loader/PatchedClassTransformer.java`。测试 jar:
+1748019 字节,SHA-256 `22E162451A2BA417E8B9ACFE45CE8E1BA3A07C84E46051988F3D9089DC71AC5A`,
+07:28:37 重建,`StackAudit` 612→617 个类 0 findings。
+
+#### 1. Forge shim:自作静态工厂不再回答 null(修攻击/破坏方块即崩)
+
+量到的事实:交付的 `ParticleEngine` 只在两处用 Forge 包名的扩展接口,而 jar 里的 shim
+`IClientBlockExtensions.of(BlockState)` 就是 `aconst_null; areturn`(668 字节),于是
+`of(...)` 的返回值被立刻解引用 —— 攻击一次就 `NullPointerException`。
+
+改法:凡是**返回自己这个类型的静态工厂**,不再 `aconst_null`;接口则**在旁边生成一个空实现**
+`<interface>$Noop`(实现 OptiFine 实际调用过的方法),工厂返回它的新实例;类外壳则返回自身的新实例。
+实测:0 与 4 的 stub 集合从 61 个类变成 66 个(多出五个 Noop:block / fluid / item / mob-effect /
+item-font),`of` 变成 `new IClientBlockExtensions$Noop; dup; invokespecial <init>; areturn`,776 字节。
+同一条规则覆盖 `IClientFluidTypeExtensions.of`(两个重载)、`IClientItemExtensions.of`、
+`IClientMobEffectExtensions.of`。
+
+#### 2. 屏幕追踪判空(修"进世界后 1 秒自杀")
+
+注入的打印从 `aload_1; Object.getClass(); Class.getName()` 改成 `aload_1; String.valueOf(Object)`:
+NeoForge 的 `ClientHooks.popGuiLayer` 合法地传 null,旧写法直接抛 NPE。**已在真机核实**:
+四次运行都进世界,tracer 都打印 10 行并越过旧的 `ReceivingLevelScreen` 天花板,其中
+
+```
+OPF-SCREEN ...ReceivingLevelScreen@465d9cce
+OPF-SCREEN ...ReceivingLevelScreen@6ed3fecb
+OPF-SCREEN null
+OPF-SCREEN null
+```
+
+四次运行 `NullPointerException` 0 次、崩溃报告 0 个。
+
+#### 3. 攻击路径**没有被这几次运行确证**,如实记下
+
+第 3 次运行把 8 秒的攻击按住送到了**真正的游戏窗口**(`Minecraft NeoForge* 1.20.6`,客户区 854x480,
+`responding=True`,坐标在客户区内),结果 0 个 null 扩展 NPE、0 个崩溃报告;但第 4 次**完全不发输入**的
+对照运行同样丢了客户端,所以"点过之后没崩"与"点之前客户端就已经没了"分不开。
+(第 2 次运行点击的是**控制台窗口**——标题是 java.exe 路径、客户区 960x480——那次什么也证明不了;
+脚本现在要求标题里出现 Minecraft 才点击,这个陷阱写进了脚本注释。)
+
+#### 4. 那次无声退出:记为**未解释**,不记为"通过"
+
+第 1、3、4 次运行都在**入世后约 7 秒**客户端消失:游戏日志停在半帧上(最后几行是
+`Replaced ... RenderChunkRegion` / `BufferBuilder$SortState`),没有崩溃报告、没有 NPE、没有
+`VerifyError`、没有 `hs_err_pid*.log`,也没有正常关闭的 `Stopping server` / `Saving worlds`。
+唯一的关联是:这几次都带 `-AllowConcurrent`,机器上同时有另一个项目的 Minecraft 客户端
+(`optilithium`,Fabric 1.21.1,07:21:18 启动);而当天更早的两次 FXAA 运行(07:09-07:21,在那个客户端
+启动之前)在世界里待了 4.7 分钟,只有自己的脚本才停掉它。**这是两个观测之间的相关,不是隔离实验**:
+还没有人在"机器上没有别的客户端"的条件下把同一只 jar 看满五分钟。在此之前,准确的表述是
+"另一个客户端在跑时,客户端在入世约 7 秒后无声消失"。
+
+#### 5. 由此量到的下一个缺陷:外壳的"种类"(class vs interface)
+
+载荷把 Forge 扩展类型当**接口**调用:
+
+```
+3:  invokestatic  InterfaceMethod .../IClientBlockExtensions.of:(...)...IClientBlockExtensions;
+20: invokeinterface .../IClientBlockExtensions.addHitEffects:(...)Z
+```
+
+而 1.20.2、1.20.4、1.21.8 交付的外壳是**类**:
+
+```
+public class net.minecraftforge.client.extensions.common.IClientBlockExtensions {
+  public static net.minecraftforge.client.extensions.common.IClientBlockExtensions DUMMY;
+```
+
+常量池里是 `InterfaceMethodref` 而解析到的是类,会抛
+`IncompatibleClassChangeError: Found class ..., but interface was expected`,也就是那几条线上第一次攻击
+/ 破坏方块预计会以 ICCE 崩掉(取代本轮修掉的 NPE)。1.20.6 是外壳正确出成接口的那条线(`javap` 已核),
+所以它的修复真的成立。种类判断应该来自**记录下来的调用点**(ASM 的 `visitMethodInsn` 本来就给了
+`isInterface`),而不是现在的"shape 里声明了自身类型的字段"——接口完全可以在自己的 `<clinit>` 里用
+Noop 实例填这种字段。**尚未修**,这是下一轮的第一件事。
