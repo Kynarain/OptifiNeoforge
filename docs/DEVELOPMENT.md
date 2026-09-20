@@ -1777,3 +1777,43 @@ rig 侧脚本 `test-shaderpack.ps1` 做"装包 → 写配置 → 启动 → 从�
 **顺带把一个之前"没有解释"的数字解释掉了**:README 里 26.1.2 的旧记录写的是 `[OptiFine]` **3478 行**,
 而我在无光影包时量到 352 行、当时记为"差别没有解释"。装上光影包后这一线量到 **3436 行** ——
 3478 属于"开着光影包"的那次记录,352 属于"没开"的那次。两者不是矛盾,是两种情况。
+## 26.1.2 离线补上粒子提供者查找(新工具 `ParticleProviderRepair`)
+
+这条线发的是**成品载荷**、走 OptiFine 自己的类处理器,没有加载期变换,所以 `ParticleEngine.makeParticle`
+那个缺陷只能在载荷 jar 里离线改。缺陷本身已在 1.21.10 联机实测到:进世界几秒后下雨粒子一生成客户端就死,
+
+```
+NoSuchMethodError: 'Int2ObjectMap ParticleResources.getProviders()'
+  at ParticleEngine.makeParticle(ParticleEngine.java:76)
+  at ClientLevel.doAddParticle(...)   <- WeatherEffectRenderer.tickRainParticles
+```
+
+OptiFine 的副本按"注册表 id 索引的 `Int2ObjectMap`"取值,而运行时的 `ParticleResources` 只剩
+`Map<ResourceLocation, ParticleProvider<?>> getProviders()`。工具把它改成按粒子类型的资源名取值:
+
+| 原 | 改为 |
+|---|---|
+| `ParticleResources.getProviders()Lit/unimi/dsi/fastutil/ints/Int2ObjectMap;` | `ParticleResources.getProviders()Ljava/util/Map;` |
+| `Registry.getId(Object)I` | `Registry.getKey(Object)Lnet/minecraft/resources/Identifier;` |
+| `Int2ObjectMap.get(I)Object` | `java/util/Map.get(Object)Object` |
+
+取到的是同一个 provider(注册表 id 与资源名指向同一条),所以 OptiFine 的自定义粒子颜色/贴图仍在链路上
+—— 这也是为什么不是直接丢弃这个类、改用运行时的副本。注意 26.x 的返回类型是 `Identifier`(该版本已把
+`ResourceLocation` 改名),此处必须按本版真实签名写,不能照抄别线的描述符。
+
+**形状**照 `SpriteCollectionRepair`(同为离线双胞胎):`main(<payload jar> [--dry-run])`,`ZipFile` 读、
+只改写 `srg/net/minecraft/client/particle/ParticleEngine.class` 一个条目、其余原样写回临时文件再
+`REPLACE_EXISTING`;载荷里没有该类、或没有该形状的方法时,**明确打到 stdout 并原样写回**,不静默跳过。
+
+**已核实**(父会话独立复核,不只看工具自证):
+
+- 与备份逐条目对比:两边都 9536 条,无增无删,**只有那一个类的内容不同**。因此 jar 体积
+  `10018170 -> 10170792` 的变化是重新压缩,不是多塞了内容 —— jar 体积不能当有效性判据,逐条目 diff 才是。
+- `javap` 该类的三处调用确已改写(见上表),且用的是 26.x 真实的 `Identifier`。
+
+**待办(不要当成已完成)**:
+
+- **运行期那一半还没跑**:真机进 26.1.2 世界、让雨粒子生成,这条缺陷才算在这条线上验完。
+- **必须把该工具接进这条线的装配步骤**:现在这条线的载荷是手工装配的(见上文配方),不把这一步写进
+  配方,重建时这个修复就会丢。接线后要在本文件里补上实际调用的命令与它的输出。
+- 备份留在 `jars-26.1.2\optifine-26.1.2-neoforge.jar.before-particle-fix`,便于逐条目复算。
