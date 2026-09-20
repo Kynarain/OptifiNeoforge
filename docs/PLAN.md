@@ -1413,3 +1413,28 @@ public class net.minecraftforge.client.extensions.common.IClientBlockExtensions 
 所以上面 ICCE 是**从字节码推出来的预期**,不是实测。它排在下一轮的第一位,和
 `MemberRestorePlan` 的 `stackEffect`/`callEffect` 移植、`MemberRestoreTransformer` 的"每次调用各一个
 接收者"一起,都是 1.21.x 在入世之前必须先落地的三件事。
+
+### 外壳种类已经改了(离线量测,尚未真机)
+
+改法与 1.20.x 一致:`MethodReference` 增加 `interfaceRef`(来自 `visitMethodInsn` 的 `isInterface`),
+`Shape.callsThroughInterface()` 汇总,`generate()` 改为
+
+```java
+asInterface = shape.mustBeClass() ? false
+        : (shape.callsThroughInterface() || (!declaresItself(shape, name) && isInterface(zip, name)));
+```
+
+**调用点说是接口,就必须是接口**;`declaresItself()`(Forge 的 `DUMMY` 就是这种"自身类型的静态字段")
+不再把类型压成类 —— 接口在自己的 `<clinit>` 里用 Noop 实例填它,`needsNoop()` 因此同时看自类型静态工厂
+与自类型静态字段。
+
+用本分支 1.21.8 的输入离线重新生成,同一个类型的量测对比:
+
+| | 外壳 | Noop |
+|---|---|---|
+| 修前(`jars-1.21.8-payload\...registered.jar` 内) | `class`,914 字节,带 `DUMMY` + 匿名 `$1` | 无 |
+| 修后(同一对输入重新生成) | **`interface`**,921 字节;`of()` 返回 Noop,`<clinit>` 里 `new ...$Noop` → `putstatic DUMMY` | 五个 Noop(block / fluid / item / mob-effect / item-font),全套 92 个类过数据流审计 0 findings |
+
+**仍未在真机上验证**:这条分支还没有一次客户端进世界,所以"接口外壳 + Noop 是不是就通了"依然是从字节码
+与 1.20.x 那条线的实测推出来的。1.21.x 入世之前仍要先落地上面那两件移植(`stackEffect`/`callEffect`、
+每次调用各一个接收者),然后重建各线再跑。
