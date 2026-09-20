@@ -1280,3 +1280,99 @@ OptiFine 自己的规则(抗锯齿与光影包互斥),而 FXAA 观感上的边�
 * `launch-fml10.ps1 -GameArgs ...`:把额外游戏参数追加在 profile 自己那批之后(quick play 就是这么传的);
 * `slp-ping.ps1`:最小 Server-List-Ping 客户端(握手 + status),用来在游戏之外问服务器"你是谁、在线几人";
 * `move-check.ps1`:两帧对比法测移动,把"静止基线"和"按键时段"两个数字一起打印出来。
+
+## 2026-09-20:1.21 的初始资源重载卡死——载荷里的一次自调用被改名到 OptiFine 自己的方法(已修)
+
+**一句话**:1.21(`21.0.167`,ModLauncher 路径,JDK 21)的四项启动判据一直是过的,但初始资源重载从来
+没有跑完过。今天量到它不是在等磁盘、也不是线程池饿死,而是**卡死在 OptiFine 自己的一个等待标志上**;
+根因是我们的 SRG 改写把载荷**自己类内**的一次调用改名成了同类里的另一个方法。修在 `1f24f23`。
+
+### 症状:三次连跑都停在同一个地方(可复现)
+
+1.21 这条线**能走到 tick loop**,但初始资源重载**从来没完成**:
+
+* 三次连跑 `VERDICT: STARTED` 与 `Setting user` **都通过**,进程也一直活着;
+* 三次都**一行 `Created: ...-atlas` 都没有**(不是少,是完全没有),并且**从来没有** `Sound engine started`;
+* 三次都**没有写崩溃报告**,也没有自己退出 —— 就那样坐着,直到 rig 的计时器把它们杀掉;
+* stderr 三次都恰好是记录的 **14 141 字节**,里面还是本线已知的那 4 条 `NoClassDefFoundError`(OptiFine
+  `J1_pre9` 的 Reflector 缺陷,异常被 OptiFine 吞掉)。
+
+这就是为什么"启动判据 + stderr 对照"这套口径**抓不到它**:判据全过、stderr 逐字相同,而画面永远停在加载
+遮罩后面。**教训**:stderr 相同不等于行为相同,判据里必须有一条"重载真的完成了"的**正向**证据 —— 本线就是
+`Sound engine started` 与 `Created: ...-atlas`。
+
+### 现场:截止时刻的线程转储
+
+* `Render thread` 在 `Minecraft.runTick` → `RenderSystem.limitDisplayFPS`:客户端**还活着**,正在正常跑帧;
+* 只有一个工作线程在干活:`Worker-Main-3`,`TIMED_WAITING (sleeping)`,栈是
+  `net.optifine.Config.sleep` ← `net.optifine.CustomItems.updateIcons` ←
+  `net.optifine.util.TextureUtils.registerCustomSprites` ←
+  `net.minecraft.client.renderer.texture.TextureAtlas.preStitch`;
+* **其余工作线程全部空闲** —— 所以这不是线程池被占满,而是那一个线程在**等一个永远不会被置上的标志**。
+
+### 字节码:它在等谁,谁本该去置那个标志
+
+读**载荷里那份**与**运行时那份**的字节码:
+
+* `CustomItems.updateIcons` 就是一句自旋:`while (!modelsLoaded.get()) Config.sleep(100);`
+* 那个标志的**唯一写入者**是 `CustomItems.loadModels(ModelBakery)`;
+* 而 `loadModels` 是从 `TextureUtils.registerCustomModels` 进去的,后者由**被换装的那份** `ModelBakery`
+  在**构造函数末尾**调用。
+
+### 定位手段:插桩排序 + 手动打开 `jdk.JavaExceptionThrow` 的 JFR
+
+两次测量把范围钉死:
+
+1. **插桩排序**:给构造函数与 `registerCustomModels` 各插一行探针,量到的顺序说明构造函数**确实跑了**,
+   然后**在它内部就死了**;
+2. **JFR 录制**:JDK 自带的 `profile.jfc` 把 `jdk.JavaExceptionThrow` **关掉了**,所以这一项是**手动打开**之后
+   才录到的。异常链是:`NullPointerException` at `java.util.List.of` ← `BlockStateModelLoader.<init>` 第 77 行
+   ← `ModelBakery.<init>` 第 107 行 ← `ModelManager.lambda$reload$0`。
+
+### 根因:一次改写落在了载荷自己的类里
+
+`renameSrgMembers` 改写了一处**解析在载荷自己类内**的引用:
+
+* 载荷的 `ModelBakery` **同时**声明了两个方法:`private m_119364_(ResourceLocation)`(**原版**那一个,认识
+  `builtin/*` → `BUILTIN_MODELS`)与 `public loadBlockModel(ResourceLocation)`(**OptiFine 自己的**加载器,
+  它自己吞掉失败并返回 **null**);
+* 映射表里 `m_119364_` → `loadBlockModel`,于是改名把**构造函数里那次"取缺失模型"的调用**指到了另一个方法上;
+* 它返回的 null 一路走到运行时的 `BlockStateModelLoader`,那里的 `List.of(missingModel)` **拒绝 null**;
+* 构造函数于是在**置 `modelsLoaded` 之前**就抛死了 ⇒ 等在 `updateIcons` 里的那个线程**永远睡下去**。
+
+同一轮里被**证伪**的四种解释:
+
+* **"装错了那一份副本"** —— 不是;
+* **"第二次重载把标志重置了"** —— 不是;
+* **"Reflector 那一步把它弄死了"** —— 不是:OptiFine 的 `Reflector.call` 自己返回 null 并**吞掉 `Throwable`**,
+  它不会把异常抛到构造函数外面;
+* **"保留计划(keep plan)插手了"** —— 不是:这条线上那份计划是**空的**。
+
+### 修法:成员由"本 jar 安装的那份"声明时,不改写
+
+在处理器里加了 `declaredByInstalledPayload` / `declaredNames`:当被引用的成员**正是本 jar 安装的那份类
+自己声明的**时候,跳过这次重命名,并打一行 `Kept N SRG name(s)` 便于下次抽查。
+
+**被否掉的另一种修法**(记下来,免得下一轮再想一遍):给 OptiFine 那个等待**加上限**。它确实能换来"重载跑完",
+但代价是**自定义物品贴图** —— 那个等待存在的意义就是保护那些贴图;用超时把它们丢掉,等于拿一个功能换一个判据。
+
+### 修后的实测(干净条件:无插桩、无 JFR)
+
+| 判据 | 修前(三次连跑) | 修后 |
+|---|---|---|
+| `VERDICT: STARTED` | 通过 | 通过 |
+| `Setting user` | 通过 | 通过 |
+| `Sound engine started` | **不通过** | **true** |
+| 本次运行新增崩溃报告 | 0 | **0** |
+| `Created: ...-atlas` 行数 | **0** | **18** |
+| stderr 字节数 | 14 141 | **14 141**(同样那 4 条 `NoClassDefFoundError`) |
+| `Error loading model: minecraft:builtin/missing` | 有 | **没了** |
+
+stderr 一个字节都没变,说明这次修的是**行为**,不是把异常挤到别的地方去。
+
+### 与更早那次记录的差异(旧数字不覆盖)
+
+更早那次记录里写的是 `[OptiFine]` **252 行**、`Pre-stitch` **14**;今天的干净跑实测是 **377 行**、**28** 次。
+原因是**重载这次真的跑完了** —— 后面那些 OptiFine 阶段(图集预拼、连接纹理采集等)以前**根本没有机会执行**,
+所以行数不是"变多了",而是**以前数不到**。两个数字都留在文档里:原记录 252 / 14,今日实测 377 / 28,
+读者按提交时间对号入座。
