@@ -630,7 +630,15 @@ public final class MemberRestorePlan {
 				// no label between the two.
 				List<AbstractInsnNode> counted = valueRun(insn);
 				if(counted != null) {
-					return initialiserFrom(internalName, field, counted);
+					MethodNode fromCount = initialiserFrom(internalName, field, counted);
+					if(fromCount != null) {
+						return fromCount;
+					}
+					// The run does not assemble into one expression, so it is a fragment and is not
+					// shipped. The label walk below still gets its chance: for most shapes it is the one
+					// that gets the whole expression, because it stops at the previous label rather than
+					// one instruction short of the expression's start, and the same net-effect check
+					// decides it there.
 				}
 
 				// Walk back to the start of the straight-line run that produced the value, for the
@@ -649,15 +657,47 @@ public final class MemberRestorePlan {
 					}
 					slice.add(0, back);
 				}
-				if(safe && !slice.isEmpty() && !isReceiverPush(slice.get(0))) {
-					return initialiserFrom(internalName, field, slice);
+				if(safe && !slice.isEmpty() && !isReceiverPush(slice.get(0)) && netValue(slice) != null
+						&& netValue(slice) == 1) {
+					MethodNode fromWalk = initialiserFrom(internalName, field, slice);
+					if(fromWalk != null) {
+						return fromWalk;
+					}
+				}
+
+				// Neither walk landed on the start of the expression, so it is looked for by what it
+				// begins with instead: an object creation that is still on the stack when the store
+				// happens. Walking forward from there stops as soon as the run carries exactly one value,
+				// which is the first instruction after which the expression could be complete - for
+				// {@code this.layerManager = new GuiLayerManager()} that is the constructor call, and for
+				// an expression with arguments it keeps going until the last of them is consumed.
+				List<AbstractInsnNode> fromNew = objectCreationRun(insn, field);
+				if(fromNew != null) {
+					MethodNode created = initialiserFrom(internalName, field, fromNew);
+					if(created != null) {
+						return created;
+					}
 				}
 			}
 		}
 		return null;
 	}
 
-	/** Wraps a value-producing run into the assignment helper the transformer calls. */
+	/**
+	 * Wraps a value-producing run into the assignment helper the transformer calls.
+	 *
+	 * <p>The assembled body is checked before it is handed over, because the walks that produce
+	 * {@code value} reason about the shape of the code and this does not: it asks the question the JVM
+	 * will ask, by simulating the stack the instructions build. A run that does not leave exactly the
+	 * one value the {@code putfield} stores - or that underflows on the way there - is refused, and the
+	 * field stays at its default instead of the class failing to load. That is the failure mode this
+	 * gate exists for: 1.20.6's {@code SectionRenderDispatcher$RenderSection.buffers} shipped as
+	 * {@code aload_0; invokestatic Collectors.toMap; invokeinterface Stream.collect; checkcast; putfield}
+	 * and the JVM rejected the whole class with {@code VerifyError: Operand stack underflow} at the
+	 * {@code Stream.collect} - a client that dies while it is creating the world's view area.</p>
+	 *
+	 * @return the helper, or {@code null} when the run does not assemble into one that can verify
+	 */
 	private static MethodNode initialiserFrom(String internalName, FieldNode field, List<AbstractInsnNode> value) {
 		MethodNode initialiser = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
 				INITIALISER_PREFIX + field.name, "(L" + internalName + ";)V", null, null);
@@ -667,9 +707,206 @@ public final class MemberRestorePlan {
 		}
 		initialiser.instructions.add(new FieldInsnNode(Opcodes.PUTFIELD, internalName, field.name, field.desc));
 		initialiser.instructions.add(new InsnNode(Opcodes.RETURN));
+		if(!assemblesOneValue(value, field, "initialiser")) {
+			System.out.println("    the refused run was " + describe(value));
+			return null;
+		}
 		initialiser.maxStack = 8;
 		initialiser.maxLocals = 1;
 		return initialiser;
+	}
+
+	/**
+	 * Simulates the lifted run and reports whether it is one value-producing expression.
+	 *
+	 * <p>Two things are asked of it, and between them they reject both halves of the failure this gate
+	 * was written for. The run must carry the stack it needs and never take a value nobody pushed - that
+	 * is a fragment, and on 1.20.6 it was
+	 * {@code aload_0; invokestatic Collectors.toMap; invokeinterface Stream.collect}, whose first value
+	 * is taken from thin air once the wrapper's receiver is the only thing below it. And its net effect
+	 * must be exactly one value: more than that means the run has swallowed the store's own receiver,
+	 * which is the slice the older label walk produced for {@code this.enabled = true}
+	 * ({@code aload_0; iconst_1}, net two) and which leaves a live reference on the stack at
+	 * {@code return}.</p>
+	 *
+	 * <p>The wrapper's own {@code aload_0} is deliberately not simulated: the question is only what the
+	 * lifted run does, and a run that reads {@code this} freely starts from a stack of zero here, which
+	 * is exactly how it will be entered.</p>
+	 */
+	private static boolean assemblesOneValue(List<AbstractInsnNode> value, FieldNode field, String what) {
+		// Two shapes are lifted, and both are recognised by their structure rather than by arithmetic.
+		//
+		// The first is one instruction that leaves exactly one value: a constant, a static field, or a
+		// call with a return type.
+		//
+		// The second is an object creation, and it is checked as the three-instruction group it has to
+		// be - `new`, `dup`, and the constructor call that names that same class. Anything else is not
+		// that group, and the two measured failures on 1.20.6 are both of them: `new; dup` alone is the
+		// right height with a value that does not exist yet, and the JVM refuses it with
+		//
+		//   VerifyError: Bad type on operand stack
+		//     Type uninitialized 1 (current frame, stack[1]) is not assignable to
+		//     'net/neoforged/neoforge/client/gui/GuiLayerManager'
+		//       at Gui.optifineoforge$init$layerManager @4: putfield
+		//
+		// and a group whose constructor call is missing or belongs to another class is the same class of
+		// mistake made differently. A field left at its default fails visibly in one place; a lifted run
+		// that is wrong fails as a class the JVM will not load.
+		if(value.size() == 1) {
+			Integer effect = stackEffect(value.get(0));
+			if(effect != null && effect == 1) {
+				return true;
+			}
+			return refuse(field, what, "its single instruction does not leave exactly one value", value);
+		}
+		if(isConstructionGroup(value)) {
+			return true;
+		}
+		return refuse(field, what, "its run is neither one value-producing instruction nor a"
+				+ " new/dup/constructor group", value);
+	}
+
+	/** Whether a run is exactly {@code new X; dup; X.<init>(...)}. */
+	private static boolean isConstructionGroup(List<AbstractInsnNode> value) {
+		if(value.size() < 3) {
+			return false;
+		}
+		if(!(value.get(0) instanceof TypeInsnNode created) || value.get(0).getOpcode() != Opcodes.NEW) {
+			return false;
+		}
+		if(value.get(1).getOpcode() != Opcodes.DUP) {
+			return false;
+		}
+		for(AbstractInsnNode insn : value) {
+			if(insn instanceof MethodInsnNode call && "<init>".equals(call.name)) {
+				// The constructor has to be the last instruction, name the created class, and take the
+				// creation's own reference as its receiver - which is the value the `dup` made.
+				return insn == value.get(value.size() - 1) && created.desc.equals(call.owner);
+			}
+		}
+		return false;
+	}
+
+	private static boolean refuse(FieldNode field, String what, String reason, List<AbstractInsnNode> value) {
+		System.out.println("  refusing the " + what + " of " + field.name + ": " + reason + ": " + describe(value));
+		return false;
+	}
+
+	/**
+	 * The net number of values a lifted run leaves, or {@code null} when an instruction's effect is not
+	 * known here. A run that is one expression leaves exactly one; a run that has swallowed the store's
+	 * own receiver leaves two, and one that is the tail of a longer expression leaves none.
+	 */
+	private static Integer netValue(List<AbstractInsnNode> value) {
+		int net = 0;
+		for(AbstractInsnNode insn : value) {
+			Integer effect = stackEffect(insn);
+			if(effect == null) {
+				return null;
+			}
+			net += effect;
+		}
+		return net;
+	}
+
+	/**
+	 * The straight-line run that starts at the last object creation in front of a store and ends as soon
+	 * as it carries exactly one value.
+	 *
+	 * <p>Both other walks find the expression's start by looking backwards for a boundary, and a boundary
+	 * that is not where the expression begins leaves a fragment: measured on 1.20.6's {@code Gui}, whose
+	 * constructor creates its {@code layerManager} after a label, so the label walk stopped at the label
+	 * and the counting walk stopped on the receiver. The creation itself is not a guess - a value that is
+	 * still on the stack at the store has to have been created after the last instruction that could have
+	 * taken the stack apart, and looking for it forward from its own {@code new} is exact: every
+	 * instruction of the expression is between the {@code new} and the store, and the first point at
+	 * which the run carries one value more than it takes is a point at which the store could be fed.</p>
+	 *
+	 * <p>A creation whose instruction is a nested one - a store inside the run - is refused: that would
+	 * mean the run reached past the expression into another statement.</p>
+	 *
+	 * @return the run, or {@code null} when there is no creation in front of the store
+	 */
+	private static List<AbstractInsnNode> objectCreationRun(AbstractInsnNode store, FieldNode field) {
+		AbstractInsnNode creation = null;
+		for(AbstractInsnNode back = store.getPrevious(); back != null; back = back.getPrevious()) {
+			if(back instanceof LabelNode || back instanceof JumpInsnNode || back instanceof TableSwitchInsnNode
+					|| back instanceof LookupSwitchInsnNode || back instanceof LineNumberNode
+					|| back instanceof FrameNode) {
+				continue;
+			}
+			if(back.getOpcode() == Opcodes.NEW) {
+				creation = back;
+				break;
+			}
+			if(back instanceof FieldInsnNode stored && (stored.getOpcode() == Opcodes.PUTFIELD || stored.getOpcode() == Opcodes.PUTSTATIC)) {
+				return null; // the previous statement stores: stop looking
+			}
+		}
+		if(creation == null) {
+			return null;
+		}
+		List<AbstractInsnNode> slice = new ArrayList<>();
+		int net = 0;
+		for(AbstractInsnNode insn = creation; insn != null && insn != store; insn = insn.getNext()) {
+			if(insn instanceof LabelNode || insn instanceof LineNumberNode || insn instanceof FrameNode) {
+				continue;
+			}
+			if(insn instanceof JumpInsnNode || insn instanceof TableSwitchInsnNode
+					|| insn instanceof LookupSwitchInsnNode) {
+				return null; // a branch inside the expression cannot be moved
+			}
+			if(insn instanceof VarInsnNode var && var.var != 0) {
+				return null; // the value depends on a local
+			}
+			if(insn instanceof FieldInsnNode stored && (stored.getOpcode() == Opcodes.PUTFIELD || stored.getOpcode() == Opcodes.PUTSTATIC)) {
+				return null; // a store inside the run belongs to another statement
+			}
+			Integer effect = stackEffect(insn);
+			if(effect == null) {
+				return null;
+			}
+			slice.add(insn);
+			net += effect;
+			// Stopping on the count alone is what shipped `new; dup` for 1.20.6's `Gui.layerManager`:
+			// the right height, and a value that does not exist yet. A `new` is the one instruction that
+			// pushes something unfinished, and the run cannot end on it or on a `dup` of it - its own
+			// constructor call still has to come, and that is what turns the reference into the object
+			// the store wants.
+			if(net == 1 && !endsUnconstructed(slice)) {
+				return slice;
+			}
+		}
+		return null;
+	}
+
+	/** Whether a run ends on a reference that has not been constructed yet. */
+	private static boolean endsUnconstructed(List<AbstractInsnNode> slice) {
+		if(slice.isEmpty()) {
+			return false;
+		}
+		int opcode = slice.get(slice.size() - 1).getOpcode();
+		return opcode == Opcodes.NEW || opcode == Opcodes.DUP || opcode == Opcodes.DUP_X1
+				|| opcode == Opcodes.DUP_X2;
+	}
+
+	/** A lifted run as text, so a refusal says which instructions it refused. */
+	private static String describe(List<AbstractInsnNode> value) {
+		StringBuilder text = new StringBuilder("[");
+		for(AbstractInsnNode insn : value) {
+			if(text.length() > 1) {
+				text.append(", ");
+			}
+			text.append(insn.getClass().getSimpleName().replace("InsnNode", ""));
+			if(insn instanceof MethodInsnNode call) {
+				text.append(' ').append(call.owner).append('.').append(call.name);
+			} else if(insn instanceof FieldInsnNode f) {
+				text.append(' ').append(f.name);
+			} else if(insn instanceof VarInsnNode v) {
+				text.append(" var").append(v.var);
+			}
+		}
+		return text.append(']').toString();
 	}
 
 	/**
@@ -860,34 +1097,244 @@ public final class MemberRestorePlan {
 	 * 196: invokespecial PipelineModifierStack.&lt;init&gt;()V
 	 * 199: putstatic  RenderSystem.PIPELINE_MODIFIERS</pre>
 	 *
-	 * <p>Counting values instead stops after {@code new} - +1 for the new, +1 for the dup, -1 for the
-	 * constructor - and leaves exactly the three instructions that make the expression. Anything whose
-	 * effect is not known here ends the walk: a local read still means the value depends on code outside
-	 * the run, which is what the instance path refuses as well.</p>
+	 * <p>The walk goes backwards and stops only when the slice is a <em>complete</em> expression. The
+	 * earlier form counted the values the slice had produced and stopped as soon as that count reached
+	 * one, and one instruction can produce a value while the expression around it is still unfinished -
+	 * so on 1.20.6 it stopped twice inside a single expression shape and shipped a slice the verifier
+	 * refused:</p>
+	 *
+	 * <pre>  aload_0                              // the wrapper's own receiver
+	 *   new        ChunkLayerMap             // the value, and one value produced: the walk stopped here
+	 *   dup
+	 *   invokedynamic apply()Function
+	 *   invokespecial ChunkLayerMap.&lt;init&gt;(Function)V
+	 *   putfield   RenderSection.buffers</pre>
+	 *
+	 * <p>{@code VerifyError: Operand stack underflow ... RenderSection.optifineoforge$init$buffers @1},
+	 * because the constructor's own allocation and the {@code dup} it needs were left behind. Counting
+	 * from the other end cannot fix that: the depth the count is compared against is the arithmetic of
+	 * exactly the same instructions, and returning "one produced" stops one instruction too early in
+	 * every run whose first producer is not also its last.</p>
+	 *
+	 * <p>So the run is lifted by its stack requirement, not by a count of what it has produced. A
+	 * store consumes one value and the wrapper pushes the receiver itself, so the instructions in front
+	 * of the store have to leave exactly one value more than they take. Walking backwards, that is a
+	 * running requirement: start at one and subtract what each instruction contributes. What makes a
+	 * {@code new}/{@code dup}/{@code invokespecial} group come out whole is the arithmetic itself - the
+	 * {@code invokespecial} needs a receiver, so the {@code dup} is taken; the {@code dup} needs
+	 * something to duplicate, so the {@code new} is taken; the {@code new} needs nothing and pushes a
+	 * value, and the requirement reaches zero.</p>
+	 *
+	 * <p>Reaching zero one instruction <em>early</em> is the failure this replaces. A value that reads
+	 * the store's own receiver - {@code this.buffers = <expression over this.buffers>} is 1.20.6's
+	 * {@code SectionRenderDispatcher$RenderSection} - can be balanced by the receiver's {@code aload_0}
+	 * once the arithmetic has been carried one step too far, and the run then begins on a value nobody
+	 * pushed: its next instruction consumes that value and produces nothing, which is what the walk
+	 * checks before believing a balance. {@code this.lastState = Optional.empty()} balances on a run that
+	 * also begins by reading the receiver, and is kept, because the instruction after that read is what
+	 * produces the value. The refusal is narrow on purpose: a run whose <em>second</em> instruction
+	 * consumes without producing is the receiver read standing in for the value, and the label walk
+	 * below refuses the same shape a second time for its own reason.</p>
+	 *
+	 * <p>A short form keeps its precision: {@code this.enabled = true} stops on the {@code iconst_1},
+	 * because the constant alone satisfies the requirement. Anything whose effect is not known here
+	 * ends the walk, and a read of a local other than the receiver does too - the value would depend on
+	 * code outside the run, which is what the instance path refuses as well.</p>
 	 */
 	private static List<AbstractInsnNode> valueRun(AbstractInsnNode store) {
 		List<AbstractInsnNode> slice = new ArrayList<>();
-		int produced = 0;
+		// What the run in front of the store has still to provide: the one value the store consumes.
+		int needed = 1;
 		for(AbstractInsnNode back = store.getPrevious(); back != null; back = back.getPrevious()) {
 			if(back instanceof LabelNode || back instanceof JumpInsnNode || back instanceof TableSwitchInsnNode
 					|| back instanceof LookupSwitchInsnNode || back instanceof LineNumberNode
 					|| back instanceof FrameNode) {
 				break;
 			}
-			Integer delta = stackDelta(back);
-			if(delta == null) {
+			Integer effect = stackEffect(back);
+			if(effect == null) {
 				return null;
 			}
+			if(back instanceof VarInsnNode var && var.var != 0) {
+				return null; // the value depends on a constructor argument or another local
+			}
 			slice.add(0, back);
-			produced += delta;
-			if(produced == 1) {
-				return slice;
+			needed -= effect;
+			if(needed < 0) {
+				return null; // more values than the store can consume: not one expression
 			}
-			if(produced > 1) {
-				return null; // more than the store consumes: this run is not one expression
+			if(needed >= 0 && !hasValueAt(slice)) {
+				continue; // balanced, but the value is not produced yet: keep walking
 			}
+			return slice;
 		}
 		return null;
+	}
+
+	/**
+	 * Whether the run now ends with the value produced, rather than with something consumed.
+	 *
+	 * <p>A run is complete when its last instruction leaves a value - {@code new}, a constant, a call
+	 * with a return type - and not when it consumes one. Balancing alone cannot tell the difference, and
+	 * on 1.20.6's {@code SectionRenderDispatcher$RenderSection} it did not: the run
+	 * {@code [aload_0, invokestatic Collectors.toMap, invokeinterface Stream.collect]} balances against
+	 * the store, but the {@code invokeinterface} <em>consumes</em> - it is the tail of an expression
+	 * whose stream source has been left behind, and the value it leaves on the stack is the wrong one
+	 * for the field. Walking on from there takes the rest of the expression, and the check is what makes
+	 * the walk keep going instead of stopping one instruction short.</p>
+	 *
+	 * <p>For {@code this.lastState = Optional.empty()} and {@code this.layerManager = new GuiLayerManager()}
+	 * the last instruction already produces - {@code invokestatic Optional.empty} and
+	 * {@code invokespecial GuiLayerManager.<init>} - so both stop where they should.</p>
+	 */
+	private static boolean hasValueAt(List<AbstractInsnNode> slice) {
+		if(slice.isEmpty()) {
+			return false;
+		}
+		AbstractInsnNode last = slice.get(slice.size() - 1);
+		Integer effect = stackEffect(last);
+		return effect != null && effect > 0;
+	}
+
+	/**
+	 * How many values an instruction contributes to the run in front of a store: what it pushes minus
+	 * everything it consumes, arguments and receiver alike.
+	 *
+	 * <p>This is not {@link #stackDelta}, which answers "what does this leave behind on its own" and
+	 * therefore counts no receiver for a call. A call that is handed a receiver is handed it by the
+	 * instructions in front of it, so on the way back it has to ask for it, and that single difference
+	 * is what the old walk got wrong.</p>
+	 */
+	private static Integer stackEffect(AbstractInsnNode insn) {
+		int opcode = insn.getOpcode();
+		if(insn instanceof VarInsnNode) {
+			// The lifts only ever read slot 0 - the receiver the wrapper pushes - and the check that
+			// refuses another slot runs before this is reached.
+			switch(opcode) {
+				case Opcodes.ILOAD:
+				case Opcodes.FLOAD:
+				case Opcodes.ALOAD:
+					return 1;
+				case Opcodes.LLOAD:
+				case Opcodes.DLOAD:
+					return 2;
+				default:
+					return null;
+			}
+		}
+		switch(opcode) {
+			case Opcodes.ACONST_NULL:
+			case Opcodes.ICONST_M1:
+			case Opcodes.ICONST_0:
+			case Opcodes.ICONST_1:
+			case Opcodes.ICONST_2:
+			case Opcodes.ICONST_3:
+			case Opcodes.ICONST_4:
+			case Opcodes.ICONST_5:
+			case Opcodes.FCONST_0:
+			case Opcodes.FCONST_1:
+			case Opcodes.FCONST_2:
+			case Opcodes.BIPUSH:
+			case Opcodes.SIPUSH:
+			case Opcodes.LDC:
+			case Opcodes.NEW:
+			case Opcodes.GETSTATIC:
+			case Opcodes.DUP:
+			case Opcodes.DUP_X1:
+			case Opcodes.DUP_X2:
+				return 1;
+			case Opcodes.LCONST_0:
+			case Opcodes.LCONST_1:
+			case Opcodes.DCONST_0:
+			case Opcodes.DCONST_1:
+			case Opcodes.DUP2:
+			case Opcodes.DUP2_X1:
+			case Opcodes.DUP2_X2:
+				return 2;
+			case Opcodes.POP:
+				return -1;
+			case Opcodes.POP2:
+				return -2;
+			case Opcodes.CHECKCAST:
+			case Opcodes.INSTANCEOF:
+			case Opcodes.NOP:
+			case Opcodes.I2L:
+			case Opcodes.I2F:
+			case Opcodes.I2D:
+			case Opcodes.L2I:
+			case Opcodes.L2F:
+			case Opcodes.L2D:
+			case Opcodes.F2I:
+			case Opcodes.F2L:
+			case Opcodes.F2D:
+			case Opcodes.D2I:
+			case Opcodes.D2L:
+			case Opcodes.D2F:
+			case Opcodes.I2B:
+			case Opcodes.I2C:
+			case Opcodes.I2S:
+			case Opcodes.ARRAYLENGTH:
+				return 0;
+			case Opcodes.PUTFIELD: {
+				// The receiver and the value; the run in front of a *store* never starts with a field
+				// store, so reaching one means the walk has run past its own expression.
+				return null;
+			}
+			case Opcodes.ILOAD:
+			case Opcodes.LLOAD:
+			case Opcodes.FLOAD:
+			case Opcodes.DLOAD:
+			case Opcodes.ALOAD:
+				return stackDelta(insn);
+			case Opcodes.IALOAD:
+			case Opcodes.LALOAD:
+			case Opcodes.FALOAD:
+			case Opcodes.DALOAD:
+			case Opcodes.AALOAD:
+			case Opcodes.BALOAD:
+			case Opcodes.CALOAD:
+			case Opcodes.SALOAD:
+			case Opcodes.INVOKESPECIAL:
+			case Opcodes.INVOKEVIRTUAL:
+			case Opcodes.INVOKESTATIC:
+			case Opcodes.INVOKEINTERFACE:
+			case Opcodes.INVOKEDYNAMIC:
+				return callEffect(insn);
+			default:
+				return null;
+		}
+	}
+
+	/** A call's contribution: its result minus its arguments and, unless it is static, its receiver. */
+	private static Integer callEffect(AbstractInsnNode insn) {
+		if(insn instanceof InvokeDynamicInsnNode call) {
+			int effect = -slots(Type.getArgumentTypes(call.desc));
+			if(Type.getReturnType(call.desc).getSort() != Type.VOID) {
+				effect += Type.getReturnType(call.desc).getSize();
+			}
+			return effect;
+		}
+		if(!(insn instanceof MethodInsnNode call)) {
+			return null;
+		}
+		Type[] arguments = Type.getArgumentTypes(call.desc);
+		int effect = -slots(arguments);
+		if(call.getOpcode() != Opcodes.INVOKESTATIC) {
+			effect--; // the receiver
+		}
+		if(Type.getReturnType(call.desc).getSort() != Type.VOID) {
+			effect += Type.getReturnType(call.desc).getSize();
+		}
+		return effect;
+	}
+
+	/** The stack slots a list of types occupies: a long or a double occupies two. */
+	private static int slots(Type[] types) {
+		int total = 0;
+		for(Type type : types) {
+			total += type.getSize();
+		}
+		return total;
 	}
 
 	/** The opcodes immediately before a store, as text, for a refusal to be readable. */
@@ -970,7 +1417,13 @@ public final class MemberRestorePlan {
 		return delta;
 	}
 
-	/** Wraps a value-producing run into the static assignment helper the transformer calls. */
+	/**
+	 * Wraps a value-producing run into the static assignment helper the transformer calls.
+	 *
+	 * <p>Checked the same way as the instance form: a {@code putstatic} takes one value and no receiver,
+	 * so a run that does not leave exactly one is refused rather than shipped as a class the verifier
+	 * will throw out.</p>
+	 */
 	private static MethodNode staticInitialiserFrom(String internalName, FieldNode field,
 			List<AbstractInsnNode> value) {
 		MethodNode initialiser = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
@@ -980,6 +1433,9 @@ public final class MemberRestorePlan {
 		}
 		initialiser.instructions.add(new FieldInsnNode(Opcodes.PUTSTATIC, internalName, field.name, field.desc));
 		initialiser.instructions.add(new InsnNode(Opcodes.RETURN));
+		if(!assemblesOneValue(value, field, "static initialiser")) {
+			return null;
+		}
 		initialiser.maxStack = 8;
 		initialiser.maxLocals = 0;
 		return initialiser;
