@@ -1376,3 +1376,40 @@ stderr 一个字节都没变,说明这次修的是**行为**,不是把异常挤�
 原因是**重载这次真的跑完了** —— 后面那些 OptiFine 阶段(图集预拼、连接纹理采集等)以前**根本没有机会执行**,
 所以行数不是"变多了",而是**以前数不到**。两个数字都留在文档里:原记录 252 / 14,今日实测 377 / 28,
 读者按提交时间对号入座。
+
+## 2026-09-21:从 1.20.x 移植的 Forge shim 修复,以及它**还不充分**的那一半(外壳种类未修)
+
+1.20.x 那条线今天在真机上量到一个缺陷:交付的 `ParticleEngine` 只在 `destroy` 与
+`addBlockHitEffects` 两处用 Forge 包名的扩展接口,而 jar 里的 shim 把
+`IClientBlockExtensions.of(BlockState)` 写成 `aconst_null; areturn`,调用点紧接着解引用它 ——
+**攻击一次方块就 `NullPointerException`**(1.20.6 实测,07:02 与第一次 FXAA 运行都死在这里)。
+修法是通用的,已移植到本分支的 `optifine/ForgeApiShims.java`:**返回自己这个类型的静态工厂不再返回
+null**,接口在旁边生成一个空实现 `<interface>$Noop`,工厂返回它的新实例(类外壳则返回自身新实例)。
+
+本分支的**量测证据**(都在 jar 上量,不是在运行的游戏上):
+
+```
+3:  invokestatic  InterfaceMethod .../IClientBlockExtensions.of:(...)...IClientBlockExtensions;
+20: invokeinterface .../IClientBlockExtensions.addHitEffects:(...)Z
+```
+
+`jars-1.21.8-payload\OptifiNeoforge-1.0.0+mc1.21.8-registered.jar` 与 1.20.2/1.20.4 的 jar 里,同一个
+类型交付的是**类**而不是接口:
+
+```
+public class net.minecraftforge.client.extensions.common.IClientBlockExtensions {
+  public static net.minecraftforge.client.extensions.common.IClientBlockExtensions DUMMY;
+```
+
+常量池里是 `InterfaceMethodref`、解析到的却是类 → 预期
+`IncompatibleClassChangeError: Found class ..., but interface was expected`。**所以上面的移植只解决了
+`of()` 返回 null 这一半**;剩下的一半是外壳的**种类**判断:现在由
+`shape.mustBeClass() || declaresItself(shape, name)` 决定,而后者只是因为 Forge 的 API 里有一个自身
+类型的静态字段(`DUMMY`)就把整个类型做成类。正确的判据是**记录下来的调用点** —— ASM 的
+`visitMethodInsn` 本来就给出 `isInterface` —— 一旦有调用点用接口方式引用它,这个类型就**必须**是接口;
+接口自己的 `<clinit>` 完全可以用 Noop 实例去填那种静态字段。
+
+**未修,也未在 1.21.x 任何一条线上跑过**:这条分支到现在还没有任何一次"客户端真的进了世界",
+所以上面 ICCE 是**从字节码推出来的预期**,不是实测。它排在下一轮的第一位,和
+`MemberRestorePlan` 的 `stackEffect`/`callEffect` 移植、`MemberRestoreTransformer` 的"每次调用各一个
+接收者"一起,都是 1.21.x 在入世之前必须先落地的三件事。
