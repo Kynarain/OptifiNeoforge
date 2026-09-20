@@ -27,8 +27,10 @@ import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
+import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.InvokeDynamicInsnNode;
+import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
@@ -516,8 +518,219 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	public ClassNode transform(ClassNode input, ITransformerVotingContext context) {
 		ClassNode result = decide(input, context);
 		renameSrgMembers(result);
+		traceModelLoading(result);
 		dump(result);
 		return result;
+	}
+
+	/**
+	 * Writes markers into the two classes whose order decides whether the reload on 1.21 ever finishes.
+	 *
+	 * <p>Off unless {@code -Doptifineoforge.traceModels=true}, and it can only be written here: a
+	 * ModLauncher transformer has to declare its targets before it runs, and these two classes are
+	 * already declared by this one, so a transformer of its own would be built and never called - the
+	 * trap this repository has already recorded for {@code ModelManager}.</p>
+	 *
+	 * <p>What it is for. On 1.21 the client reaches its tick loop and the initial resource reload never
+	 * completes: no {@code Created: ...-atlas} line, no {@code Sound engine started}, no crash report,
+	 * and the rig's dump catches one worker in</p>
+	 *
+	 * <pre>CustomItems.updateIcons (CustomItems.java:292)
+	 *   -> TextureUtils.registerCustomSprites (TextureUtils.java:473)
+	 *   -> TextureAtlas.preStitch (TextureAtlas.java:294)
+	 *   -> SpriteLoader.lambda$loadAndStitch$6 (SpriteLoader.java:200)</pre>
+	 *
+	 * <p>and that line is a busy-wait: the bytecode of {@code updateIcons} is
+	 * {@code while(!modelsLoaded.get()) Config.sleep(100);} and a poll every 100 ms means a flag that
+	 * ever became true is seen within 100 ms - so a worker still polling 109 seconds in says the setter
+	 * has never run at all. The setter is {@code CustomItems.loadModels}, whose only caller is
+	 * {@code TextureUtils.registerCustomModels}, whose only caller is the last instructions of
+	 * OptiFine's own {@code ModelBakery.<init>} - a constructor this transformer installs, because the
+	 * payload for this line carries it and the index swaps it in.</p>
+	 *
+	 * <p>So "does that constructor run, and does it get as far as the call that sets the flag" is the
+	 * whole open question, and the three markers it plants in the constructor answer it without a
+	 * guess: entering without reaching the call means it threw earlier, reaching the call without
+	 * returning from it means {@code registerCustomModels} itself threw, and all three means the flag
+	 * was set and the failure is somewhere else entirely. The atlas side gets the same treatment on
+	 * {@code preStitch}, so the two are ordered against each other rather than argued about.</p>
+	 */
+	private static void traceModelLoading(ClassNode node) {
+		if(node == null || !Boolean.getBoolean(TRACE_MODELS)) {
+			return;
+		}
+		if(MODEL_BAKERY.equals(node.name)) {
+			traceModelBakery(node);
+		} else if(TEXTURE_ATLAS.equals(node.name)) {
+			traceMethod(node, "preStitch", "TextureAtlas.preStitch",
+					new String[] {TEXTURE_UTILS, REGISTER_CUSTOM_SPRITES});
+		}
+	}
+
+	/**
+	 * Inserts a list after an instruction, which {@code InsnList.insert(location, ...)} does not do.
+	 *
+	 * <p>Worth its own method because the trap is invisible: {@code insert(location, insns)} inserts
+	 * <em>before</em> the location, and a marker written with it lands on the wrong side of the call it
+	 * is meant to bracket - a probe that reports "returned from X" before X ran. The repository's own
+	 * ReloadProbeFix uses that form for its {@code DUP}-based probes, which is one of the reasons its
+	 * output has never been trustworthy; this one says what it means.</p>
+	 */
+	private static void insertAfter(MethodNode method, AbstractInsnNode location, InsnList added) {
+		AbstractInsnNode next = location.getNext();
+		if(next == null) {
+			method.instructions.add(added);
+		} else {
+			method.instructions.insertBefore(next, added);
+		}
+	}
+
+	/** The switch the whole trace hangs on; nothing is written into a class unless it is set. */
+	private static final String TRACE_MODELS = "optifineoforge.traceModels";
+
+	/** The class that sets OptiFine's {@code CustomItems.modelsLoaded}. */
+	private static final String MODEL_BAKERY = "net/minecraft/client/resources/model/ModelBakery";
+
+	/** The class that waits for it. */
+	private static final String TEXTURE_ATLAS = "net/minecraft/client/renderer/texture/TextureAtlas";
+
+	/** OptiFine's own holder of the flag, and the call that sets it. */
+	private static final String TEXTURE_UTILS = "net/optifine/util/TextureUtils";
+	private static final String REGISTER_CUSTOM_MODELS = "registerCustomModels";
+	private static final String REGISTER_CUSTOM_SPRITES = "registerCustomSprites";
+
+	/** Our probe class - the game layer may call it, because it reads the module this jar is. */
+	private static final String PROBE = "kynarain/cn/optifineoforge/loader/ReloadProbe";
+
+	/**
+	 * Marks the constructor's own steps: entry, the call that sets the flag, and each normal return.
+	 *
+	 * <p>Whether the call is there at all is a fact about the class the JVM is about to verify, not
+	 * about the jar on disk, so it is logged at transform time as well - a run whose log lacks this line
+	 * is a run where this class never reached the transformer.</p>
+	 */
+	private static void traceModelBakery(ClassNode node) {
+		for(MethodNode method : node.methods) {
+			if(!"<init>".equals(method.name) || method.instructions == null) {
+				continue;
+			}
+			// Collected before anything is inserted: inserting after an instruction the walk is standing on
+			// makes the inserted node the next one the walk sees, which is how a marker ends up marking
+			// itself.
+			List<AbstractInsnNode> returns = new ArrayList<>();
+			Map<String, List<AbstractInsnNode>> calls = new LinkedHashMap<>();
+			for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+				if(insn.getOpcode() == Opcodes.RETURN) {
+					returns.add(insn);
+				} else if(insn instanceof MethodInsnNode call) {
+					calls.computeIfAbsent(call.owner + "." + call.name, key -> new ArrayList<>()).add(insn);
+				}
+			}
+			LOGGER.info("trace: the installed " + node.name.replace('/', '.') + ".<init>" + method.desc
+					+ " calls " + REGISTER_CUSTOM_MODELS + ": "
+					+ calls.containsKey(TEXTURE_UTILS + "." + REGISTER_CUSTOM_MODELS));
+			for(String[] step : MODEL_BAKERY_STEPS) {
+				List<AbstractInsnNode> found = calls.get(step[0] + "." + step[1]);
+				if(found == null) {
+					continue;
+				}
+				// The per-item call runs once for every registered item, so it is reported a few times and
+				// the marker after the loop is what says the loop ended.
+				boolean repeated = step[2].equals(ITEM_LOAD);
+				for(AbstractInsnNode call : found) {
+					method.instructions.insertBefore(call, repeated
+							? limitedMark("ModelBakery.<init> -> " + step[2], 2)
+							: mark("ModelBakery.<init> -> " + step[2]));
+					insertAfter(method, call, repeated
+							? limitedMark("ModelBakery.<init> <- " + step[2], 2)
+							: mark("ModelBakery.<init> <- " + step[2]));
+				}
+			}
+			for(AbstractInsnNode insn : returns) {
+				method.instructions.insertBefore(insn, mark("ModelBakery.<init> returning normally"));
+			}
+			method.instructions.insert(mark("ModelBakery.<init> entered" + method.desc));
+			method.maxStack = Math.max(method.maxStack, 2);
+		}
+	}
+
+	/** The per-item call, the one step whose marker has to be rate limited. */
+	private static final String ITEM_LOAD = "loadItemModelAndDependencies (once per item)";
+
+	/**
+	 * The steps of the model-loading constructor the trace brackets.
+	 *
+	 * <p>{@code owner, name, what to call it}. Every one of them is a call the constructor makes between
+	 * its entry and the flag setter, so a run that shows the entry marker and then stops partway through
+	 * this table names the call that threw without needing a second guess - which matters because the
+	 * throw is invisible: it lands in a {@code CompletableFuture} nobody joins, so the client logs
+	 * nothing, writes no crash report and keeps ticking.</p>
+	 */
+	private static final String[][] MODEL_BAKERY_STEPS = {
+			{"net/minecraft/util/profiling/ProfilerFiller", "push", "ProfilerFiller.push"},
+			{MODEL_BAKERY, "loadBlockModel", "loadBlockModel (the builtin/missing model)"},
+			{MODEL_BAKERY, "registerModel", "registerModel"},
+			{MODEL_BAKERY, "registerModelAndLoadDependencies", "registerModelAndLoadDependencies"},
+			{"net/minecraft/client/resources/model/BlockStateModelLoader", "<init>",
+					"BlockStateModelLoader.<init>"},
+			{"net/minecraft/client/resources/model/BlockStateModelLoader", "loadAllBlockStates",
+					"BlockStateModelLoader.loadAllBlockStates"},
+			{"net/minecraft/client/resources/model/BlockStateModelLoader", "getModelGroups",
+					"BlockStateModelLoader.getModelGroups"},
+			{MODEL_BAKERY, "loadItemModelAndDependencies", ITEM_LOAD},
+			{MODEL_BAKERY, "loadSpecialItemModelAndDependencies", "loadSpecialItemModelAndDependencies"},
+			{MODEL_BAKERY, "getModel", "ModelBakery.getModel"},
+			{"net/optifine/reflect/ReflectorMethod", "call",
+					"ReflectorMethod.call (ForgeHooksClient.onRegisterAdditionalModels)"},
+			{TEXTURE_UTILS, REGISTER_CUSTOM_MODELS, "TextureUtils." + REGISTER_CUSTOM_MODELS},
+	};
+
+	/** A rate-limited call to {@link ReloadProbe#markLimited}. */
+	private static InsnList limitedMark(String label, int limit) {
+		InsnList call = new InsnList();
+		call.add(new LdcInsnNode(label));
+		call.add(new org.objectweb.asm.tree.IntInsnNode(Opcodes.BIPUSH, limit));
+		call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "markLimited", "(Ljava/lang/String;I)V",
+				false));
+		return call;
+	}
+
+	/** Marks a named method's entry, every normal return, and optionally its call to a named method. */
+	private static void traceMethod(ClassNode node, String name, String label, String[] called) {
+		for(MethodNode method : node.methods) {
+			if(!name.equals(method.name) || method.instructions == null) {
+				continue;
+			}
+			List<AbstractInsnNode> returns = new ArrayList<>();
+			List<AbstractInsnNode> calls = new ArrayList<>();
+			for(AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+				if(insn.getOpcode() == Opcodes.RETURN) {
+					returns.add(insn);
+				} else if(called != null && insn instanceof MethodInsnNode call
+						&& called[0].equals(call.owner) && called[1].equals(call.name)) {
+					calls.add(insn);
+				}
+			}
+			LOGGER.info("trace: the installed " + node.name.replace('/', '.') + "." + name + method.desc
+					+ " is instrumented");
+			for(AbstractInsnNode insn : returns) {
+				method.instructions.insertBefore(insn, mark(label + " returning"));
+			}
+			for(AbstractInsnNode call : calls) {
+				method.instructions.insertBefore(call, mark(label + " reached " + called[1]));
+				insertAfter(method, call, mark(label + " returned from " + called[1]));
+			}
+			method.instructions.insert(mark(label + " entered" + method.desc));
+			method.maxStack = Math.max(method.maxStack, 2);
+		}
+	}
+
+	/** A call to {@link ReloadProbe#mark}, ready to be inserted in front of an instruction. */
+	private static InsnList mark(String label) {
+		InsnList call = new InsnList();
+		call.add(new LdcInsnNode(label));
+		call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PROBE, "mark", "(Ljava/lang/String;)V", false));
+		return call;
 	}
 
 	/**
@@ -584,10 +797,18 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	}
 
 	/**
-	 * Rewrites the SRG-shaped member names a class declares and references, where the table knows them.
+	 * Rewrites the SRG-shaped member names a class references, where the table knows them.
 	 *
 	 * <p>Only names of that shape are touched, and only where the table answers for the owner, so this is
 	 * inert on every line whose OptiFine already speaks official names - all of them but 1.21.</p>
+	 *
+	 * <p>The rewrite is skipped where the member it would rewrite <em>is declared by the copy this jar
+	 * installs</em>, and that exception is the repair for the 1.21 hang. See
+	 * {@link #declaredByInstalledPayload} for the measurement; in short, a reference into a class we swap
+	 * must keep the name that class declares, because the declaration is deliberately never renamed
+	 * (renaming declarations is what emptied 1.21's log and killed {@code Reflector.<clinit>} - the comment
+	 * below records it), and on this line the payload holds two different methods that the table's entry
+	 * collapses onto one name.</p>
 	 */
 	private static void renameSrgMembers(ClassNode node) {
 		// On by default, off with -Doptifineoforge.renameSrg=false. The first attempt at this guard was
@@ -600,6 +821,7 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 			return;
 		}
 		int renamed = 0;
+		int kept = 0;
 		// References only, never declarations, and that is a measured correction rather than caution. With
 		// declarations renamed as well, 1.21 went from 299 [OptiFine] lines at the title screen to 0 and died
 		// inside OptiFine's own Reflector.<clinit>: OptiFine's classes name their own members in the same
@@ -614,14 +836,22 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 				if(insn instanceof MethodInsnNode call) {
 					String official = officialName(call.owner, call.name);
 					if(official != null) {
-						call.name = official;
-						renamed++;
+						if(declaredByInstalledPayload(call.owner, call.name)) {
+							kept++;
+						} else {
+							call.name = official;
+							renamed++;
+						}
 					}
 				} else if(insn instanceof FieldInsnNode fieldInsn) {
 					String official = officialName(fieldInsn.owner, fieldInsn.name);
 					if(official != null) {
-						fieldInsn.name = official;
-						renamed++;
+						if(declaredByInstalledPayload(fieldInsn.owner, fieldInsn.name)) {
+							kept++;
+						} else {
+							fieldInsn.name = official;
+							renamed++;
+						}
 					}
 				} else if(insn instanceof InvokeDynamicInsnNode dynamic) {
 					// A lambda's target travels as a handle in the bootstrap arguments, so a name there
@@ -632,9 +862,13 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 								&& SRG_NAME.matcher(handle.getName()).matches()) {
 							String official = officialName(handle.getOwner(), handle.getName());
 							if(official != null) {
-								dynamic.bsmArgs[index] = new Handle(handle.getTag(), handle.getOwner(), official,
-										handle.getDesc(), handle.isInterface());
-								renamed++;
+								if(declaredByInstalledPayload(handle.getOwner(), handle.getName())) {
+									kept++;
+								} else {
+									dynamic.bsmArgs[index] = new Handle(handle.getTag(), handle.getOwner(),
+											official, handle.getDesc(), handle.isInterface());
+									renamed++;
+								}
 							}
 						}
 					}
@@ -645,7 +879,118 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 			LOGGER.info("Rewrote " + renamed + " SRG name(s) in " + node.name.replace('/', '.')
 					+ ": OptiFine's patch data emits them");
 		}
+		if(kept > 0) {
+			LOGGER.info("Kept " + kept + " SRG name(s) in " + node.name.replace('/', '.')
+					+ ": the copy this jar installs declares those members under them");
+		}
 	}
+
+	/**
+	 * Whether this jar installs a copy of {@code owner} that declares {@code name} under that name.
+	 *
+	 * <p>This is the guard that keeps OptiFine's own call graph intact, and it exists because the rename
+	 * above silently redirected a call to a different method. Measured on 1.21, and it is the whole
+	 * defect:</p>
+	 *
+	 * <p>The payload's {@code ModelBakery} declares <em>two</em> methods the table's entry
+	 * {@code ModelBakery m_119364_ -> loadBlockModel} collapses onto one name -
+	 * {@code private m_119364_(ResourceLocation) throws IOException}, which is the vanilla builtin-aware
+	 * loader ({@code builtin/generated} to {@code GENERATION_MARKER}, {@code builtin/entity} to
+	 * {@code BLOCK_ENTITY_MARKER}, {@code builtin/*} through {@code BUILTIN_MODELS}), and
+	 * {@code public loadBlockModel(ResourceLocation)}, which is OptiFine's own resource loader and returns
+	 * <em>null</em> after warning when the resource is not there. The constructor's call for the missing
+	 * model is on the SRG name; renaming it sent that call to the other method, which found no resource for
+	 * {@code minecraft:builtin/missing}, logged</p>
+	 *
+	 * <pre>[OptiFine] Error loading model: minecraft:builtin/missing
+	 * [OptiFine] java.io.FileNotFoundException: minecraft:builtin/missing</pre>
+	 *
+	 * <p>and returned null. The null then went into the runtime's {@code BlockStateModelLoader} constructor,
+	 * which builds the missing model's group with {@code List.of(missingModel)} - and that rejects a null
+	 * element - so the constructor died there, before its last step
+	 * {@code TextureUtils.registerCustomModels(this)}, the only thing that
+	 * sets {@code CustomItems.modelsLoaded}. OptiFine's {@code CustomItems.updateIcons}, reached from
+	 * {@code TextureAtlas.preStitch} on an atlas-stitching worker, is
+	 * {@code while(!modelsLoaded.get()) Config.sleep(100)}, so it waited for ever: the client kept ticking,
+	 * no crash report was written, and the resource reload never finished.</p>
+	 *
+	 * <p>Three conditions make the skip safe, and each is checked rather than assumed:</p>
+	 *
+	 * <ul>
+	 * <li>the owner has a payload copy in this jar, so the question "what does the loaded class declare" has
+	 * an answer here at all. For every other owner - {@code Resource} is the one that mattered, since
+	 * {@code Resource.m_215509_()} is what this pass was written for - the runtime's copy is what is loaded
+	 * and it declares the official name, so the rewrite still happens;</li>
+	 * <li>that copy is the one loaded: a class on the keep plan, and an interface whose members are restored
+	 * from its donor, are deliberately loaded as the runtime has them, so OptiFine's declarations are not
+	 * there to resolve against and the rewrite must still happen. Both rules are the same ones
+	 * {@link #decide} applies;</li>
+	 * <li>the member really is declared by it. A reference to an SRG name nothing declares keeps the
+	 * rewrite, because the official name is then the only one that resolves.</li>
+	 * </ul>
+	 *
+	 * <p>The alternative was to bound OptiFine's wait instead - the flag is unreachable, so a timeout would
+	 * let the reload finish - and it is the wrong repair here: the constructor has a real defect under it
+	 * (a null missing model, which the shipped game would then bake against), the wait is OptiFine's own
+	 * liveness check for the same information, and bounding it would buy the reload at the cost of exactly
+	 * what it waits for: OptiFine's custom item sprites, silently missing for that reload.</p>
+	 *
+	 * <p>One case this predicate does not cover, and it is worth naming rather than leaving to be
+	 * discovered: {@link #decide} can also refuse a payload class because its hierarchy does not reach the
+	 * runtime's superclass, and that refusal is a runtime comparison this method cannot make. A class left
+	 * alone that way keeps its own SRG-named declarations out of the loaded class, so a reference into it
+	 * would need the official name after all. No class on 1.21 is left alone for that reason - the three its
+	 * log reports are interfaces whose members are restored from a donor, which the rule below does cover -
+	 * and the line that would need it is the one whose log shows a "Left ... alone: the payload's copy of it
+	 * extends ..." message.</p>
+	 */
+	private static boolean declaredByInstalledPayload(String owner, String name) {
+		return declaredNames(owner).contains(name);
+	}
+
+	/**
+	 * The member names the payload copy of {@code owner} declares, or an empty set when this jar does not
+	 * install that copy.
+	 *
+	 * <p>Cached per owner: a transformer is called once per class, but a class can hold hundreds of
+	 * references and the same owners recur, and reading and parsing a class file per reference would be
+	 * work with no answer in it.</p>
+	 */
+	private static Set<String> declaredNames(String owner) {
+		return PAYLOAD_DECLARATIONS.computeIfAbsent(owner, key -> {
+			ClassNode payload = new ClassNode();
+			try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(PREFIX + key + ".class")) {
+				if(stream == null) {
+					return Set.of();
+				}
+				new ClassReader(stream.readAllBytes()).accept(payload,
+						ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+			} catch(IOException e) {
+				LOGGER.warn("could not read the payload copy of " + key + ": " + e);
+				return Set.of();
+			}
+			// The same two rules decide() applies before it installs anything: a class the keep plan keeps,
+			// and an interface whose members the plan restores, are left as the runtime has them.
+			if(KEEP_RUNTIME_CLASSES.contains(key)) {
+				return Set.of();
+			}
+			if((payload.access & Opcodes.ACC_INTERFACE) != 0 && RESTORED_CLASSES.contains(key)) {
+				return Set.of();
+			}
+			Set<String> names = new HashSet<>();
+			for(MethodNode method : payload.methods) {
+				names.add(method.name);
+			}
+			for(FieldNode field : payload.fields) {
+				names.add(field.name);
+			}
+			return Set.copyOf(names);
+		});
+	}
+
+	/** {@code owner} internal name to the member names its installed payload copy declares. */
+	private static final Map<String, Set<String>> PAYLOAD_DECLARATIONS =
+			new java.util.concurrent.ConcurrentHashMap<>();
 
 	/**
 	 * Writes the class this transformer hands back, when {@code -Doptifineoforge.dump=<dir>} is set.

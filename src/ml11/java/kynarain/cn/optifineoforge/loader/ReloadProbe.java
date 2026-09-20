@@ -214,6 +214,125 @@ public final class ReloadProbe {
 		}
 		LOGGER.info("delivered: " + owner);
 	}
+	/**
+	 * One marked moment in the model-loading order, on the log's own timestamp.
+	 *
+	 * <p>The only entry point here that is <em>not</em> gated on {@code optifineoforge.debug.reload}, and
+	 * deliberately so: every other method has to decide for itself whether it was wanted, because the
+	 * call is already in the class whether or not anyone asked for it. This one exists only where the
+	 * instrumentation was asked for - {@code PatchedClassTransformer.traceModelLoading} writes the call
+	 * under {@code -Doptifineoforge.traceModels=true} - so a second switch here would only be a way to
+	 * ask for the instrumentation and then hear nothing from it, which is how a previous probe on this
+	 * branch (ReloadProbeFix, whose flag was left off) came back silent and was read as "the class was
+	 * never delivered".</p>
+	 *
+	 * <p>The message is a plain marker rather than a formatted state dump because the question it
+	 * answers is one of <em>order</em>: {@code CustomItems.updateIcons} waits in a loop for the flag
+	 * {@code CustomItems.loadModels} sets, and the only way to tell "the setter never ran" from "the
+	 * setter ran and something reset it" is to see the two moments against each other with the sleep in
+	 * between. Parent's thread dump on 1.21 shows the waiting half; this is the half that was missing.</p>
+	 */
+	public static void mark(String label) {
+		LOGGER.info("trace " + label + " [CustomItems.modelsLoaded=" + modelsLoaded() + "]");
+		watchFlag();
+	}
+
+	/**
+	 * The same, for a call site inside a loop, reported at most {@code limit} times.
+	 *
+	 * <p>The constructor that loads the models calls one method once per registered item, which is a
+	 * thousand-odd times on a real registry. Marking every turn would bury the log and change the run's
+	 * timing; marking none would leave the longest part of the constructor invisible. So each label gets
+	 * its own counter and the first few turns are reported - enough to show the loop was entered, and the
+	 * marker after it shows the loop finished.</p>
+	 */
+	public static void markLimited(String label, int limit) {
+		int seen = MARK_COUNTS.merge(label, 1, Integer::sum);
+		if(seen > limit) {
+			return;
+		}
+		LOGGER.info("trace " + label + " (" + seen + " of at most " + limit + ")"
+				+ " [CustomItems.modelsLoaded=" + modelsLoaded() + "]");
+		watchFlag();
+	}
+
+	/** How many times each label has been reported, so a marker in a loop stays readable. */
+	private static final java.util.concurrent.ConcurrentHashMap<String, Integer> MARK_COUNTS =
+			new java.util.concurrent.ConcurrentHashMap<>();
+
+	/**
+	 * Watches OptiFine's flag and reports every change, because "set" and "still set" are different facts.
+	 *
+	 * <p>The wait in {@code CustomItems.updateIcons} polls every 100 ms, so a flag that is set at all is
+	 * normally noticed on the next turn. A worker still polling a minute later therefore means one of two
+	 * things, and the thread dump cannot tell them apart: either the setter never ran, or it ran and
+	 * something <em>reset</em> the flag inside the same 100 ms window. The reset exists -
+	 * {@code CustomItems.update()} sets it to false and is reached from
+	 * {@code TextureUtils.resourcesPreReload}, which is what OptiFine's own pre-reload listener calls
+	 * while the same reload is still running - so the window is real, and only a timeline settles it.</p>
+	 *
+	 * <p>Started on the first marker and only then, so a run with no model activity costs nothing. The
+	 * class loader is captured from the thread that first reached a marker, which is a game-layer worker:
+	 * this jar sits below the game layer and cannot name {@code net.optifine.CustomItems} itself, but the
+	 * layer that runs the game can.</p>
+	 */
+	private static void watchFlag() {
+		synchronized(FLAG_WATCH) {
+			if(flagWatchStarted) {
+				return;
+			}
+			flagWatchStarted = true;
+		}
+		ClassLoader gameLayer = Thread.currentThread().getContextClassLoader();
+		Thread watcher = new Thread(() -> {
+			String last = modelsLoaded(gameLayer);
+			LOGGER.info("trace flag watch: CustomItems.modelsLoaded starts as " + last);
+			for(int turn = 0; turn < FLAG_WATCH_TURNS; turn++) {
+				try {
+					Thread.sleep(50L);
+				} catch(InterruptedException stopped) {
+					Thread.currentThread().interrupt();
+					return;
+				}
+				String now = modelsLoaded(gameLayer);
+				if(!now.equals(last)) {
+					LOGGER.info("trace flag watch: CustomItems.modelsLoaded " + last + " -> " + now);
+					last = now;
+				}
+			}
+			LOGGER.info("trace flag watch: stopped watching after " + (FLAG_WATCH_TURNS / 20) + "s");
+		}, "OptiFineFlagWatch");
+		watcher.setDaemon(true);
+		watcher.start();
+	}
+
+	/** How long the watcher runs: 50 ms a turn, so 12000 turns is ten minutes. */
+	private static final int FLAG_WATCH_TURNS = 12000;
+
+	private static final Object FLAG_WATCH = new Object();
+
+	private static boolean flagWatchStarted;
+
+	/** The flag's value as a string, or why it could not be read - never a bare "?". */
+	private static String modelsLoaded() {
+		return modelsLoaded(Thread.currentThread().getContextClassLoader());
+	}
+
+	private static String modelsLoaded(ClassLoader loader) {
+		try {
+			Class<?> items = Class.forName("net.optifine.CustomItems", false, loader);
+			java.lang.reflect.Field field = items.getDeclaredField("modelsLoaded");
+			field.setAccessible(true);
+			return String.valueOf(field.get(null));
+		} catch(Throwable cannotAsk) {
+			String reason = cannotAsk.getClass().getSimpleName();
+			if(cannotAsk.getMessage() != null) {
+				reason += "(" + cannotAsk.getMessage() + ")";
+			}
+			return "?" + reason;
+		}
+	}
+
 	/** Listener tasks in flight, so a reload that stalls with none in flight is visible as such. */
 	private static volatile int running;
 
