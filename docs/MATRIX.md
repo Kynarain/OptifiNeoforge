@@ -4628,3 +4628,115 @@ atives-for.ps1、get-optifine.ps1、launch.ps1(RIG_EXTRA_JVM)、
 
 这也就意味着 **OptiFine 的 FXAA 现在还没法量**:它的后处理链只在**存在关卡**的那条渲染分支里跑。
 所以 FXAA 到目前为止的结果是 **INCONCLUSIVE**,原因正是这一条 —— 不是"没测",是**当前判据下测不了**。
+
+### 五、2026-09-21:客户端第一次真的进了世界(1.20.6),以及随之暴露的两件新事
+
+#### 1. 上一节"没有任何一条线的客户端真正进过世界"**已经过期**
+
+1.20.6,jar `jars-1.20.6\OptifiNeoforge-1.0.0+mc1.20.6-registered.jar` 1744373 字节
+(SHA-256 `AAEC8AF69B7C03A08DA1B9A206F1E15E38253E8801BF57CF94E797F73E60B506`,含本节第 2 条的修复):
+
+```
+07:00:45.663 [Server thread/INFO] PlayerList: Dev[local:E:f8ce5789] logged in with entity id 9 at (10.5, 87.0, -5.5)
+07:00:45.684 [Server thread/INFO] MinecraftServer: Dev joined the game
+07:00:46.108 [Render thread/INFO] OptifiNeoforge: Replaced …RenderChunkRegion with OptiFine's patched version (7 fields, 16 methods)
+07:00:46.110 [Render thread/INFO] OptifiNeoforge: Initialised 2 restored fields in …RenderChunkRegion
+```
+
+同一 jar 上另一次运行 07:09:48 进入、07:14:22 仍在出帧,连续渲染约 **4.7 分钟**;两次运行里
+**`VerifyError` 出现 0 次**。所以"进世界"现在有**客户端侧**证据:窗口标题
+`Minecraft NeoForge* 1.20.6 - Singleplayer`、`saves\RigWorld\session.lock` 被持有、`player joined: yes`,
+以及**像素级静止的截图**(同一配置下相隔 15 s 与 30 s 的三帧,0.0% 内部像素变化)。
+
+#### 2. 首帧崩溃的成因写正:接收者不是"缺",是被**共用**
+
+崩溃报告自己的字节码 `2a2b 1c1d 1904 0101 03b7 001a 2ab8 001e b800 21b1` 解出来是
+`invokespecial`(9) → **`aload_0`(12)** → `invokestatic`(13) → `invokestatic`(16) → `return`(19),
+报错在 **@16 第二个调用**:`MemberRestoreTransformer` 每个 `RETURN` 前只放**一个** `aload_0`,然后**每个**
+待初始化字段放一个 `INVOKESTATIC`;`RenderChunkRegion` 的 4 参构造要**两个**,于是第一个调用吃掉了唯一的
+接收者。若真的没有接收者,报错会落在 @13。
+
+修法与核对:改为**每次调用各放一个 `aload_0`**(并且每次 `RETURN` 用**新的** `InsnList`),再加一条真实的
+栈效果接受规则 —— 不满足就**记日志、让字段停在默认值**,而不是交付一个加载即被验证器拒绝的类。
+离线清单(对 `member-restores.txt` 里全部 76 个类跑**真实**转换器):修复前 5 个注入调用/2 个类,
+其中 **1 个无接收者**;修复后 **0 个**。独立第二验证器(对**交付字节**做 ASM `BasicVerifier` 数据流):
+修复前同一构造上报 2 处,修复后 76 个类 0 处;整只 jar 612 个类 0 处。
+
+**这条路径在 1.20.1/1.20.2/1.20.4 上是休眠的**:它要求同一个类上有 ≥2 个实例初始化器,只有 1.20.6 有
+(`RenderChunkRegion` 的 `posFrom` + `modelDataSnapshot`)。那三条线量到的都是 0 个无接收者调用。
+
+#### 3. 新缺陷一:攻击/破坏方块即崩(载荷的 shim 应答 null)
+
+```
+java.lang.NullPointerException: Cannot invoke "…IClientBlockExtensions.addHitEffects(…)" because the return
+    value of "…IClientBlockExtensions.of(BlockState)" is null
+  at ParticleEngine.addBlockHitEffects(ParticleEngine.java:823) <- Minecraft.continueAttack (1715) <- handleKeybinds (2107)
+```
+
+量到的事实:交付的 `optifineoforge/patched/…/ParticleEngine.class`(59210 字节)只在**两处**引用 Forge 包名的
+`IClientBlockExtensions`(`destroy` 与 `addBlockHitEffects`),而 jar 里那个接口是 shim,`of(BlockState)` 就是
+`aconst_null; areturn`(668 字节);**运行期自己的** `ParticleEngine` 既没有 `addBlockHitEffects`,也不引用任一
+包的扩展接口 —— 所以这一件 **keep plan 修不了**(没有运行期方法可保)。**尚未修**,它是发布阻塞项:任何玩家
+攻击方块都会撞上,而且它会在任意时刻打死一次截图运行(下面 FXAA 的第一次配对就是这么废掉的)。
+
+#### 4. 新缺陷二(rig 自己的):屏幕追踪会在进世界后约 1 秒打死客户端
+
+```
+ReportedException: Ticking screen <- Screen.wrapScreenError <- ReceivingLevelScreen.tick -> onClose
+  -> ClientHooks.popGuiLayer -> Minecraft.setScreen -> NullPointerException:
+     Cannot invoke "Object.getClass()" because "<parameter1>" is null
+```
+
+`PatchedClassTransformer.traceScreen`(约 955 行)在 `Minecraft.setScreen` 头部插入的打印
+(`aload_1; Object.getClass(); Class.getName()`)对 `screen` **没有判空**,而 NeoForge 的 `popGuiLayer` 在弹掉
+最后一层 GUI 时**合法地**调用 `setScreen(null)` —— 那正是 quick play 进世界时 `ReceivingLevelScreen.onClose`
+做的事(同一次运行的 stderr 里 `OPF-SCREEN …ReceivingLevelScreen` 正好出现两次)。**所以本文件里所有"追踪停在
+`ReceivingLevelScreen`"的记录都是 rig 的缺陷,不是 mod 的**;修法是让那段打印判空(`String.valueOf`),在带该
+修复的 jar 重建之前,截图运行一律**不带**追踪。**尚未修**。
+
+#### 5. FXAA 第一次有了一对**可读**的帧
+
+细节见 rig 的 `logs\fxaa-findings-2026-09-21.md`。配置:`shaderPack=`、`ofAaLevel:0`、`ofClouds:3`、
+世界用 `pin-save-state.ps1` 钉住,`optionsshaders.txt` 的 `antialiasingLevel` 取 0 与 4,各取三帧(+0/+15/+30 s):
+
+| 比较 | 场景差异 | 平均边缘能量变化 | 硬边(梯度>48)变化 | 判定 |
+|---|---|---|---|---|
+| `=0` 运行自身(1 vs 2) | **0.0%** | 0.0% | 0.0% | 帧内静止 |
+| `=4` 运行自身(1 vs 2/3) | **0.0%** | 0.0% | 0.0% | 帧内静止 |
+| `=0` vs `=4`(同一时刻,三帧各一次) | 3.6% | **-0.6%**(8.6078→8.6594) | **-12.7%**(18711→16334) | 主指标 NOT VISIBLE |
+| 第一次配对(已废) | 60.2% | -22.4% | -37.1% | INCONCLUSIVE(那次 `=0` 运行的客户端正在死) |
+
+诚实读法:两次运行各自帧内**完全静止**(这是以前从未有过的基线),两场景相差 3.6%(门槛 10%),所以这一对
+**可以读**;但主指标 -0.6% 既低于 2% 门槛、方向还相反,只有"硬边像素数"一致地降 12.7%。而且那三帧是**同一画面
+的重复**,不是三个独立样本。所以**既不能说"FXAA 确认生效",也不能说"FXAA 无效"**;要落定,只需再跑一次稳定的
+`=0` 运行,把 3.6% 变成"逐次噪声"的实测值。
+
+#### 6. 独立审计:15 条线的**装载字节码**
+
+rig 新增 `tools-src\StackAudit.java`(对 jar 里每个类的每个方法跑 ASM `Analyzer` + `BasicVerifier`),
+结果表在 `logs\stackaudit-2026-09-21.md`。要点:
+
+* **6 条线的 jar 里带着验证器拒绝的 donor 初始化助手**:1.20.2、1.20.4、1.21、1.21.1、1.21.3、1.21.4,
+  形状都是 `SectionRenderDispatcher$RenderSection.optifineoforge$init$buffers(L…RenderSection;)V` ——
+  0: `aload_0` 之后直接 `invokestatic Collectors.toMap`(要两个参数),提升时把产生那两个参数的指令丢了;
+  1.21 还多四个(`Options`、`ClientChunkCache`、`ModelBlockRenderer$SizeInfo`、`ItemOverrides`)。
+  这些助手会被转换器**原样拷进交付的类**,所以是"类加载即失败",不是"调用出错"。
+* **`f56dd5b` 的生成器修复能修好它**:在 1.20.2 自己的输入上量到,旧 donor 1 处违规 → 用当前分支源码
+  重新生成后 **0 处**,生成器改口打印 `no safe initialiser for field …RenderSection.buffers`(把字段留在默认值,
+  而不是交付非法字节)。
+* **1.21.x 分支的 `MemberRestorePlan` 里没有 `stackEffect`/`callEffect`**:它还是被 `f56dd5b` 换掉的那个
+  `valueRun`,所以那 9 条线的生成器缺陷**还在**,移植**未做**。1.21.x 的 `MemberRestoreTransformer` 也需要
+  移植本节的第 2 条。
+* **`rebuild-120x-line.ps1` 会复用旧 donor**:`work\<mc>\optifine-patched.jar` 已存在时它跳过 `prepare-line`,
+  于是 `plan\donors` 与 `plan\member-restores.txt` 还是上一次的 —— 我第一次重建 1.20.2 时非法助手仍在,就是
+  这个原因。发布候选构建必须要么先删那个 jar,要么手工重跑生成器那一步,并且**审计结果**而不是相信配方。
+
+#### 7. 1.20.2 线的现状(join 修复已写好,但**尚未实测**)
+
+重建两次;现在的 jar 1730798 字节,SHA-256 `AC835B122E206A71F850063BA51AACB633699731EAEF2560DBDB547A34794221`,
+审计 0 findings,keep plan 18 行,新增的一行是
+`net/minecraft/client/server/IntegratedServer<TAB>initServer<TAB>()Z`(rig 侧 `keep-runtime-1.20.2.txt`、
+`keep-runtime-1.20.4.txt` 都已加上并写明了各自的量测依据:运行期 `javap -p` 都有
+`public boolean initServer()`,而载荷的 `initServer` 把 lifecycle 调用路由到 OptiFine 的 Reflector,
+类名用的是 Forge 的 `net.minecraftforge.server.ServerLifecycleHooks`,本运行期不存在)。1.20.2/1.20.4 的
+这一修复**都还没有真机跑过**,1.21.x 各线连 keep plan 都还没加。
