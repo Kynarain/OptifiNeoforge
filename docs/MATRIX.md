@@ -4711,6 +4711,15 @@ ReportedException: Ticking screen <- Screen.wrapScreenError <- ReceivingLevelScr
 的重复**,不是三个独立样本。所以**既不能说"FXAA 确认生效",也不能说"FXAA 无效"**;要落定,只需再跑一次稳定的
 `=0` 运行,把 3.6% 变成"逐次噪声"的实测值。
 
+**补记(同日 07:47 实测):那个"再跑一次"没有给出噪声值,而是给出了另一件事。** 第二次 `=0` 运行
+(`fxaa5-off`,同一钉住的世界、同一配置、帧内依旧静止:317857 / 317916 / 318002 字节)与前一次的帧
+**相差 75%,三帧几乎逐像素不同**,而且帧大小三者相差悬殊(`=0` 早先 124 KB、`=4` 197 KB、这次 318 KB)。
+原因:`pin-save-state.ps1` 钉的是**世界**(时间、天气、停止日出与刷怪的游戏规则、云关闭),**不钉玩家的位置与朝向**
+—— 那两项在 `level.dat` 里,而每次被强杀的客户端都会把它们写回去。`=4` 那次(07:14)与这次(07:47)之间还有五次
+验证运行进过那个世界,所以相机姿势已经不是同一个。结论:`off3` vs `on4` 那一对仍然成立(背靠背、3.6% 场景差异),
+但**"硬边降 12.7%"目前只建立在一对帧上,不是重复量测**;要拿噪声值,得先把姿势也钉住(`level.dat` 的
+Pos/Rotation 写入,或一条 teleport 命令),或者严格背靠背地成对运行。
+
 #### 6. 独立审计:15 条线的**装载字节码**
 
 rig 新增 `tools-src\StackAudit.java`(对 jar 里每个类的每个方法跑 ASM `Analyzer` + `BasicVerifier`),
@@ -4906,3 +4915,22 @@ java.lang.NullPointerException: Cannot read field "oSpinningEffectIntensity" bec
 `getDeltaMovement()`),说明有若干条 OptiFine 改过的渲染/tick 路径都无条件解引用玩家。1.20.6 没有暴露这一条
 (它的载荷连渲了 4.7 分钟),两条线的 `GameRenderer` 在这里不一样。**尚未修**,1.20.2 的下一件,
 1.20.4 很可能同形(未测)。
+
+**为什么判空没了,以及修在哪一层**:运行期自己带这个判空,交付的类没有 —— 运行期
+`client-1.20.2-20231019.002635-srg.jar` 的同一个表达式是
+
+```
+471: aload_0 / 472: getfield minecraft / 475: getfield Minecraft.player
+478: ifnull 571            <- 运行期的玩家判空
+481: fload_1 / 482-489: minecraft.player.oSpinningEffectIntensity / 492-499: ...spinningEffectIntensity
+```
+
+而交付的 `renderLevel` 在 233-250 直接读同样两个字段,前面没有任何 `ifnull`。也就是说装上的是**OptiFine 自己
+编译的**这个方法(它无条件算这个 lerp),运行期带的那道判空不在里面。
+
+修的位置应当是**离线**的 `OptifineJarFixer`,不是加载期转换器:那个类本来就在重写 OptiFine 自己的 class,
+而且已经在里面插分支(`new LabelNode()` / `new JumpInsnNode(Opcodes.IFLT, ...)`),
+写回时用 `SafeClassWriter(reader, COMPUTE_FRAMES | COMPUTE_MAXS)`;加载期那条路刻意避开分支,它自己的注释
+就写着"String.valueOf ... needs no branch (so no stack map frames have to be computed)"。
+形状:在交付体 offset 232(`fload_1` 之前)插一道 `if (minecraft.player != null)`,把 232-262 包起来,
+玩家为 null 时让该字段保持原值;插完先对重建的 jar 跑 `StackAudit`,再上真机。
