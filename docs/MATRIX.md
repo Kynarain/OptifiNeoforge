@@ -4934,3 +4934,28 @@ java.lang.NullPointerException: Cannot read field "oSpinningEffectIntensity" bec
 就写着"String.valueOf ... needs no branch (so no stack map frames have to be computed)"。
 形状:在交付体 offset 232(`fload_1` 之前)插一道 `if (minecraft.player != null)`,把 232-262 包起来,
 玩家为 null 时让该字段保持原值;插完先对重建的 jar 跑 `StackAudit`,再上真机。
+
+**补记:两个守卫在 rig 侧试过了,结论是这一条不是"多处读没判空",而是"玩家实体根本没到"。**
+rig 侧写了两个离线工具改 `work\1.20.2\optifine-patched.jar`(载荷),各自重建 + 上真机:
+
+1. `GuardSpinningReads` 把 `renderLevel` 里那两处
+   `GETFIELD Minecraft.player; GETFIELD LocalPlayer.<spinning 字段>:F` 换成同一个类里新加的
+   `optifineoforge$spinningOrZero` / `$oldSpinningOrZero`(玩家为 null 时返回 0.0f)。栈形状不变,大方法的帧
+   不用重算(helper 自带手写 `F_SAME`)。结果:payload 与重建 jar 都过审计(2238 / 603 个类 0 findings),
+   真机上 `renderLevel:1619` 的那次崩溃**没了**,客户端往前一步死在
+   `renderLevel:1639 -> Camera.setup(Camera.java:46)`:`renderViewEntity` 为 null。
+2. `GuardRenderLevelEnter` 改在入口:`render(FJZ)V` 里对 `renderLevel(FJL…PoseStack;)V` 的调用改指向新生成的
+   `optifineoforge$renderLevelIfPlayer` —— 玩家为 null 就直接返回,否则用同样的实参调用原方法。调用点栈形状
+   不变,只有新方法带分支(手写帧)。结果:payload 与重建 jar 都干净(2238 / 603 个类 0 findings,jar
+   1721257 字节,SHA-256 `2480D95B929320B7324B304BE4D7D7F782C2CEA14DCBD4520496B6EA68E0081A`),
+   真机 60 秒无输入运行:**没有崩溃报告,客户端活到最后**(由脚本停掉),**但 60 秒里 34098 个
+   `NullPointerException`**(约每帧 13 个:`jumpableVehicle()`、`getInventory()`、`getVehicle()`、
+   `oSpinningEffectIntensity`、`isScoping()`、`getAttackStrengthScale(float)` …),tracer 显示它停在
+   `GenericDirtMessageScreen -> ProgressScreen -> LevelLoadingScreen -> ProgressScreen`,并没有进世界。
+
+所以 1.20.2 上"第一帧崩溃"只是**症状**:集成服务器入世了,而**玩家实体始终没到**,于是每一帧在十几处
+解引用 null 玩家。把渲染挡住能让崩溃消失,但客户端就停在 `ProgressScreen` 上 —— 是进展,不是通过,也不该在
+没弄清玩家为什么没到之前就留在发布 jar 里。这条线下一个要问的问题是
+**"1.20.2 上玩家实体为什么没到"**(上面那串 NPE 正好点名了这期间在跑哪些 tick)。
+两个工具都只在 rig 侧,未进仓库;这类"游戏类"的修复在仓库里该放在哪一层(写 `optifine-patched.jar` 的载荷
+pipeline,因为 `OptifineJarFixer` 修的是 OptiFine 自己的类)仍是未定项。
