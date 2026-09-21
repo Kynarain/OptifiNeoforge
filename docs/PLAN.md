@@ -1808,3 +1808,50 @@ DataVersion 就是 1.20.4 的,和其他六条线完全一样。结果还是 `wor
 所以:**两条解释都已排除**(join 钩子缺失、存档版本),这一条仍是线特有的、未解释的 quick play 沉默;
 下一步按 1.20.4 已经成功的办法做——用菜单驱动进世界(真实光标点击 + 从客户端字节码读出的世界列表几何),
 而不是继续在 quick play 上花时间。
+
+### 1.21 的世界入口:四个连着的缺陷,修掉三个;并记下一次"看似系统化、实际错误"的改动
+
+1.21(21.0.167)这条线的 quick play **什么都不做**(tracer 只有 `GenericMessageScreen -> TitleScreen`),
+所以改用**菜单驱动**(新增 `world-test-121.ps1`,由 1.20.4 那份改写;1.21 的 `SelectWorldScreen` 布局用
+`javap` 验过与 1.20.4 逐字相同:行中心 `52+36i+18`、Play 按钮 `(w/2-154,h-52,150,20)`)。改菜单之后,世界入口
+一路上连着暴露四个缺陷,修掉三个(都有真机证据):
+
+1. **`ModelPart.getChild`(与 1.20.4 同一件)** —— 载荷的 `getChild` 按 `child.getId()` 匹配,而这条线的载荷虽然
+   带了 `PartDefinition`,它的 `bake` 仍只 `new ModelPart(List, Map)`、**从不 `setId`**,于是 id 全 null、
+    `Failed to create model for minecraft:skull` → `Caught error loading resourcepacks, removing all selected
+   resourcepacks`。修法:整条分支七条线都加上 `ModelPart getChild` 的成员级保留(运行期的 `children.get(name)`),
+   每条重建时都打印 `patch entries dropped ... [ModelPart]`;**七条线验收全部回到记录值**(1.21 = 14141,其余 0)。
+2. **`IntegratedServer` 必须是整类保留,不能只保留成员**。只保留 `initServer()Z` 时,载荷那份类仍被装进去,
+   而**它的构造器**调用 `this.m_236740_(GameProfile)` —— 载荷和运行期视图都不声明这个方法,于是
+   `Description: Starting integrated server` 阶段
+   `NoSuchMethodError: void net.minecraft.client.server.IntegratedServer.m_236740_(com.mojang.authlib.GameProfile)`
+   (`crash-2026-09-22_06.00.51-client.txt`)。改成 `IntegratedServer<TAB>*` 整类保留后,世界加载越过了这一步。
+3. **被改挂的 `BlockEntity` 连着缺三个 Forge 父类成员**:`gatherCapabilities()V`(启动期 `NoSuchMethodError`,
+   已在上一轮修)——修完暴露 `getCapabilities()Lnet/minecraftforge/common/capabilities/CapabilityDispatcher;`
+   (生怪点时 `[Worker-Main-12/ERROR] ... NoSuchMethodError`,spawn area 卡在 0%);Forge 壳 `CapabilityProvider`
+   一共就声明这三个成员,所以三个一起补进 `stub-additions-1.21.txt`(并同步给同样改挂的 1.21.1/1.21.3)。
+4. **`MinecraftServer.m_195518_()Z`** 这个 vanila getter 运行期视图里只有字段 `isSaving` 没有它,载荷 `Gui`
+   在 `tickAutosaveIndicator` 里调用 → 世界刚加载完就
+   `NoSuchMethodError: boolean net.minecraft.server.MinecraftServer.m_195518_()`(`crash-2026-09-22_06.14.06`);
+   补桩返回 false(= 未在保存)是正确的默认值,已记进 `stub-additions-1.21.txt`。
+
+#### 一次被自己量倒的"系统化修复",记在这里免得下次再走一遍
+
+产生这一串"补一个又冒一个"的根源看起来是打壳那一步的 classpath:它以前拿的是 rig 里**所有** jar(583 个),
+`MissingTargets` 按类名解析成员,别的 MC 版本/别的线里的同名成员会让"缺失"看不出来。于是把它收窄成
+"这条线自己的 version json + profile json + universal + runtime 视图"(114 个 jar,做法抄自 1.20.x 的
+`rebuild-120x-line.ps1`)——结果**确实**从 4 个缺失涨到 **46** 个,但里面混着一批**运行期视图自己缺的 vanilla
+SRG 成员**:`ServerLevel.m_7654_()`(`Level.getServer()`)、`MinecraftServer.m_195518_()`(`isSaving()`)、
+`m_7570_(Z)` 等。给这些方法塞"默认体"不是修复而是**更糟**:`getServer()` 返回 null 比缺失更致命。
+实测就是这个后果——收窄那次重建之后的世界测试(`logs\world-121-run6.txt`)连世界行都没命中、一个世界标记都没有。
+所以这次收窄**已回退**(代码里留了完整说明与量测),`add-line.ps1` 继续用宽 classpath + 逐条
+`stub-additions-<mc>.txt`。**真正的缺陷是运行期视图对 vanilla SRG 成员不完整**,这是一个独立待办。
+
+#### 现状(如实)
+
+1.21 现在能走到"世界加载中"(菜单:标题 → Singleplayer → 世界行 → Play;run4/run5 里 `Preparing spawn area`、
+`Time elapsed`、`Loading recipes/advancements` 都出现过,`session.lock` 与 region 文件被写),而 run6/run7 又
+没有起世界 —— 也就是说**菜单驱动这条路的入口本身还不稳定**(猜测与"行是否被选中"有关:Play 按钮在没选中行时
+是禁用的)。**因此 1.21 目前既不能记成"进世界",也不能记成"确认失败"**;下一步是把"先确认行被选中
+(用键盘 Down 选中后在截图/tracer 上确认)再点 Play"做成确定性步骤,并把 `Down+Enter` 这条纯键盘路作为主路。
+其余六条线在 ModelPart/IntegratedServer 改动后还没重跑建档光影(1.21.8 也换了整类保留)。
