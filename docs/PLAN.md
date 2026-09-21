@@ -1438,3 +1438,224 @@ asInterface = shape.mustBeClass() ? false
 **仍未在真机上验证**:这条分支还没有一次客户端进世界,所以"接口外壳 + Noop 是不是就通了"依然是从字节码
 与 1.20.x 那条线的实测推出来的。1.21.x 入世之前仍要先落地上面那两件移植(`stackEffect`/`callEffect`、
 每次调用各一个接收者),然后重建各线再跑。
+
+## 2026-09-22:从 1.20.x 移植五件(全部离线量测),其中两件在 A/B 里被发现"照抄抄错了";另两件本分支早已有
+
+1.20.x 那条线今天在真机上结清了六件缺陷,本分支逐件对照,得到的是"三件真缺、一件从来没有、两件早已有"。
+下面的每个数字都来自命令输出,量法写在每节里;真机一律未验(本轮不启动任何客户端)。
+
+对照用的基线固定成一份:**同一对输入**(`work\<mc>\optifine-patched.jar` + `work\<mc>\runtime-<mc>.jar`),
+分别用**移植前的生成器**(`git show HEAD~5:.../MemberRestorePlan.java` 编译出来的那一份)和**现在的源码**跑
+一遍,再逐个 donor 类、逐个 `optifineoforge$init$` 助手签名对比。这样"移植改变了什么"不靠印象。
+
+### 一、计划生成器:同名但描述符不同的 synthetic 也要恢复(1.20.x `da8b09d`)
+
+规则从"名字在载荷里出现过就跳过"改成"名字**且**描述符都在载荷里才跳过"。六条线的量测(计划条目 / donor 类):
+
+| 线 | 计划条目 | donor 类 | 其中 synthetic(`lambda$`)行 |
+|---|---|---|---|
+| 1.21 | 363 → **381** | 97 → 99 | 205 |
+| 1.21.1 | 293 → **309** | 79 → 81 | 185 |
+| 1.21.3 | 293 → **314** | 78 → 82 | 183 |
+| 1.21.6 | 345 → **375** | 83 → 87 | 188 |
+| 1.21.7 | 355 → **385** | 87 → 91 | 188 |
+| 1.21.8 | 353 → **383** | 88 → 92 | 192 |
+
+新增的全是运行期 synthetic 的方法体,含每条线自己的
+`lambda$jumpInFluid$N(Lnet/neoforged/neoforge/fluids/FluidType;)V`(1.21.8 是 `$5`,1.21 是 `$3`)——
+与 1.20.6 那个"怪物入水即死"的案例同名同形,只是这条线上还没人在水里见过它。另外一批是
+`TitleScreen.lambda$render$15`、`ModelManager.lambda$reload$0`、`BlockStateModel$Unbaked.lambda$static$N` 等。
+
+### 二、计划生成器:栈效果模型 + 装配闸(1.20.x `f56dd5b`)——以及**移植自身的两处缺陷**
+
+移植的内容:`stackEffect`/`callEffect`/`slots`(接收者与实参都计入,long/double 占两槽)、按"还差多少值"走的
+`valueRun`、`objectCreationRun`(从最后一个 `new` 正向走)、闸 `assemblesOneValue`、静态路径的
+`initialiserFrom`/`staticInitialiserFrom` 统一过闸。
+
+**照抄抄错了两处,是同一对输入的 A/B 量出来的,不是推断:**
+
+1. **助手会把运行期类的指令搬走。** ASM 的 `InsnList` 是侵入式链表,`instructions.add(node)` 会把节点从
+   原来的列表里**摘下来**,而助手的值片段正是从运行期类的构造器/`<clinit>` 里取的。摘走之后,同一个类
+   后面的字段就在一个被改过的构造器里找自己的 store。1.21.8 实测:`ClientLevel.dayTimeFraction` 的助手
+   因此整条消失(旧生成器有),同类的还有 `VideoSettingsScreen.TITLE`、`SingleVariant$Unbaked.MAP_CODEC`、
+   `SynchedEntityData.STACK_WALKER`、`RenderSystem.PIPELINE_MODIFIERS` 等 —— 六条线合计丢掉
+   3/3/3/6/6/7 个初始化器,每一个都是"字段被恢复成声明但没有值"。
+   修法:`copyOf(insn)` —— 片段一律**拷贝**进助手(不认识的指令种类直接拒绝),运行期类不再被改。
+
+2. **完整性判据问错了问题。** 1.20.x 的闸是结构式的("一条留下一个值的指令"或"new/dup/`<init>` 一组"),
+   而它自己的注释写的是"模拟栈、要求净效果恰好一个值"。两者不是同一个问题:返回值的调用在消耗多于产出
+   时**贡献是负的**,所以
+
+   ```
+   MAP_CODEC     = Variant.MAP_CODEC.xmap(f, f)     -> getstatic; invokedynamic; invokedynamic; invokevirtual
+   STACK_WALKER  = StackWalker.getInstance(option)  -> getstatic; invokestatic
+   TITLE         = Component.translatable("...")    -> ldc; invokestatic
+   ```
+
+   全都"不是那两种形状"而被拒 —— 而本文件里 `invoke()` 的注释正好记着 `MAP_CODEC` 为空会让 1.21.8 的每个
+   方块状态 NPE。同时 `valueRun` 的 `hasValueAt`("最后一条指令要产出值")把已经完整的 `new/dup/<init>` 组
+   也走过去了(构造调用是消耗),于是 `RenderSystem.PIPELINE_MODIFIERS` 在 1.21.6/1.21.8 上没有值 ——
+   正是本文件注释里那条"客户端在首帧就死"的字段。
+   修法:`runProblem(片段)` 就是那道模拟(取用超过栈高即拒、结束时必须恰好一个值、不能停在未构造的引用上),
+   **接受规则与"找片段"的走法共用它**;结构式两例作为显式命名的第一种情形保留。`staticInitialiser` 补上
+   实例路径本来就有的 `objectCreationRun` 回退。另加一条:静态助手没有局部变量,片段里出现任何
+   `VarInsnNode` 一律拒绝 —— 1.21.6/1.21.7 实测,否则会把 `RenderSystem.enableStencil` 里"从自己的形参
+   赋值"的那段搬成 `aload_0; putstatic STENCIL_TEST`,验证器报
+   `Trying to get an inexistant local variable 0`。
+
+修完之后的同一次 A/B(移植前 vs 现在):
+
+| 线 | 计划条目 | donor 类 | 丢的 donor 类 | 丢的助手 | 新增助手 |
+|---|---|---|---|---|---|
+| 1.21 | 363 → 381 | 97 → 99 | 0 | 1 | 23 |
+| 1.21.1 | 293 → 309 | 79 → 81 | 0 | 1 | 6 |
+| 1.21.3 | 293 → 314 | 78 → 82 | 0 | 1 | 6 |
+| 1.21.6 | 345 → 375 | 83 → 87 | 0 | 0 | 8 |
+| 1.21.7 | 355 → 385 | 87 → 91 | 0 | 0 | 8 |
+| 1.21.8 | 353 → 383 | 88 → 92 | 0 | 0 | 8 |
+
+唯一"丢掉"的助手是 `SectionRenderDispatcher$RenderSection.optifineoforge$init$buffers`(1.21/1.21.1/1.21.3),
+它的体正是 1.20.6 实测里那个被验证器拒绝的片段:
+
+```
+aload_0; invokestatic Collectors.toMap; invokeinterface Stream.collect; checkcast; putfield
+```
+
+**拒绝它才是对的**。旁证:把两套 donor 集合各自压成 jar 交给 `tools-src\StackAudit.java`(ASM 的
+`BasicVerifier`),移植前是 1.21/1.21.1/1.21.3 各 1 处 `INJECTED` 坏栈、其余 0;现在是**六条线全部 0 findings**。
+
+### 三、注入调用:每次调用各推一个接收者 + 序列接受规则 + 描述符检查(1.20.x `203da0e`)
+
+本分支**已经有一半**:交付字节里每次调用各有一个 `aload_0`,每次 `RETURN` 用新的 `InsnList`。缺的是接受规则,
+这次补上:`initialiserCalls(owner, names)` 建序列、`sequenceProblem(InsnList)` 模拟它(每条调用的实参都要在
+栈上、整段结束时栈高回到原样),不满足就记日志并跳过这次注入;实例初始化器的分类从"不是 `()V` 就算"改成
+只收 `(L<owner>;)V`,别的形状记一条警告。
+
+证据(1.21.8 的 registered jar,用 jar 里的**真实** `PatchedClassTransformer` + `MemberRestoreTransformer`
+跑计划里的全部 92 个类,见 rig 新增的 `tools-src\TransformerAudit121.java`,再交给 StackAudit):
+
+* 92 个类全部过验证,**0 findings**;
+* 交付字节里共 20 处注入的初始化调用,**两个方法带 2 处**,其中一个正是本分支的对应物:
+
+```
+net.minecraft.client.renderer.chunk.RenderSectionRegion.<init>(Level,int,int,int,SectionCopy[])
+   12: aload_0
+   13: invokestatic optifineoforge$init$modelDataSnapshot:(LRenderSectionRegion;)V
+   16: aload_0
+   17: invokestatic optifineoforge$init$sectionPos:(LRenderSectionRegion;)V
+   20: return
+```
+
+—— 与 1.20.x 修掉的那段(`@16` 上第二次 `invokestatic` 下溢)逐字节对应,而这里每处调用都有自己的接收者。
+
+### 四、整类保下来的类:补回载荷独有的成员与它们的静态初始化(1.20.x `8db6879`)
+
+本分支的 `addPayloadMembers` 已经在做"把载荷独有的成员带回来",缺的是三条排除(非静态 final 字段、
+`optifineoforge$init$` 生成助手、构造器与 `<clinit>`)与一条补充(静态字段连载荷自己那条初始化语句一起搬,
+切片里的标签/行号/栈帧跳过而不是当成"无法复制")。证据(1.21.8,真实变换器 + 上面那个审计工具):
+
+* `ModelDiscovery$ModelWrapper`(keep plan 保整类)现在会打
+  `Not carrying the payload's final field ...ModelWrapper.id/.wrapped/.fixedSlots/.modelBakeCache`,然后
+  `Gave ... the payload's 1 field(s) and 1 method(s)`;交付字节 11745 → **11847**,类里多了
+
+  ```
+  private net.minecraftforge.client.model.geometry.ModelContext context;
+  public net.minecraftforge.client.model.geometry.IGeometryBakingContext getContext();
+  ```
+
+  而旧 jar 的同一步只有 11520 字节、两个成员都没有(`getContext` 的体读的正是随它一起搬来的 `context`)。
+* `ModelBlockRenderer$1` 在 keep plan 下整类不动(1249 → 1249 字节),`build-jars` 打出
+  `patch entries dropped for 1 class(es): [net/minecraft/client/renderer/block/ModelBlockRenderer$1]`。
+
+### 五、屏幕追踪(1.20.x `ff0aefa` 的后半)——本分支**从来没有**
+
+在 1.21.x 的历史里 `OPF-SCREEN` / `traceScreen` 一次都没出现过。这次移植进来,并带上那一半**实测过的**修法:
+打印走 `aload_1; String.valueOf(Object)`,而不是 `getClass().getName()`。`setScreen` 合法地会被传 null
+(NeoForge 的 `ClientHooks.popGuiLayer` 在最后一层 GUI 被弹掉时就是这么调的),旧写法在入世成功后约 1 秒抛
+NPE 把客户端打死 —— 那正是 1.20.6 那条线上"追踪停在 ReceivingLevelScreen"的原因。同时把
+`net.minecraft.client.Minecraft` 在属性打开时登记成变换目标(否则该类的 payload 副本不存在,变换器根本不会被
+调用,追踪器看起来像坏了)。
+
+证据(同一对输入 + `-Doptifineoforge.traceScreen=true`):日志出现 `Tracing every screen switch in
+Minecraft.setScreen`,交付的 `setScreen` 开头是
+
+```
+ 0: getstatic System.err ; 3: new StringBuilder ; 10: ldc "OPF-SCREEN "
+16: aload_1 ; 17: invokestatic java/lang/String.valueOf(Object)String
+20: invokevirtual StringBuilder.append ; 26: invokevirtual PrintStream.println
+```
+
+该类过数据流验证器 0 findings。**仍未在真机上验**(这条分支还没有客户端真的进过世界,而这条追踪只有在进世界
+换屏时才看得出价值)。
+
+### 六、两件本分支早已有,不需要移植
+
+* **Forge 外壳的自类型静态工厂与外壳种类**(`43f0d62` + `345ef82`):用 1.21.8 的同一对输入离线重新生成,
+  `IClientBlockExtensions` 出成 **`interface`**(带 `static final DUMMY`),`of(BlockState)` 的体是
+  `new IClientBlockExtensions$Noop; dup; invokespecial <init>; areturn`,四个 Noop
+  (block / fluid / item / mob-effect)。用分支当前源码重新编译和用 `tools-classpath.txt` 里那份 jar,
+  输出**完全一致**,说明这一半确实已经在树里。
+  但**交付侧是旧的**:`work\<mc>\stubs` 是 9/19 生成的,里面的外壳还是**类**(`public class
+  IClientBlockExtensions { public static ... DUMMY; ... }`,89 个文件)。本次重建前已用分支当前代码
+  逐个重新生成(每线 +4 个 Noop,1.21.8 从 89 → 92 个文件;丢掉一个 `IG.class`,那是旧工具的名字截断残留)。
+
+* **运行时接口注入**(1.20.x `356c427`):等价物是 `injectPlannedInterfaces` + `loadTargets` 里的
+  `addFirstField(targets, RUNTIME_INTERFACES)`,调用点在 `decide()` 最前面、早于所有提前 return。
+  实测:把 `ModelBaker` 临时加进 keep plan(测试用的临时 jar),日志打
+  `Left net.minecraft.client.resources.model.ModelBaker alone: the keep plan keeps this runtime's copy whole`,
+  而交付的类**带上了** `net/neoforged/neoforge/client/extensions/ModelBakerExtension` —— 即"被整类保下来的类
+  也会拿到计划要求的运行时接口"。1.21.8 自己的 keep plan 与 interface 计划没有交集,所以这条路径在真机上
+  还没被自然触发过。
+
+### 七、没做的一件(如实记)
+
+1.20.x 后来的 `staticInitialiser` 把候选方法从"类的每一个方法"收窄成"`<clinit>` 加上它调用到的本类方法"
+(`reachedFrom`),并为"先赋值、后填充"的字段加了 `isReadLater`/`populatedView`。**本次没有移植**:
+
+* 收窄的理由在 1.21.x 上**不成立**:本文件注释说 `RenderSystem.PIPELINE_MODIFIERS` 是在 synthetic 方法里
+  赋值的、所以必须搜每个方法 —— 实测(javap `runtime-1.21.6.jar` / `runtime-1.21.8.jar`)它的
+  `putstatic PIPELINE_MODIFIERS` 就在 `<clinit>` 里(紧随 `putstatic STENCIL_TEST`,两者之间没有标签),
+  而 `lambda$static$0` 只是被 `invokedynamic` 的 bootstrap 参数引用的另一个方法;
+* `isReadLater`/`populatedView` 来自 26.x,处理的是"先放空容器再填"的那类字段(`PROFILES`),要在
+  26.1.2 上量,不属于本轮;
+* 下一次要动它,判据是"这条线有没有那种字段",而不是"1.20.x 有没有这段代码"。
+
+### 八、重建(七条 ModLauncher 1.21.x 线)
+
+每条线都按"**先用当前源码重新生成计划** → 再用 `add-line.ps1` 构建"的顺序,因为 `add-line.ps1` 只在
+payload 不存在时才跑 `prepare-line`,否则 `plan\member-restores.txt` 与 `plan\donors\` 会被**静默复用**
+(父会话在 1.20.4 上量到过同一个陷阱,并因此让一只两天前的计划上了真机)。
+
+| 线 | registered jar 字节 | SHA-256(前 16) | donor 类 | 计划条目 | 嵌入的 payload 类 | Forge 外壳 | `patch entries dropped` |
+|---|---|---|---|---|---|---|---|
+| 1.21 | 1916959 | 83D29414B1751233 | 99 | 381 | 440 | 90 | `[ModelBlockRenderer$1]` |
+| 1.21.1 | 1793475 | 96E830BEF4D4F423 | 81 | 309 | 425 | 100 | `[ModelBlockRenderer$1]` |
+| 1.21.3 | 1815461 | 7FE65E2F67A837AD | 82 | 314 | 440 | 96 | `[ModelBlockRenderer$1]` |
+| 1.21.4 | 1860750 | C4F57764BEF54D00 | 86 | 336 | 474 | 60 | `[ModelBlockRenderer$1]` |
+| 1.21.6 | 1932104 | A9981BC138A0C92A | 87 | 375 | 487 | 87 | `[ModelBlockRenderer$1]` |
+| 1.21.7 | 1959277 | EAE41B3C64B4AADF | 91 | 385 | 500 | 87 | `[ModelBlockRenderer$1]` |
+| 1.21.8 | 2004734 | 618362DC1C6B27CE | 92 | 383 | 516 | 92 | `[ModelBlockRenderer$1]` |
+
+七只 jar 全部过 `StackAudit`(ASM 数据流验证器)**0 findings**(重建前是 5/1/1/1/0/0/0);
+每只里 `net.minecraftforge.client.extensions.common.IClientBlockExtensions` 都是 **interface**、
+`of(...)` 的体都是 `new ...$Noop`,1.21.4 是 5 个 Noop、其余 6 条各 4 个;
+每只对应的 prepared OptiFine jar 里 `ModelBlockRenderer$1.class.xdelta` / `.md5` 都是 **0 条**(keep plan 生效)。
+
+1.21.4 / 1.21.8 两只 jar 已复制到 rig 真正启动的目录(`jars-1.21.4-new` / `jars-1.21.8-payload`),
+旧文件留成 `*.pre-port-20260922`。
+
+### 九、rig 侧两处与本轮无关但会误导人的陷阱(留给下一轮)
+
+* **`work\1.21.4\optifine-patched.jar` 是个 239 字节的截断写入**(只有 manifest,9/19 0:52),
+  而 `add-line.ps1` 见到文件存在就跳过 `prepare-line`,于是把它当成 payload 交给 `PayloadDrift` 与
+  `MissingTargets`,后者直接抛 "the stub pass produced no ...-stubbed.jar"。本次把它移开
+  (`*.aborted-239-bytes`)后重新准备。另外 `prepare-line.ps1` 自己的第 1 步用
+  `ZipFile.Open(path, 'Create')` 写 `runtime-<mc>.jar`,文件已存在时抛
+  "The file ... already exists" —— 重新准备一条线之前必须先把旧的 runtime jar 挪走。
+* **`tools-classpath.txt` 把自己屏蔽了。** 它的头两项是 `tools-patch-keepfix` 与 `tools-patch-srgfix`,
+  而 `tools-patch-keepfix\kynarain\cn\optifineoforge\optifine\MemberRestorePlan.class` 是**另一个分支
+  那一版**的生成器(签名 `staticInitialiser(ClassNode, ClassNode, String, FieldNode)`,带
+  `reachedFrom` / `isReadLater` / `populatedView`)—— 它排在仓库 jar 前面,于是**任何走 `$tools` 的
+  `MemberRestorePlan`(即 `prepare-line.ps1` 第 3 步)用的都是它,而不是本分支的代码**。9/19 生成的那些
+  计划就是这么来的(1.21.4 = 316 条目 / 83 donor,与那一版一致)。本轮所有重建都显式把"从当前源码编译的
+  那一份"放在 `-cp` 最前面,所以交付的计划确实来自本分支;这条陷阱本身没有动(不在授权范围内)。
