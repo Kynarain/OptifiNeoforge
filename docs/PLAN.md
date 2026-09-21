@@ -1745,3 +1745,53 @@ donor 里 `BlockEntity` 已经是 NeoForge 的形状
   **1.21.1**、**1.21.3** 同样全绿(0 崩溃、stderr 0 = 记录值)。修前同一处 OptiFine 只走到 28/27/27 行,
   修后 **377/232/225** 行 —— 也就是说之前那三条线其实是"启动 1 秒就崩"。
 * 1.20.x 分支有同一处形状(`stubMissing` 在换装赋值之前),已在该分支单独修并复验。
+
+### 建档 + 光影包 七条线全跑(2026-09-22):真实结果与两处新缺陷
+
+`run-save-shaders-all.ps1 -Pack MakeUp-UltraFast-9.5e.zip`(quick play 进存档,RigSession,1.20.4 模板世界):
+
+| 线 | 判定 | sound | 世界 | 崩溃 | 光影包 | 证据 |
+|---|---|---|---|---|---|---|
+| 1.21 | STARTED | yes | **NO** | 0 | loaded | 0 region 文件;tracer 只有 `GenericMessageScreen -> TitleScreen`,**quick play 什么都没做** |
+| 1.21.1 | STARTED | yes | **yes** | 0 | loaded | 4 region + level.dat |
+| 1.21.3 | STARTED | yes | **yes** | 0 | loaded | 4 region + level.dat |
+| 1.21.4 | STARTED | yes | **yes** | 0 | loaded | 4 region + level.dat |
+| 1.21.6 | STARTED | yes | **yes** | 0 | **not loaded** | OptiFine 自己的 FXAA post chain JSON 解析失败(见下) |
+| 1.21.7 | STARTED | yes | **yes** | 0 | **not loaded** | 同上 |
+| 1.21.8 | STARTED | yes | **yes** | **0(修后)** | loaded | 10 region + level.dat |
+
+也就是说:**这七条线里 6 条真的进了世界**,其中 4 条同时加载了光影包 —— 这是这条分支第一次有客户端进世界。
+
+#### 修:1.21.8 的 `Cannot get config value before config is loaded`(已修并复验)
+
+修前的崩溃(`crash-2026-09-22_04.54.13-server.txt`,世界第一次 tick 实体时):
+
+```
+java.lang.IllegalStateException: Cannot get config value before config is loaded.
+  at net.neoforged.neoforge.common.ModConfigSpec$ConfigValue.getRaw(ModConfigSpec.java:1235)
+  at net.minecraft.world.level.Level.guardEntityTick(Level.java:593)
+```
+根因与 1.20.2/1.20.4/1.20.6 上的那一件同一族:OptiFine 编译的 `IntegratedServer.initServer()` 把两个服务器生命周期
+调用都走了它自己的 reflector,而 reflector 按 **Forge 的名字**(`net.minecraftforge.server.ServerLifecycleHooks`)
+去找类,这条运行期只有 `net/neoforged/neoforge/server/ServerLifecycleHooks` ⇒ 钩子从不运行 ⇒ NeoForge 的服务器
+配置从不加载 ⇒ 第一个读它的地方就抛。修法就是 1.20.x 已经在用的那一行成员级保留
+(`net/minecraft/client/server/IntegratedServer<TAB>initServer<TAB>()Z`,运行期自己的同名方法无条件调用钩子),
+重建时能看到 `patch entries dropped for 1 class(es): [net/minecraft/client/server/IntegratedServer]`。
+复验:同一条 quick play + MakeUp 光影包 ⇒ 世界 yes、**崩溃 0**、10 个 region 文件 + level.dat、光影包 loaded。
+
+#### 仍未修(两件,都已定位到症状与下一步)
+
+1. **1.21 的 quick play 不打开世界**(而 1.21.1/1.21.3/1.21.4/1.21.6/1.21.7/1.21.8 同一套 rig 都打开了)。
+   tracer 事实:客户端只走到 `GenericMessageScreen -> TitleScreen` 就停住,resource reload 之后**没有任何**
+   世界加载日志(无 "Preparing spawn area"、无 "Failed to load level"),region 文件 0。加入上面那条
+   `IntegratedServer` 保留之后**没有变化**,所以这一个不是同一处根因。下一步(1.20.4 已经用过并成功的办法):
+   在这条线上用**菜单驱动**进世界(1.20.4 的 `world-test-1204.ps1` 就是为此写的:真实光标点击 + 从字节码读出的
+   世界列表几何),而不是继续等 quick play。
+2. **1.21.6 / 1.21.7 的光影包加载不了**(世界能进、sound yes、崩溃 0),日志里是 OptiFine 自己的 post chain 与
+   新版解析器不兼容:
+   `Failed to parse post chain at minecraft:post_effect/fxaa_of_2x.json | JsonSyntaxException: No key
+   fragment_shader / No key vertex_shader`,随后 `[OptiFine] Resource not found: minecraft:shaders/post/fxaa_of_2x.json`。
+   1.21.5 起后处理链从 `shaders/post/*.json`(`vertex`/`fragment` 键)改成 `post_effect/*.json`
+   (`vertex_shader`/`fragment_shader`),而这条线的 OptiFine 构建仍是旧格式 —— 这看起来是 **OptiFine 版本与 MC
+   版本之间的不兼容**,不是我们加载器制造的;要如实定论还需一次对照(把同一份 OptiFine 直接放进同版本 NeoForge
+   跑一次,看是否同样报错),本轮没做。
