@@ -4959,3 +4959,75 @@ rig 侧写了两个离线工具改 `work\1.20.2\optifine-patched.jar`(载荷),�
 **"1.20.2 上玩家实体为什么没到"**(上面那串 NPE 正好点名了这期间在跑哪些 tick)。
 两个工具都只在 rig 侧,未进仓库;这类"游戏类"的修复在仓库里该放在哪一层(写 `optifine-patched.jar` 的载荷
 pipeline,因为 `OptifineJarFixer` 修的是 OptiFine 自己的类)仍是未定项。
+
+### 八、2026-09-21 晚:1.20.2 **进了世界** —— 玩家实体为什么没到的根因与修法
+
+#### 1. 根因(客户端日志自己给的答案)
+
+```
+ReportedException: Registering texture
+  at TextureManager.loadTexture <- TextureManager.register
+  at net.optifine.player.CapeUtils.downloadCape(CapeUtils.java:71)
+  at net.minecraft.client.player.AbstractClientPlayer.<init> <- LocalPlayer.<init>
+  <- MultiPlayerGameMode.createPlayer <- ClientPacketListener.handleLogin
+Caused by: java.lang.NoSuchMethodError:
+    'java.util.concurrent.ExecutorService net.minecraft.Util.getCapeExecutor()'
+  at HttpTexture.getExecutor(HttpTexture.java:346)
+```
+
+OptiFine 在**玩家构造函数里**下载披风,而这条路要 `Util.getCapeExecutor()`。异常让 `handleLogin` 在
+`Minecraft.player` 被赋值**之前**就中止,于是之后每个包处理都在解引用 null 玩家:60 秒 **32774 个
+`NullPointerException`**(每帧 13 个),客户端停在 `ProgressScreen`。前面那些"第一帧崩溃"全是这个状态的症状。
+
+缺的成员在哪边,四个候选都量过(`javap`):
+
+| 类 | `Util.getCapeExecutor()` |
+|---|---|
+| `libraries\...\client-1.20.2-...-srg.jar` 的 `net/minecraft/Util` | 没有 |
+| `work\1.20.2\runtime-1.20.2.jar` 的 `net/minecraft/Util` | 没有 |
+| `work\1.20.2\optifine-patched.jar` 的 `srg/net/minecraft/Util` | **有** |
+| 调用方 `srg/.../HttpTexture` | 调它 |
+
+也就是说**载荷的 `HttpTexture` 与载荷的 `Util` 是一对**,而 keep plan 按设计把 `net.minecraft.Util`
+(连同 `Util$1..$11`、`IdentityStrategy`、`OS`)整类保成运行期的,把这一对拆开了。那个整类 keep 有它自己的
+量测理由(OptiFine 的载荷在这个家族里混了两份编译:`Util$5.<init>(Path)` 在它自己的 `Util$5` 里根本不存在),
+所以修法不是取消 keep,而是**把只有载荷声明、而载荷自己的类要用的成员补回被保的类**。
+
+#### 2. 修法:`PatchedClassTransformer.carryPayloadOnlyMembers`(已提交)
+
+被整类保下来的类,补上载荷独有的**字段与方法**;静态字段连同**载荷自己那条初始化语句**一起搬
+(在载荷 `<clinit>` 里以写它的 `PUTSTATIC` 结尾的那段指令);构造器与 `<clinit>` 整体**永不**搬运 ——
+那正是两份编译互相不一致的地方。排除项都是量出来的:
+
+| 搬什么 | 为什么 |
+|---|---|
+| 载荷独有的方法 | `Util.getCapeExecutor()` 只有载荷有,而载荷自己的 `HttpTexture` 调它 |
+| 载荷独有的静态字段 + 它的初始化语句 | `CAPE_EXECUTOR` 是 `makeExecutor("Cape")`(运行期自己有 `makeExecutor`),不搬初始化就是 null |
+| **不搬** `optifineoforge$init$` 生成助手 | 它们给载荷自己的类写字段;搬到被保的类上直接抛 `IllegalAccessError: Update to non-static final field net.minecraft.Util$9.cache ... from a different method (optifineoforge$init$cache)`(`Util$9.<init>` 起就死) |
+| **不搬** 非静态 final 字段 | 只有类自己的构造器能写它,而构造器不搬,同样 `IllegalAccessError` |
+| 切片里的标签/行号/栈帧等伪指令 | 当作"无法复制"会让 `CAPE_EXECUTOR` 那条语句被整条丢掉,字段留 null,披风下载随即 `NullPointerException at CompletableFuture.screenExecutor` |
+
+试过但**不采用**的替代方案,一并记下:`keep-runtime-1.20.2.txt` 里曾经加过
+`net/minecraft/client/renderer/texture/HttpTexture	*`(把调用方换成运行期的),结果是同一条链往后一步死在
+`NoSuchFieldError: pipeline`(`CapeUtils.downloadCape` 读的字段运行期的 `HttpTexture` 没有);该行已删除,
+注释保留在计划文件里。
+
+#### 3. 结果:1.20.2 进了世界,而且**不需要**任何 rig 侧守卫
+
+把 rig 侧那两个守卫工具都撤掉(载荷恢复成未守卫的版本),只留仓库自己的改动(join keep plan + 本次 carry),
+重建后审计 0 findings,真机 75 秒无输入:
+
+```
+OPF-SCREEN ...GenericDirtMessageScreen -> ProgressScreen -> LevelLoadingScreen -> ProgressScreen
+OPF-SCREEN ...ReceivingLevelScreen
+OPF-SCREEN null
+OPF-SCREEN null
+22:40:28.482 PlayerList: Dev[local:E:d74f630b] logged in with entity id 195 ...
+```
+
+* 最后一道屏是 **null**(在世界里),不是加载屏;
+* 整轮只有 **2** 个 `NullPointerException`(都是非致命的 `ModelDataManager.getAt`),而修之前是 32774 / 40404;
+* 崩溃报告 0、`VerifyError` 0,观察窗口结束时客户端还活着(由脚本停掉);
+* 而且**不再需要** rig 侧那两个守卫 —— 说明"第一帧崩溃"确实只是缺玩家的症状。
+
+至此**两条线真的渲染出了世界**:1.20.6(4.7 分钟)与 1.20.2(本次)。

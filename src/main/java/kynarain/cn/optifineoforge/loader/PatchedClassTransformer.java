@@ -27,6 +27,8 @@ import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.IntInsnNode;
+import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.LdcInsnNode;
@@ -643,8 +645,10 @@ public final class PatchedClassTransformer implements NodeTransformer {
 			// reads net.optifine/Config, Config's static initialiser pulls in net.optifine.shaders.Shaders,
 			// and Shaders.<clinit> reads Minecraft.getInstance().gameDirectory - which is null while the
 			// crash report that triggered it is being written, so the report never appears.
+			int carried = carryPayloadOnlyMembers(input);
 			LOGGER.info("Kept the runtime's whole " + input.name.replace('/', '.')
-					+ " instead of OptiFine's patched copy");
+					+ " instead of OptiFine's patched copy"
+					+ (carried > 0 ? ", plus " + carried + " member(s) only the payload declares" : ""));
 			return finish(input);
 		}
 		ClassNode patched;
@@ -1188,6 +1192,228 @@ public final class PatchedClassTransformer implements NodeTransformer {
 				}
 			}
 		}
+	}
+
+	/** The prefix the member restore plan gives the helpers it generates; those are never carried over. */
+	private static final String RESTORE_PREFIX = "optifineoforge$init$";
+
+	/**
+	 * Carries over the members a kept class has only in its payload copy, and reports how many.
+	 *
+	 * <p>Keeping a class whole is an all-or-nothing decision, and it can be one member too much. Measured on
+	 * 1.20.2: {@code net.minecraft.Util} is kept because OptiFine's compilation of it does not fit the
+	 * runtime's anonymous classes, but OptiFine's own classes call members only the payload's {@code Util}
+	 * declares, so a kept class leaves those call sites unresolved and the game dies on the first one:</p>
+	 *
+	 * <pre>NoSuchMethodError: 'java.util.concurrent.ExecutorService net.minecraft.Util.getCapeExecutor()'
+	 *   at net.minecraft.client.renderer.texture.HttpTexture.getExecutor(HttpTexture.java:346)
+	 *   at net.optifine.player.CapeUtils.downloadCape(CapeUtils.java:71)
+	 *   at net.minecraft.client.player.AbstractClientPlayer.&lt;init&gt; -&gt; LocalPlayer.&lt;init&gt;
+	 *   -&gt; MultiPlayerGameMode.createPlayer -&gt; ClientPacketListener.handleLogin</pre>
+	 *
+	 * <p>which aborts player creation inside the login packet, so the client ticks forever with a null player
+	 * (32774 {@code NullPointerException}s in 60 s, thirteen per frame) and never leaves the loading screen.
+	 * The runtime never calls those members itself - only the payload's classes do - which is why carrying
+	 * them over is the safe direction.</p>
+	 *
+	 * <p>Constructors and the static initialiser are not carried: those are exactly the shapes that disagree
+	 * between the two builds (measured on 1.20.1, {@code Util$9} is a {@code Thread} in the runtime and a
+	 * {@code BiFunction} in the payload). Static fields are carried with the payload's own initialisation
+	 * statement for them, cut out of its static initialiser at the {@code PUTSTATIC} that ends it, so a
+	 * carried {@code getCapeExecutor()} does not find a null - measured: the payload initialises
+	 * {@code CAPE_EXECUTOR} as {@code makeExecutor("Cape")}, and {@code makeExecutor} is the runtime's own.</p>
+	 */
+	private static int carryPayloadOnlyMembers(ClassNode input) {
+		ClassNode payload;
+		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(PREFIX + input.name + ".class")) {
+			if(stream == null) {
+				return 0;
+			}
+			payload = new ClassNode();
+			new ClassReader(stream.readAllBytes()).accept(payload, 0);
+		} catch(IOException e) {
+			return 0;
+		}
+		if(!input.name.equals(payload.name) || payload.methods == null || payload.fields == null) {
+			return 0;
+		}
+		int carried = 0;
+		Set<String> carriedFields = new HashSet<>();
+		for(FieldNode field : payload.fields) {
+			if((field.access & Opcodes.ACC_FINAL) != 0 && (field.access & Opcodes.ACC_STATIC) == 0) {
+				// A non-static final field may only be assigned from the class's own constructor, so carrying
+				// one over without the payload's constructor produces an initialiser the JVM refuses:
+				//   IllegalAccessError: Update to non-static final field net.minecraft.Util$9.cache attempted
+				//   from a different method (optifineoforge$init$cache) than the initializer method <init>
+				// Measured on 1.20.2, 22:22, as a client that died inside Main.main. Constructors are not
+				// carried, so such a field is left alone.
+				LOGGER.info("Not carrying the payload's final field " + input.name.replace('/', '.') + "."
+						+ field.name + ": only the payload's own constructor may assign it, and constructors are"
+						+ " not carried over");
+				continue;
+			}
+			boolean present = false;
+			for(FieldNode existing : input.fields) {
+				if(existing.name.equals(field.name) && existing.desc.equals(field.desc)) {
+					present = true;
+					break;
+				}
+			}
+			if(present) {
+				continue;
+			}
+			input.fields.add(new FieldNode(field.access, field.name, field.desc, field.signature, field.value));
+			if((field.access & Opcodes.ACC_STATIC) != 0) {
+				carriedFields.add(field.name);
+			}
+			carried++;
+			LOGGER.info("Carried " + input.name.replace('/', '.') + "." + field.name + " " + field.desc
+					+ " from the payload into the class kept from the runtime");
+		}
+		int initialised = carriedFields.isEmpty() ? 0 : carryStaticInitialisers(input, payload, carriedFields);
+		for(MethodNode method : payload.methods) {
+			if("<init>".equals(method.name) || "<clinit>".equals(method.name)
+					|| method.name.startsWith(RESTORE_PREFIX) || hasMethod(input, method.name, method.desc)) {
+				// The restore plan's own generated helpers are not carried: they exist to assign fields of the
+				// payload's copy of the class, and against the kept class they are exactly the shape that
+				// fails - see the note on final fields above, which is the failure this exclusion was
+				// measured from.
+				continue;
+			}
+			MethodNode copy = new MethodNode(method.access, method.name, method.desc, method.signature,
+					method.exceptions == null ? null : method.exceptions.toArray(new String[0]));
+			method.accept(copy);
+			input.methods.add(copy);
+			carried++;
+			LOGGER.info("Carried " + input.name.replace('/', '.') + "." + method.name + method.desc
+					+ " from the payload into the class kept from the runtime");
+		}
+		if(initialised > 0) {
+			LOGGER.info("Initialised " + initialised + " carried static field(s) in "
+					+ input.name.replace('/', '.') + " from the payload's own static initialiser");
+		}
+		return carried;
+	}
+
+	/**
+	 * Appends the payload's initialisation statements for the static fields just carried into the kept class.
+	 *
+	 * <p>The statement for one field is the instruction run that ends in writing it, starting after the
+	 * previous write: that is the granularity a kept class can accept without importing the payload's static
+	 * initialiser wholesale, which is the one thing that measurably cannot be taken from the payload (it is
+	 * where the two builds' anonymous classes disagree). A run whose instructions cannot be copied is skipped
+	 * rather than delivered half-written, and the field then keeps its default.</p>
+	 */
+	private static int carryStaticInitialisers(ClassNode input, ClassNode payload, Set<String> fields) {
+		MethodNode source = null;
+		for(MethodNode method : payload.methods) {
+			if("<clinit>".equals(method.name) && "()V".equals(method.desc)) {
+				source = method;
+				break;
+			}
+		}
+		if(source == null || source.instructions == null) {
+			return 0;
+		}
+		List<InsnList> statements = new ArrayList<>();
+		AbstractInsnNode start = source.instructions.getFirst();
+		for(AbstractInsnNode insn = start; insn != null; insn = insn.getNext()) {
+			if(!(insn instanceof FieldInsnNode write) || write.getOpcode() != Opcodes.PUTSTATIC
+					|| !input.name.equals(write.owner) || !fields.contains(write.name)) {
+				continue;
+			}
+			InsnList statement = new InsnList();
+			boolean complete = true;
+			for(AbstractInsnNode step = start; step != null; step = step.getNext()) {
+				if(step.getOpcode() < 0) {
+					// Labels, line numbers and stack map frames are pseudo-instructions: they are not copied,
+					// and their presence is not a reason to give up. Measured the hard way: requiring a copy
+					// of every node silently dropped the statement that fills Util.CAPE_EXECUTOR (the payload's
+					// static initialiser carries line numbers), the field stayed null, and the cape download
+					// then failed with
+					//   NullPointerException at java.util.concurrent.CompletableFuture.screenExecutor
+					// inside TextureManager.register from AbstractClientPlayer.<init>.
+					continue;
+				}
+				AbstractInsnNode copy = copyInstruction(step);
+				if(copy == null) {
+					complete = false;
+					break;
+				}
+				statement.add(copy);
+				if(step == insn) {
+					break;
+				}
+			}
+			if(complete) {
+				statements.add(statement);
+			}
+			start = insn.getNext();
+		}
+		if(statements.isEmpty()) {
+			return 0;
+		}
+		InsnList values = new InsnList();
+		for(InsnList statement : statements) {
+			values.add(statement);
+		}
+		MethodNode clinit = null;
+		for(MethodNode method : input.methods) {
+			if("<clinit>".equals(method.name) && "()V".equals(method.desc)) {
+				clinit = method;
+				break;
+			}
+		}
+		if(clinit == null || clinit.instructions == null) {
+			MethodNode created = new MethodNode(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
+			created.instructions.add(values);
+			created.instructions.add(new InsnNode(Opcodes.RETURN));
+			created.maxStack = 8;
+			created.maxLocals = 0;
+			input.methods.add(created);
+			return statements.size();
+		}
+		AbstractInsnNode lastReturn = null;
+		for(AbstractInsnNode insn = clinit.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if(insn.getOpcode() == Opcodes.RETURN) {
+				lastReturn = insn;
+			}
+		}
+		if(lastReturn == null) {
+			return 0;
+		}
+		clinit.instructions.insertBefore(lastReturn, values);
+		clinit.maxStack = Math.max(clinit.maxStack, 8);
+		return statements.size();
+	}
+
+	/** A copy of one instruction, or null for a kind this repair does not carry over. */
+	private static AbstractInsnNode copyInstruction(AbstractInsnNode insn) {
+		if(insn instanceof InsnNode plain) {
+			return new InsnNode(plain.getOpcode());
+		}
+		if(insn instanceof MethodInsnNode call) {
+			return new MethodInsnNode(call.getOpcode(), call.owner, call.name, call.desc, call.itf);
+		}
+		if(insn instanceof FieldInsnNode field) {
+			return new FieldInsnNode(field.getOpcode(), field.owner, field.name, field.desc);
+		}
+		if(insn instanceof TypeInsnNode type) {
+			return new TypeInsnNode(type.getOpcode(), type.desc);
+		}
+		if(insn instanceof LdcInsnNode ldc) {
+			return new LdcInsnNode(ldc.cst);
+		}
+		if(insn instanceof IntInsnNode integer) {
+			return new IntInsnNode(integer.getOpcode(), integer.operand);
+		}
+		if(insn instanceof InvokeDynamicInsnNode dynamic) {
+			return new InvokeDynamicInsnNode(dynamic.name, dynamic.desc, dynamic.bsm, dynamic.bsmArgs.clone());
+		}
+		if(insn instanceof VarInsnNode var) {
+			return new VarInsnNode(var.getOpcode(), var.var);
+		}
+		return null;
 	}
 
 	/**
