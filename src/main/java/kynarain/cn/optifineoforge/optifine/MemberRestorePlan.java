@@ -333,8 +333,22 @@ public final class MemberRestorePlan {
 				//
 				//   NoSuchMethodError: 'void RenderPipelines.lambda$registerCustomPipelines$0(RenderPipeline)'
 				//
-				// So a synthetic is restored exactly when its name appears nowhere in the payload.
-				if(hasMemberNamed(mine, method.name)) {
+				// So a synthetic is restored exactly when its name appears nowhere in the payload - and also when
+				// it appears there with a *different descriptor*, which is a different helper wearing the same
+				// name. Measured on 1.20.6 and 1.20.2: OptiFine's Mob declares
+				// lambda$jumpInFluid$3(Lnet/minecraftforge/fluids/FluidType;)V while the runtime's declares the
+				// same name with the NeoForge FluidType. The runtime's jumpInFluid is restored (the payload's
+				// copy of it is the Forge-typed hook), its body reaches for the runtime-typed lambda, the
+				// name test skipped that lambda because the name existed, and the first mob that entered water
+				// killed the integrated server:
+				//
+				//   NoSuchMethodError: 'void net.minecraft.world.entity.Mob.lambda$jumpInFluid$3(
+				//       net.neoforged.neoforge.fluids.FluidType)'
+				//     at Mob.jumpInFluid(Mob.java:1578) <- LivingEntity.aiStep <- Mob.tick <- Creeper.tick
+				//
+				// Both helpers are then in the class, which is legal: they differ by descriptor, and the payload's
+				// own body keeps calling its own.
+				if(hasMemberNamed(mine, method.name) && hasMember(mine, method.name, method.desc)) {
 					continue;
 				}
 			}

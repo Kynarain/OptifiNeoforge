@@ -5176,3 +5176,33 @@ java.lang.NullPointerException: Cannot invoke "java.lang.Class.getDeclaredFields
 可复现(连续三次同一数值),并且已经**排除**了两个嫌疑:把 `shaderpacks` 目录清空后仍是 17856;把 Forge stub 换回
 修复前的 61 个类重建后仍是 17856。剩下的嫌疑是本次的 carry 修复或 gamedir 里累积的状态(saves 等),**尚未归因**,
 所以这条算"基线差异、原因未明",不是通过。
+
+### 十二、2026-09-22 凌晨(续):怪物入水崩溃的**根因与修复** —— 在计划生成器里,且真机复验通过
+
+上一节的缺陷已经定位并修好,修在一个**已经存在的规则**上:`MemberRestorePlan.missingMethods` 对运行期的
+`synthetic`(`lambda$`/`access$`)采取的是"只要**名字**在载荷里出现过就跳过",注释里写明了它的理由(同名可能是
+两个不同的方法,这时载荷自己的体才是对的那个)。本案正是那个理由的**反面**:名字出现了,但**描述符不同** ——
+OptiFine 的 `lambda$jumpInFluid$3(Lnet/minecraftforge/fluids/FluidType;)V` 对运行期的
+`lambda$jumpInFluid$3(Lnet/neoforged/neoforge/fluids/FluidType;)V`。于是:
+
+* 运行期的 `jumpInFluid` **被恢复**了(载荷那份是 Forge 类型的钩子,而运行期的调用方要 NeoForge 那份),
+* 但它的体要调用的那个 lambda **既不在计划里、也没写进 donor**(因为同名),
+* 交付出去的类就带着一个"调用不存在的成员"的体 —— 第一次有怪物入水,服务端当场死。
+
+修法:运行期的 synthetic 在"名字在载荷里存在、但**不是这个描述符**"时也要恢复;两个 helper 同名不同描述符地
+共存是合法的,各自调用各自那份。
+
+量到的效果(生成器):1.20.6 计划 282 → **297** 条、donor 的 `Mob` 1381 → **1463** 字节(同时声明
+`jumpInFluid` 与 `lambda$jumpInFluid$3`);1.20.2 计划 263 → **278** 条、donor 1044 字节(带
+`lambda$jumpInFluid$4`)。重建:1.20.6 1757023 字节(SHA-256 `CFB3D52F5CD97ACC…`)、
+1.20.2 1730257 字节(SHA-256 `3054F69257D80F54…`),审计均 0 findings。随后在**同样的配置**(400 秒、带
+MakeUp 光影包、不开 FXAA)上复跑:
+
+| 线 | 判定 | 声音 | 世界 | 崩溃 | 光影包 | 日志里的 `jumpInFluid` |
+|---|---|---|---|---|---|---|
+| 1.20.6 | **STARTED** | yes | yes(6 个 region 文件 + level.dat) | **0** | 已加载 | 无 |
+| 1.20.2 | **STARTED** | yes | yes(6 个 region 文件 + level.dat) | **0** | 已加载 | 无 |
+
+而几分钟前同一配置在两条线上都崩(`crash-…01.22.40-server.txt` 的 `Mob.java:1578`、
+`crash-…01.29.22-server.txt` 的 `Mob.java:1492`)。之前试过的"`Mob` 整类保"是错的工具(已证伪并撤回);
+**计划生成器才是对的地方**。
