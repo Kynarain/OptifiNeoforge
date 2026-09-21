@@ -5270,3 +5270,101 @@ jar **1778641** 字节,SHA-256 `ACDAEFB46C1AF5E344A159F9DE875560DA420846ECE64B90
   时,游戏还在标题界面。已把等待改成**轮询 tracer**,并加了"从活截图里自动找最亮横带当世界行"的逻辑(记录在脚本里),
   仍需要在**安静机器**上、以 tracer 为准逐次推进;期间机器上另有别人的客户端
   (`Minecraft* 1.21.6 - Singleplayer`、`Minecraft* 26.1.2`),按钮查找会(正确地)拒绝在两个匹配窗口之间猜。
+
+### 十五、2026-09-22 凌晨(三续):**1.20.4 也进世界了**(第四条);顺带抓到并修掉一个**光影下真机崩溃**(开关表)
+
+这一轮的起点是两个**采集工具缺陷**(都已量测、都已修),修好之后 1.20.4 的菜单驱动一次就跑通了。
+
+#### 1. 抓图抓到的是**被遮挡窗口**的画面
+
+`logs\world1204-title.png` 与 `logs\world1204-list.png` 相隔约 60 秒,界面分别是标题界面与世界列表,内容却
+**几乎一致**:按 3 像素抽样 5 万个点只有 **2242** 点不同,逐行亮带边界完全相同。原因不是 PrintWindow 的过期
+后台存档,而是 `CopyFromScreen` 读的是**屏幕**:游戏窗口当时并不在最前,抓到的就是压在它上面的那个窗口。
+
+修法(`capture-window.ps1 -Screen`):先反复抬窗**并核对** `GetForegroundWindow`,`SetForegroundWindow` 没生效时
+重试 5 次;抬不上去就**不抓屏幕**,改走 `PrintWindow` 并把 `OCCLUDED: ... treat these pixels as unverified`
+明确打进报告;抓的是 `GetClientRect` 的**客户区**(此前用的是含标题栏/边框的窗口矩形,尺寸对不上点击坐标)。
+修好后的同一位置抓图 **476448** 字节(此前 14407),`click-at.ps1 -FindButtons` 第一次真的报出了标题界面的按钮
+(`426,223` 等),而不再报出边框与桌面任务栏。
+
+#### 2. 点击的**落点**不是消息里的坐标
+
+Minecraft 的 `MouseHandler` 用的是 GLFW 光标位置回调累加出来的坐标,**不是** `WM_LBUTTONDOWN` 的 lParam。
+所以 `PostMessage` 发出的点击会落在**真实光标所在的位置**:这正好解释"同一个 (427,200) 这次打开了
+SelectWorldScreen、下次什么都没发生,而两次报告都显示窗口在前台"。
+
+修法(`click-at.ps1`):新增 `-RealClick` / `-RealDoubleClick`(`ClientToScreen` + `SetCursorPos` + `mouse_event`,
+并打印真实光标落在屏幕哪一点、窗口是否在前台)与 `-Key`(VK 序列,`keybd_event`,自动查 scancode)。
+世界测试里**真实光标点击优先**,PostMessage 保留为对照。
+
+#### 3. 世界列表的坐标不再靠猜:从客户端自己的字节码里读出来
+
+`javap -p -c` 1.20.4 客户端(`SelectWorldScreen.init` / `WorldSelectionList` / `AbstractSelectionList` /
+`CommonInputs`)给出全部布局(单位是 GUI 缩放坐标):
+
+| 元素 | 实测布局 |
+|---|---|
+| 列表控件 | `x=0, y=48, w=屏宽, h=屏高-112, itemHeight=36` |
+| 第 i 行中心 | `y = 52 + 36*i + 18` |
+| 行的可选 x | 只在 `[rowLeft, rowRight]` 内,其中心 = **屏幕水平中点** |
+| Play Selected World | `(width/2-154, height-52, 150, 20)`,中心 `(width/2-79, height-42)` |
+| 进入世界的按键 | `WorldSelectionList.keyPressed` 对 ENTER(257)/KP_ENTER(335)/SPACE(32) 直接 `joinWorld()` |
+
+`options.txt` 是 `guiScale:0`(自动),854x480 下自动值为 **2**(3 会得到 284x160,低于 320x240 下限)。
+先前那批候选(`225,70/110/150`、`300,80`)正是**半个都落在行外**:220 宽的行从缩放后的 105 开始。
+
+#### 4. 1.20.4 **进了世界**(第四条)
+
+2026-09-22 02:50 那次(`logs\world-1204-run13.txt`):标题界面 → 点 Singleplayer `(426,223)` → SelectWorldScreen →
+真实光标单击列表行 `(427,140/212/284/356)` 之一 → 真实点击 Play Selected World `(269,396)` →
+`GenericDirtMessageScreen` x3 → `ProgressScreen` → `LevelLoadingScreen` → … → `null` → `PauseScreen`;
+`joined=yes`、`session.lock` 已写入、**0** 崩溃报告、0 NullPointerException、0 VerifyError。
+
+带光影包的同一条路(`logs\world-1204-run15-pack-switchmap.txt`,MakeUp-UltraFast-9.5e):世界 yes、
+`[Shaders] Loaded shaderpack: MakeUp-UltraFast-9.5e.zip`、出现 `Saving and pausing game`(自动保存)、崩溃 0。
+
+#### 5. 这条线上修掉的两个缺陷
+
+**(a) `ModelPart.getChild` —— 与 1.20.1/1.20.2 同一条修复,这条线漏了(已修)**
+
+修前每次运行 `logs\latest.log` 里都有一次
+`IllegalStateException: Failed to create model for minecraft:skull`,根因是
+`NullPointerException: Cannot invoke "ModelPart.getChild(String)" because "this.head" is null`
+at `DragonHeadModel.<init>` ← `SkullBlockRenderer.createSkullRenderers`;后果是**整个头颅/头骨渲染器装不上**。
+`javap` 证据:这条线的载荷只有 `ModelPart`(其 `getChild` 按 `child.getId()` 匹配,而 `setId` 无人调用),
+**没有** `PartDefinition`(1.20.6/1.21/1.21.1/1.21.8 的载荷都有),所以运行期烘焙出来的部件 id 全是 null、
+查找全返回 null。修法就是 keep plan 里那一行(保留运行期自己的 `children.get(name)`)。修后:同样搜索 0 次,
+`latest.log` 里 **0 个 ERROR**。
+
+**(b) `ModelBlockRenderer$1` 的开关表 —— 光影下**真机崩溃**(已修,影响 9 条线)**
+
+```
+java.lang.NullPointerException: Cannot load from int array because
+  "net.minecraft.client.renderer.block.ModelBlockRenderer$1.$SwitchMap$net$neoforged$neoforge$common$util$TriState" is null
+  at net.minecraft.client.renderer.block.ModelBlockRenderer.tesselateBlock(ModelBlockRenderer.java:72)
+  at net.minecraft.client.renderer.entity.FallingBlockRenderer.render(FallingBlockRenderer.java:41)
+  at net.net.optifine.shaders.ShadersRender.renderShadowMap(ShadersRender.java:527)
+```
+(`game\neoforge-20.4.251\crash-reports\crash-2026-09-22_02.54.24-client.txt`)
+
+根因:载荷的 `ModelBlockRenderer.tesselateBlock` 对 NeoForge 的 `TriState` 做 switch,编译器生成的映射表住在
+`ModelBlockRenderer$1` 里;而载荷自己那份 `ModelBlockRenderer$1` 只声明 `$SwitchMap$...Direction` 一张表。
+于是 `MemberRestorePlan` 把缺的那张表**当普通静态字段补进 donor** —— `javap` 出来就一行
+`public static int[] $SwitchMap$net$neoforged$neoforge$common$util$TriState;`;**初始化它的 `<clinit>` 在运行期那份类里**,
+donor 带不过来 ⇒ 字段在、值为 null ⇒ 投影贴图里一碰到实体方块就崩。
+
+修法:整类保留运行期的 `ModelBlockRenderer$1`(运行期那份两张表都有,是载荷那份的**超集**,所以安全)。
+`build-jars` 因此把该类的 patch 条目**丢掉**,输出里能看到
+`patch entries dropped for 1 class(es): [net/minecraft/client/renderer/block/ModelBlockRenderer$1]`。
+
+复验:同一存档、同一光影包、这次跑 150 秒(含一次自动保存)⇒ 世界 yes / 光影包 loaded / **崩溃 0 / NPE 0**。
+**如实边界**:崩的那次是自然生成的落地砂砾(`Falling Gravel` at 22,2,4),不是被强制的触发点,所以这是
+"同场景复现 1 次、修后同场景 0 次"的证据,**不是**确定性的 A/B 对照。
+
+影响面(逐 jar 量测):同样的 donor 出现在 1.20.6 / 1.21 / 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8 的
+`registered.jar` 里(1.20.1 / 1.20.2 的运行期没有 TriState 开关,不受影响)。本轮已把同一条 keep 加到
+1.20.4、1.20.6 与本分支其余线的计划里;1.20.6 已重建(验收 STARTED/user/sound/崩溃 0,stderr 仍是那个已知的
+17856,与§十三一致),1.21.x 那 7 条线的重建与真机复验排在后面。
+
+**这仍是生成器的一个缺口**:补进去的静态字段没有初始化语句,而生成器不会把这种情况自动改判为"整类保留运行期"。
+本轮的做法是**每条线一条 keep**(连同量测依据写在计划注释里),生成器侧的自动判定**尚未做**。
