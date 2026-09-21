@@ -369,8 +369,21 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 				method.instructions.add(new InsnNode(Opcodes.DRETURN));
 			}
 			default -> {
-				method.instructions.add(new InsnNode(Opcodes.ACONST_NULL));
-				method.instructions.add(new InsnNode(Opcodes.ARETURN));
+				// An Optional-returning stub must not answer null: every caller of one writes
+				// `x().isPresent()` / `isEmpty()` / `orElse(...)`, so null turns the missing member into a
+				// NullPointerException one frame later instead of removing the failure. Measured on 1.21
+				// (2026-09-22): the payload's GameRenderer.tryTakeScreenshotIfNeeded calls
+				// IntegratedServer.m_182649_()Ljava/util/Optional;, the runtime does not declare that SRG name
+				// (SrgResidue lists it), and the run died at GameRenderer.java:1238. Optional.empty() is the
+				// only honest default here - it says "nothing", which is what a stub can truthfully say.
+				if("java/util/Optional".equals(returnType.getInternalName())) {
+					method.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/util/Optional",
+							"empty", "()Ljava/util/Optional;", false));
+					method.instructions.add(new InsnNode(Opcodes.ARETURN));
+				} else {
+					method.instructions.add(new InsnNode(Opcodes.ACONST_NULL));
+					method.instructions.add(new InsnNode(Opcodes.ARETURN));
+				}
 			}
 		}
 		return method;

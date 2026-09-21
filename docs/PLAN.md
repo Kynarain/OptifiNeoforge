@@ -2038,3 +2038,38 @@ java -cp <tools> kynarain.cn.optifineoforge.optifine.SrgResidue joined-1.21.tsrg
 official 名,用同在 rig 里的 `SrgMemberMap`,`SrgResidue.classify()` 已经把"官方名是什么"算出来了)或者
 "带正确语义体的桩"来修,这是下一轮的第一件事。1.21 现在的状态是:能起世界、能 join、能加载光影包,
 **剩下 1 份客户端崩溃**(`m_182649_`)与若干未触发的残留。
+
+### 1.21 **第一次完整跑通"建档 + 光影包"且零崩溃**(join → 自动保存 → 0 崩溃),以及这一轮用的判据
+
+接着上一节的清单继续定修,这一轮把剩下的三处补掉,并且改动了一条**加载器规则**:
+
+1. **加载器:`Optional` 返回类型不能补 null**。`defaultBody()` 现在对 `java/util/Optional` 返回
+   `Optional.empty()` 而不是 `aconst_null` —— 理由是量出来的:调用方一律写 `isPresent()/isEmpty()/orElse()` 一类的写法,
+   null 只是把"缺成员"变成一个 NPE(`GameRenderer.java:1238` 那处就是这样)。这是**产品侧规则**,不是每条线的补丁。
+2. `IntegratedServer.m_182649_()Ljava/util/Optional;` 与 `m_129921_()I`(都在同一处调用链里,SrgResidue 都列过)进补桩表:
+   前者现在由上面那条规则返回 `Optional.empty()`,后者返回 0。
+3. `BakedModel.useAmbientOcclusion(BlockState, RenderType)Z`(NeoForge 的两参扩展形式,载荷
+   `ModelBlockRenderer.tesselateBlock:86` 调用)补桩返回 false。
+
+**复验(`logs\world-121-run13.txt`,菜单驱动 + MakeUp 光影包)**:
+
+```
+reached a world : True      joined : True
+world markers   : Preparing spawn area, Preparing start region, Time elapsed, Loaded recipes/advancements,
+                  Changing view distance to, Saving and pausing game, Generating keypair
+shader pack     : [Shaders] Loaded shaderpack: MakeUp-UltraFast-9.5e.zip
+crash reports   : 0         NullPointerException : 0
+```
+
+这是这条线**第一次完整跑通**"进世界 → join → 自动保存 → 退出前零崩溃",而且光影包确实加载。四项验收同时保持通过
+(STARTED / user yes / sound yes / 崩溃 0)。
+
+**如实记下这一轮修法的代价与边界**(不能让读者以为 1.21 已经干净):
+* `useAmbientOcclusion(...)` 的桩回答 **false**,即那个模型**不做环境光遮蔽** —— 这是**可见的视觉偏差**,不是崩溃。
+  这类"语义型"补桩(返回默认值)只能让线跑起来受测,**不是**最终修法;
+* 真正的修法仍是**定向改写**:把载荷里那些跨到运行期的 `m_*`/扩展成员引用改写成运行期自己的成员
+  (`SrgResidue.classify()` 已经算出官方名,`SrgMemberMap` 在 rig 里),这一步仍未做;
+* 1.21 的 **stderr 记录差异仍在**:四项检查通过,但 stderr 是 **46767** 字节(记录值 14141),机制假设(生成器版本不同)
+  尚未 A/B;
+* 其余六条 1.21.x 线**还没重跑建档光影**(它们在 ModelPart / IntegratedServer 两处改动之后需要重跑),
+  而它们各自是否也有这条线的 `SrgResidue` 清单之外的缺失成员,要按同一套办法逐条量。
