@@ -29,12 +29,14 @@ import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.IntInsnNode;
 import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TypeInsnNode;
+import org.objectweb.asm.tree.VarInsnNode;
 
 import cpw.mods.modlauncher.api.IModuleLayerManager;
 import cpw.mods.modlauncher.api.ITransformer;
@@ -445,6 +447,12 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	}
 
 	/**
+	 * The prefix the member restore plan gives the helpers it generates, whose bodies must never be
+	 * carried into a kept class; see {@link #addPayloadMembers}.
+	 */
+	private static final String RESTORE_PREFIX = "optifineoforge$init$";
+
+	/**
 	 * Gives a class the loader keeps the members the payload declares and this copy does not have.
 	 *
 	 * <p>The mirror of the member restore, and it exists because keeping a class is not the same as leaving
@@ -453,7 +461,7 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	 *
 	 * <pre>SpriteLoader is replaced by the payload
 	 * SpriteResourceLoader is left as the runtime has it (the interface rule above)
-	 *   -> NoSuchMethodError: SpriteResourceLoader.create(java.util.Collection)
+	 *   -&gt; NoSuchMethodError: SpriteResourceLoader.create(java.util.Collection)
 	 *      at SpriteLoader.loadAndStitch(SpriteLoader.java:187)</pre>
 	 *
 	 * <p>{@code MissingTargets} cannot report this by construction: it indexes the payload as well as the
@@ -466,6 +474,27 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 	 * ({@code ClassFormatError: Illegal field modifiers in class ...: 0x9}). A method with a body copied
 	 * into an interface needs no change - a non-abstract, non-static interface method is a default method
 	 * by definition.</p>
+	 *
+	 * <p>Three exclusions and one addition come from the 1.20.x branch (its {@code 8db6879}), where they
+	 * were measured on 1.20.2 rather than reasoned about, and the measurement is the same shape as this
+	 * line's {@code SpriteResourceLoader} one: {@code net.minecraft.Util} is kept because OptiFine's
+	 * compilation of it does not fit the runtime's anonymous classes, OptiFine's own
+	 * {@code HttpTexture} then calls {@code Util.getCapeExecutor()} - a member only the payload's
+	 * {@code Util} declares - and the failure is</p>
+	 *
+	 * <pre>NoSuchMethodError: 'java.util.concurrent.ExecutorService net.minecraft.Util.getCapeExecutor()'
+	 *   at net.minecraft.client.renderer.texture.HttpTexture.getExecutor(HttpTexture.java:346)
+	 *   at net.optifine.player.CapeUtils.downloadCape(CapeUtils.java:71)
+	 *   at net.minecraft.client.player.AbstractClientPlayer.&lt;init&gt;</pre>
+	 *
+	 * <p>which aborts player creation inside the login packet, so the client ticks forever with a null
+	 * player and never leaves the loading screen. The exclusions are a non-static final field, a
+	 * generated {@code optifineoforge$init$} helper (both rejected later as
+	 * {@code IllegalAccessError: Update to non-static final field ... attempted from a different method}),
+	 * and the class's own constructors and static initialiser - the two shapes that are <em>known</em> to
+	 * disagree between the builds. What is added is the payload's own initialisation statement for every
+	 * static field carried over, because a carried declaration without its value is a field nothing ever
+	 * fills.</p>
 	 */
 	private static void addPayloadMembers(ClassNode input, ClassNode patched) {
 		if(patched == null) {
@@ -474,7 +503,26 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		boolean isInterface = (input.access & Opcodes.ACC_INTERFACE) != 0;
 		int fields = 0;
 		int methods = 0;
+		// The static fields carried over, remembered for the initialisations below: a carried declaration
+		// is only half of what the payload had, and the value lives in the payload's own static
+		// initialiser - a part this class deliberately does not take wholesale.
+		Set<String> carriedStaticFields = new HashSet<>();
 		for(FieldNode field : patched.fields) {
+			if((field.access & Opcodes.ACC_FINAL) != 0 && (field.access & Opcodes.ACC_STATIC) == 0) {
+				// A non-static final field may only be assigned from the class's own constructor, so
+				// carrying one over without the payload's constructor produces an initialiser the JVM
+				// refuses:
+				//   IllegalAccessError: Update to non-static final field net.minecraft.Util$9.cache
+				//   attempted from a different method (optifineoforge$init$cache) than the initializer
+				//   method <init>
+				// measured on 1.20.2 as a client that died inside Main.main. Constructors are not carried,
+				// so such a field is left alone - and the same reasoning is why the generated
+				// optifineoforge$init$ helpers are excluded below.
+				LOGGER.info("Not carrying the payload's final field " + input.name.replace('/', '.') + "."
+						+ field.name + ": only the payload's own constructor may assign it, and constructors"
+						+ " are not carried over");
+				continue;
+			}
 			if(hasField(input, field.name, field.desc)) {
 				continue;
 			}
@@ -484,13 +532,22 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 						| Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL;
 			}
 			input.fields.add(new FieldNode(access, field.name, field.desc, field.signature, field.value));
+			if((field.access & Opcodes.ACC_STATIC) != 0) {
+				carriedStaticFields.add(field.name);
+			}
 			fields++;
 		}
+		int initialised = carriedStaticFields.isEmpty() ? 0
+				: carryStaticInitialisers(input, patched, carriedStaticFields);
 		for(MethodNode method : patched.methods) {
-			if("<init>".equals(method.name) || "<clinit>".equals(method.name)) {
-				continue;
-			}
-			if(hasMethod(input, method.name, method.desc)) {
+			if("<init>".equals(method.name) || "<clinit>".equals(method.name)
+					|| method.name.startsWith(RESTORE_PREFIX) || hasMethod(input, method.name, method.desc)) {
+				// Constructors and the static initialiser are the two shapes that are known to disagree
+				// between the two builds: measured on 1.20.1, the runtime's Util$9 extends Thread while the
+				// payload's is the BiFunction cache class behind Util.memoize, so neither can be taken from
+				// the other copy. The restore plan's generated helpers are excluded on top of that, and the
+				// exclusion was measured: they assign fields of the payload's copy, and against the kept
+				// class they are exactly the shape the final-field note above describes.
 				continue;
 			}
 			MethodNode copy = new MethodNode(method.access, method.name, method.desc, method.signature,
@@ -503,7 +560,137 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 			LOGGER.info("Gave " + input.name.replace('/', '.') + " the payload's " + fields + " field(s) and "
 					+ methods + " method(s), because the payload's own callers are still installed");
 		}
+		if(initialised > 0) {
+			LOGGER.info("Initialised " + initialised + " carried static field(s) in "
+					+ input.name.replace('/', '.') + " from the payload's own static initialiser");
+		}
 	}
+
+	/**
+	 * Appends the payload's initialisation statements for the static fields just carried into the kept class.
+	 *
+	 * <p>The statement for one field is the instruction run that ends in writing it, starting after the
+	 * previous write: that is the granularity a kept class can accept without importing the payload's static
+	 * initialiser wholesale, which is the one thing that measurably cannot be taken from the payload (it is
+	 * where the two builds' anonymous classes disagree). A run whose instructions cannot be copied is skipped
+	 * rather than delivered half-written, and the field then keeps its default.</p>
+	 *
+	 * <p>Pseudo-instructions are skipped rather than treated as an uncopyable node, and that skip is a
+	 * measurement rather than tidiness: on 1.20.2, requiring a copy of every node silently dropped the
+	 * statement that fills {@code Util.CAPE_EXECUTOR} - the payload's static initialiser carries line
+	 * numbers - the field stayed null, and the cape download then failed with
+	 * {@code NullPointerException at java.util.concurrent.CompletableFuture.screenExecutor} inside
+	 * {@code TextureManager.register} from {@code AbstractClientPlayer.<init>}.</p>
+	 *
+	 * @return how many statements were appended
+	 */
+	private static int carryStaticInitialisers(ClassNode input, ClassNode payload, Set<String> fields) {
+		MethodNode source = null;
+		for(MethodNode method : payload.methods) {
+			if("<clinit>".equals(method.name) && "()V".equals(method.desc)) {
+				source = method;
+				break;
+			}
+		}
+		if(source == null || source.instructions == null) {
+			return 0;
+		}
+		List<InsnList> statements = new ArrayList<>();
+		AbstractInsnNode start = source.instructions.getFirst();
+		for(AbstractInsnNode insn = start; insn != null; insn = insn.getNext()) {
+			if(!(insn instanceof FieldInsnNode write) || write.getOpcode() != Opcodes.PUTSTATIC
+					|| !input.name.equals(write.owner) || !fields.contains(write.name)) {
+				continue;
+			}
+			InsnList statement = new InsnList();
+			boolean complete = true;
+			for(AbstractInsnNode step = start; step != null; step = step.getNext()) {
+				if(step.getOpcode() < 0) {
+					// Labels, line numbers and stack map frames are pseudo-instructions: they are not copied,
+					// and their presence is not a reason to give up.
+					continue;
+				}
+				AbstractInsnNode copy = copyInstruction(step);
+				if(copy == null) {
+					complete = false;
+					break;
+				}
+				statement.add(copy);
+				if(step == insn) {
+					break;
+				}
+			}
+			if(complete) {
+				statements.add(statement);
+			}
+			start = insn.getNext();
+		}
+		if(statements.isEmpty()) {
+			return 0;
+		}
+		InsnList values = new InsnList();
+		for(InsnList statement : statements) {
+			values.add(statement);
+		}
+		MethodNode clinit = null;
+		for(MethodNode method : input.methods) {
+			if("<clinit>".equals(method.name) && "()V".equals(method.desc)) {
+				clinit = method;
+				break;
+			}
+		}
+		if(clinit == null || clinit.instructions == null) {
+			MethodNode created = new MethodNode(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
+			created.instructions.add(values);
+			created.instructions.add(new InsnNode(Opcodes.RETURN));
+			created.maxStack = 8;
+			created.maxLocals = 0;
+			input.methods.add(created);
+			return statements.size();
+		}
+		AbstractInsnNode lastReturn = null;
+		for(AbstractInsnNode insn = clinit.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if(insn.getOpcode() == Opcodes.RETURN) {
+				lastReturn = insn;
+			}
+		}
+		if(lastReturn == null) {
+			return 0;
+		}
+		clinit.instructions.insertBefore(lastReturn, values);
+		clinit.maxStack = Math.max(clinit.maxStack, 8);
+		return statements.size();
+	}
+
+	/** A copy of one instruction, or null for a kind this repair does not carry over. */
+	private static AbstractInsnNode copyInstruction(AbstractInsnNode insn) {
+		if(insn instanceof InsnNode plain) {
+			return new InsnNode(plain.getOpcode());
+		}
+		if(insn instanceof MethodInsnNode call) {
+			return new MethodInsnNode(call.getOpcode(), call.owner, call.name, call.desc, call.itf);
+		}
+		if(insn instanceof FieldInsnNode field) {
+			return new FieldInsnNode(field.getOpcode(), field.owner, field.name, field.desc);
+		}
+		if(insn instanceof TypeInsnNode type) {
+			return new TypeInsnNode(type.getOpcode(), type.desc);
+		}
+		if(insn instanceof LdcInsnNode ldc) {
+			return new LdcInsnNode(ldc.cst);
+		}
+		if(insn instanceof IntInsnNode integer) {
+			return new IntInsnNode(integer.getOpcode(), integer.operand);
+		}
+		if(insn instanceof InvokeDynamicInsnNode dynamic) {
+			return new InvokeDynamicInsnNode(dynamic.name, dynamic.desc, dynamic.bsm, dynamic.bsmArgs.clone());
+		}
+		if(insn instanceof VarInsnNode var) {
+			return new VarInsnNode(var.getOpcode(), var.var);
+		}
+		return null;
+	}
+
 
 	private static boolean hasField(ClassNode node, String name, String desc) {
 		for(FieldNode field : node.fields) {
