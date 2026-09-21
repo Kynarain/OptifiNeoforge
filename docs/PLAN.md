@@ -1701,3 +1701,25 @@ donor 里 `BlockEntity` 已经是 NeoForge 的形状
 (可行的做法:把 `jars-1.21\OptifiNeoforge-1.0.0+mc1.21-registered.jar.pre-port-20260922` 与现在这份
 逐类对照,尤其是 `BlockEntity` 的超级类/接口与 `reparent` 计划)。在查清之前,**这条分支不发布**;
 三条线的旧 jar 都留在 `*.pre-port-20260922`,可以随时对照或回退。
+
+#### 那三条失败线的机制(本轮推到的最远处)与候选修法
+
+`MissingTargets --stub` 判断"某个成员是否缺失"时,用的是**载荷自己的继承链**。1.21 / 1.21.1 / 1.21.3 的载荷里
+`BlockEntity extends net.minecraftforge.common.capabilities.CapabilityProvider`,于是 `BlockEntity.<init>` 里那句
+`this.gatherCapabilities()` 被算成"从父类继承得到,不缺失",只在 **Forge 壳类** `CapabilityProvider` 上留了实现
+(交付 jar 里确实有,`javap` 验过)。但装载时这条线把这个类**改挂**到了运行期的继承链上
+(`extends net.neoforged.neoforge.attachment.AttachmentHolder implements IBlockEntityExtension`),
+于是那句调用在**运行期**的链上没有任何着落 —— 1.21 的运行期 `BlockEntity` 自己**也没有** `gatherCapabilities()`
+(`javap work\1.21\runtime-1.21.jar` 里搜不到),这就是 `NoSuchMethodError` 的来源。
+
+**一句话**:壳(stub)是按载荷的父类算的,改挂之后父类换了 —— 凡是"载荷从 Forge 父类继承、而运行期新父类没有"的成员,
+都必须补在**类自己**身上(而不是父类身上)。
+
+**候选修法**(本轮未做,留给下一轮,顺序即优先):
+1. 让打壳这一步在**改挂之后**的继承链上再判一次缺失(`HierarchyPlan`/`reparent.txt` 与 `MissingTargets` 的输入
+   本来就在同一条流水线上),把这类成员落到 `stubs-full.txt` 里由装载器注入;立刻能验的证据是
+   `BlockEntity.gatherCapabilities()V` 出现在 `work\<mc>\plan\stubs-full.txt` 且重建后崩溃消失。
+2. 或者给 `reparent.txt` 里这类类补一条成员级保留/补桩的显式条目(与 1.20.x 的 `keep-runtime` 同思路)。
+3. 再不然回退这条线的 `reparent` 计划里 `BlockEntity` 的那一条,并量一次验收(代价是 NeoForge 的扩展接口丢失)。
+
+无论哪条,**在三条线回到四项验收全绿之前不发布**;旧 jar 都在 `*.pre-port-20260922`。
