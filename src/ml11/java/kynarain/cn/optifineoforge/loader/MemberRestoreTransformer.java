@@ -19,6 +19,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
@@ -166,8 +167,21 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 					// static initialiser now, where it is legal whatever the field's modifiers are, so
 					// there is nothing left for the guard to protect against.
 					staticInitialisers.add(method.name);
-				} else {
+				} else if(("(L" + input.name + ";)V").equals(method.desc)) {
 					initialisers.add(method.name);
+				} else {
+					// The classification used to be "anything that is not ()V", and the call site written
+					// for it is hard-coded to pass the receiver and nothing else. A donor initialiser with
+					// any other shape is therefore a call the class cannot resolve (NoSuchMethodError) or
+					// one whose arguments are not on the stack (VerifyError) - the same class of mistake
+					// as the shared receiver below, one level up: an assumption about the callee that
+					// nothing checked against the callee. Ported from the 1.20.x branch (its 203da0e),
+					// where it was measured against that line's whole plan. It refuses nothing on this
+					// branch's plans either - the generator only ever writes the two shapes - but the plan
+					// is generated per line, so the check belongs here rather than in the generator.
+					LOGGER.warn("Not calling " + method.name + " in " + input.name + ": its descriptor is "
+							+ method.desc + " rather than the (L" + input.name + ";)V the call site written"
+							+ " for it would need, so the call and the method would not agree");
 				}
 			}
 		}
@@ -268,25 +282,24 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 				if(wanted.isEmpty()) {
 					continue;
 				}
+				String problem = sequenceProblem(initialiserCalls(input.name, wanted));
+				if(problem != null) {
+					// Ported from the 1.20.x branch (its 203da0e). The sequence is written by this class
+					// and read by the JVM, and modelling its stack effect is what turns "the builder
+					// emitted something" into "the class will load". When it does not balance, the fields
+					// stay at their defaults and the constructor keeps the shape it was compiled with -
+					// which fails visibly at one field instead of taking the whole class down at load
+					// time, the way the shared receiver did.
+					LOGGER.warn("Not calling " + wanted.size() + " initialiser(s) in " + input.name + "."
+							+ constructor.desc + ": " + problem + "; the restored field(s) keep their default"
+							+ " value in that constructor");
+					continue;
+				}
 				for(AbstractInsnNode insn = constructor.instructions.getFirst(); insn != null; insn = insn.getNext()) {
 					if(insn.getOpcode() != Opcodes.RETURN) {
 						continue;
 					}
-					InsnList call = new InsnList();
-					for(String name : wanted) {
-						// One receiver push per call. A single ALOAD 0 for the whole list is only right
-						// while a constructor needs one restored field, and the offline twin of this code
-						// (RestoreMembers) proved on 1.21.10 what happens otherwise: BlockModelWrapper's
-						// three-argument constructor restores two fields, the second INVOKESTATIC then
-						// found an empty stack, and the class failed verification -
-						//   VerifyError: Operand stack underflow ... @12: invokestatic
-						// which killed the resource reload and left the client on its loading screen. No
-						// line here needs two yet, so this is a latent defect being closed rather than a
-						// behaviour change: with one wanted initialiser the emitted code is identical.
-						call.add(new VarInsnNode(Opcodes.ALOAD, 0));
-						call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, input.name, name, "(L" + input.name + ";)V", false));
-					}
-					constructor.instructions.insertBefore(insn, call);
+					constructor.instructions.insertBefore(insn, initialiserCalls(input.name, wanted));
 				}
 				constructor.maxStack = Math.max(constructor.maxStack, 1);
 				constructor.maxLocals = Math.max(constructor.maxLocals, 1);
@@ -298,6 +311,87 @@ public final class MemberRestoreTransformer implements ITransformer<ClassNode> {
 		}
 		repairSpriteCollection(input);
 		return input;
+	}
+
+	/**
+	 * The sequence a constructor runs for the fields it does not assign itself: the receiver, then the
+	 * call, for every initialiser, in that order.
+	 *
+	 * <p>One receiver <em>per call</em>, and that is the whole of a defect that cost a launch on the
+	 * 1.20.x branch, where its offline twin proved it here first: the single ALOAD 0 for the whole list
+	 * is only right while a constructor needs one restored field, and BlockModelWrapper's three-argument
+	 * constructor restores two - the second INVOKESTATIC then found an empty stack and the class failed
+	 * verification with {@code VerifyError: Operand stack underflow ... @12: invokestatic}, which killed
+	 * the resource reload and left the client on its loading screen. On 1.20.6 the same shape in a
+	 * delivered class was:</p>
+	 *
+	 * <pre>aload_0
+	 * invokestatic RenderChunkRegion.optifineoforge$init$modelDataSnapshot
+	 * invokestatic RenderChunkRegion.optifineoforge$init$posFrom   &lt;- the receiver is already spent
+	 * return</pre>
+	 *
+	 * <p>and the JVM refused the class the first time a chunk was built, seconds after the client had
+	 * joined the world:</p>
+	 *
+	 * <pre>java.lang.VerifyError: Operand stack underflow
+	 *   Location: net/minecraft/client/renderer/chunk/RenderChunkRegion.&lt;init&gt;(Lnet/minecraft/world/level/Level;II[[Lnet/minecraft/client/renderer/chunk/RenderChunk;)V @16: invokestatic
+	 *   Reason: Attempt to pop empty stack.</pre>
+	 *
+	 * <p>The offset is what settles which reading of that sequence is right: {@code @16} is the
+	 * <em>second</em> injected call, and a sequence with no receiver at all would have failed at
+	 * {@code @13}, where the first one sits. The receiver was never missing - it was shared between two
+	 * calls that each take one.
+	 *
+	 * <p>A fresh list per insertion, because an {@link InsnList} is a linked list of the very nodes it
+	 * holds: handing one list to two insertions moves those nodes to the second position rather than
+	 * copying them, which would leave the first return without them.
+	 */
+	private static InsnList initialiserCalls(String owner, List<String> initialisers) {
+		InsnList calls = new InsnList();
+		for(String name : initialisers) {
+			calls.add(new VarInsnNode(Opcodes.ALOAD, 0));
+			calls.add(new MethodInsnNode(Opcodes.INVOKESTATIC, owner, name, "(L" + owner + ";)V", false));
+		}
+		return calls;
+	}
+
+	/**
+	 * Why a sequence must not be inserted, or {@code null} when it is balanced.
+	 *
+	 * <p>The acceptance rule for the code that goes in front of a {@code RETURN}: every call has to
+	 * find its arguments on the stack, and the sequence as a whole has to leave the stack as it found
+	 * it - which is what a constructor's tail needs, since the frame at the return is the one the
+	 * class was compiled with. Modelling the effect rather than counting the instructions is the point:
+	 * the sequence above was written by counting ("one receiver, then the calls") and the count was
+	 * the defect. Only the two kinds the builder emits are modelled, and anything else is refused
+	 * instead of being passed through unexamined.</p>
+	 */
+	private static String sequenceProblem(InsnList sequence) {
+		int depth = 0;
+		for(AbstractInsnNode insn = sequence.getFirst(); insn != null; insn = insn.getNext()) {
+			switch(insn.getOpcode()) {
+				case Opcodes.ALOAD -> depth++;
+				case Opcodes.INVOKESTATIC -> {
+					MethodInsnNode call = (MethodInsnNode) insn;
+					int arguments = 0;
+					for(Type argument : Type.getArgumentTypes(call.desc)) {
+						arguments += argument.getSize();
+					}
+					if(depth < arguments) {
+						return "the call to " + call.name + " reads " + arguments + " value(s) with only "
+								+ depth + " on the stack";
+					}
+					depth += Type.getReturnType(call.desc).getSize() - arguments;
+				}
+				default -> {
+					if(insn.getOpcode() >= 0) {
+						return "it contains " + insn.getClass().getSimpleName()
+								+ ", which this rule does not model";
+					}
+				}
+			}
+		}
+		return depth == 0 ? null : "it leaves " + depth + " value(s) on the stack";
 	}
 
 	/**
