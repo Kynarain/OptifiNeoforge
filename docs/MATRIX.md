@@ -5481,3 +5481,32 @@ donor 里确实带了运行期那一份(`public ... ModelDataManager$Active mode
   本分支的代码 —— 9/19 那批计划就是这么生成的。这两点都已记录,重建时按"显式前置本分支编译出的类"处理。
 * **如实边界**:这七条线**仍然没有真机验证**(没有客户端进过世界),所以它们既不是"绿",也不能算本轮可发布;
   下一步是逐线验收 + 进世界 + 建档光影 + FXAA。
+### 十八、2026-09-22 早:计划里的运行期成员桩在**换装的类**上被丢掉(1.21.x 三条线因它启动就崩;本分支同一处形状已修并复验)
+
+`decide()` 抓取载荷**之前**先无条件调 `stubMissing()`(因为有些桩的宿主是永不换装的运行期类),但紧接着
+`input.methods = methods` 会用载荷的成员表**整体替换**运行期那份 —— 刚加进去的桩跟着一起没了。
+`stubMissing()` 只补缺的(幂等),所以在替换之后**再调一次**就是修法。
+
+**这是在 1.21.x 分支上量到的**(症状、崩溃报告与 `javap` 证据都记在那边的 `docs/PLAN.md` 里):
+修复计划把 `BlockEntity` 改挂到 `net/neoforged/neoforge/attachment/AttachmentHolder`,载荷的
+`BlockEntity.<init>` 调 `this.gatherCapabilities()`(原本来自被改挂丢掉的 Forge 父类,运行期的
+`BlockEntity` 自己也没有),该成员**已经在**交付 jar 的 `optifineoforge/stubs.txt` 里、第一次
+`stubMissing()` 也确实加了,却被那句赋值扔掉 ⇒ `Initializing game` 阶段
+`NoSuchMethodError: BlockEntity.gatherCapabilities()`。修后 1.21 / 1.21.1 / 1.21.3 三条线四项验收全绿
+(1.21 的 stderr 回到记录值 14141),OptiFine 日志行数从 28/27/27 变成 377/232/225。
+
+**本分支同一处形状**(`stubMissing` 在 `input.methods = methods` 之前)已按同样方式修掉,四条线重建并复验:
+
+| 线 | 判定 | user | sound | 崩溃 | stderr |
+|---|---|---|---|---|---|
+| 1.20.1 | STARTED | yes | yes | 0 | **0 = 记录值** |
+| 1.20.2 | STARTED | yes | yes | 0 | **14625 = 记录值** |
+| 1.20.4 | STARTED | yes | yes | 0 | **14481 = 记录值** |
+| 1.20.6 | STARTED | yes | yes | 0 | 17856(§十三 已定位的那个已知差异) |
+
+**顺带记一个 rig 级配方事实**(这次真的踩到了):1.20.1 的重建必须带 `-SkipForgeStubs`,否则
+`ForgeApiShims` 会往 loader jar 里塞 `net/minecraftforge/**`,与 FML 自己的同名包冲突,启动直接死在
+`java.lang.module.ResolutionException: Module OptifiNeoforge.mc1._20._1.registered contains package
+net.minecraftforge.eventbus.api, module net.minecraftforge.event ...`(stderr 1721 字节、OptiFine 0 行)。
+另外 `-ProfileId 1.20.1-forge-47.4.23` 必须显式给(这线 profile 名不等于 Maven 版本号),否则脚本在
+"runtime classpath" 一步抛 `no profile json at ...`。

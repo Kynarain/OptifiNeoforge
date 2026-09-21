@@ -847,6 +847,21 @@ public final class PatchedClassTransformer implements NodeTransformer {
 		}
 		input.fields = fields;
 		input.methods = methods;
+		// The planned runtime stubs have to be applied a second time here. decide() calls stubMissing() before it
+		// reads the payload, because some stub owners are classes that are never swapped - but for a class that is
+		// swapped, the assignment above replaces the runtime's whole member list with the payload's, and the stub
+		// added a moment earlier goes with it. stubMissing() adds only what is absent, so this is idempotent.
+		//
+		// Measured on the sibling branch, where the same shape cost three lines their launch: with the repair plan
+		// reparenting net/minecraft/world/level/block/entity/BlockEntity onto
+		// net/neoforged/neoforge/attachment/AttachmentHolder, the payload's BlockEntity.<init> calls
+		// this.gatherCapabilities() - a member of the Forge superclass the reparent drops - the member was in the
+		// stub list the loader received (verified with javap inside the shipped jar), the first stubMissing() did
+		// add it, and this assignment threw it away, so the client died at "Initializing game" with
+		//   NoSuchMethodError: 'void net.minecraft.world.level.block.entity.BlockEntity.gatherCapabilities()'
+		// at BlockEntity.<init>. After the second call the three lines pass all four acceptance checks again, and
+		// OptiFine reaches 377/232/225 log lines instead of 28/27/27 (they had been dying one second in).
+		stubMissing(input);
 		keepRuntimeBodies(input, originalMethods);
 		dropMembers(input);
 		applyAccessPlan(input);
