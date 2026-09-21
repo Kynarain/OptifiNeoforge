@@ -5090,3 +5090,89 @@ carry 修复。`--quickPlaySingleplayer` 在 1.20.4 上**无效**(早前实测),
   该进程未被触碰。
 * 这条线要过世界测试,得在**安静机器**上、以 tracer 为判据逐点试世界列表那一行,或者给 harness 一条不经过 GUI
   的入世途径。
+
+### 十一、2026-09-22 凌晨:两条线真的加载了光影包;随即发现一条**发布级**缺陷;以及一次被证伪的收容
+
+#### 1. 用户要的"在建档里跑光影测试"在两条线上**通过**
+
+`run-save-shaders-all.ps1 -Pack 'MakeUp-UltraFast-9.5e.zip' -AaLevel 0`(世界由模板生成、quick play 进入、
+光影在档内请求),300 秒:
+
+| 线 | 判定 | 声音 | 世界 | 崩溃 | 光影包 | FXAA |
+|---|---|---|---|---|---|---|
+| 1.20.6 | **STARTED** | yes | yes,**10 个 region 文件 + level.dat 被本次运行改写** | 0 | **`[Shaders] Loaded shaderpack: MakeUp-UltraFast-9.5e.zip`** | 请求 0,日志无 FXAA 行 |
+| 1.20.2 | **STARTED** | yes | yes,**10 个 region 文件 + level.dat** | 0 | **同上** | 同上 |
+
+也就是说:世界是真建出来的(region 与 level.dat 由该次运行写出),OptiFine 的光影管线真的起来了(它自己的日志行
+点名了包名),四项验收检查依旧全中,且没有崩溃报告。**这是第一次由 harness 确认"光影包已加载"**,而不是只确认
+"请求了"——2026-09-20 那次 `save-shaders-1.20.2-nopack-aa0.out.log` 记的是 `VERDICT: EXITED` 加一份服务端崩溃
+报告,它的 "world loaded (markers)" 只是服务端信号。
+
+另外量到一条**配置规律**(不是缺陷):`-Pack … -AaLevel 4` 在两条线上都得到 OptiFine 自己的一行
+`[Shaders] Shaders can not be loaded, Antialiasing is enabled: 4x` —— `antialiasingLevel != 0` 会让
+`GLX.isUsingFBOs()` 为假、`Shaders.loadShaderPack` 拒绝。所以 FXAA 只在**不带包**时测(截图对),光影只在
+**不开 FXAA** 时测。
+
+#### 2. 新缺陷(未修,发布阻塞):**怪物入水即崩服务端**
+
+两份崩溃报告(`crash-2026-09-22_00.32.53-server.txt` 1.20.6、`00.38.33-server.txt` 1.20.2):
+
+```
+java.lang.NoSuchMethodError: 'void net.minecraft.world.entity.Mob.lambda$jumpInFluid$3(
+    net.neoforged.neoforge.fluids.FluidType)'
+  at net.minecraft.world.entity.Mob.jumpInFluid(Mob.java:1578) <- LivingEntity.aiStep <- Mob.aiStep
+  <- Monster.aiStep <- LivingEntity.tick <- Mob.tick <- Creeper.tick <- ServerLevel.tickNonPassenger
+```
+
+量到的事实:
+
+* 交付的 `Mob` **自洽**:用 `-Doptifineoforge.dump` 抓下来再用 `javap -v` 读,
+  `jumpInFluid(Lnet/minecraftforge/fluids/FluidType;)V` 的 `invokedynamic` 其 bootstrap `MethodHandle` 指向
+  `Mob.lambda$jumpInFluid$3:(Lnet/minecraftforge/fluids/FluidType;)V`,而类里就声明着这个方法,且该类的每一处
+  `FluidType` 都是 Forge 包名;
+* **运行期自己的 `Mob` 根本没有这个 lambda**,`jumpInFluid` 是 OptiFine 加的(`IForgeLivingEntity.jumpInFluid`,
+  而该接口的 shim 是 172 字节的抽象声明);
+* 所以错误里那个 NeoForge 包名的描述符**不可能来自本加载器交付的字节**,只能来自**它之后**的某个 pass。
+  这一条如实记为"量到的状态",不是已证明的机制。
+
+家族关系:这与 2026-09-20 那次 `Level.m_7654_()`(`Mob.serverAiStep`)是同一族"一个类里混了两份编译",那次由
+SRG 残留修复结清;现在前线移到了 fluid-jump 钩子。
+
+**收容尝试(已证伪)**:给两条线的 keep plan 加 `net/minecraft/world/entity/Mob	*`,重建(1.20.6 1751844 字节、
+1.20.2 1724874 字节,审计均 0 findings)后运行 —— 两条线**连标题界面都到不了**:
+
+* 1.20.2 崩在 `EntityType.<clinit>` → `Items.<clinit>` → `Blocks.<clinit>` → `Bootstrap.bootStrap`,方法体是坏的
+  (`2a2b b708 e1b1` = `aload_0; aload_1; invokestatic; areturn`),即**载荷 Mob 里别的交付类要用的成员不在**;
+* 1.20.6 实质上一样,而且崩溃报告那条路也接着失败(`Shaders.<clinit>` 里 `Minecraft.getInstance()` 为 null,
+  由 `CrashReporter.extendCrashReport` 走到)—— 与 keep plan 自己的注释里 `GlDebug` 那次同一种"报告都被掩盖"。
+
+所以"整类保成运行期"在 `Mob` 上行不通,而 carry 修复**没能覆盖**载荷其它类对 `Mob` 的调用。该行已从两个计划里
+删除,两条线重建并复验(验收 STARTED / user / sound / 0 崩溃)。**缺陷保持未修**,上面所有量测都留档,两个候选方向:
+(1) 找出把 Forge 引用改写成 NeoForge 的那个 pass(错误里的描述符是**调用侧**),让它连私有 lambda 一起改,或者
+两个都不改;(2) 不用"整类保",而是把携带 Forge lambda 的**那几个成员**保成运行期的,同时保证载荷其它成员还在 ——
+也就是 carry 修复本来该提供的那份闭包。
+
+#### 3. 两条 harness 缺陷(已修)
+
+1. **harness 的输出文件被重复重定向**:`run-save-shaders-all.ps1` 把每条线的输出抓到
+   `logs\save-shaders-<mc>-<tag>.out.log`,而这正是 `test-save-shaders.ps1` 重定向启动器输出用的同一个文件 ——
+   其中一个重定向失败(`The process cannot access the file ... because it is being used by another process`),
+   判定块整段缺失,于是每一行都读成 `FAILED`、光影与 FXAA 两列空。**同形状的旧日志也是被截断的**,也就是说
+   以前那张"save+shaders"表读的是残缺文件。现在改写 `…-aa0.harness.log`。
+2. **表格的正则缺 `(?m)`**,`shader pack loaded : …` 永远匹配不上(它不在整段文本末尾),所以即使光影真的加载了,
+   两列仍然显示 `?`。
+
+#### 4. 如实记下的新差异:1.20.6 的 stderr 基线
+
+同一轮里 1.20.6 的验收仍然四项全中、0 崩溃,但 stderr 是 **17856 字节**,而记录值是 **0**(`[OptiFine]` 行数也从
+231 变成 216)。内容量到的是 **6 段**同形状的 OptiFine 反射 NPE:
+
+```
+java.lang.NullPointerException: Cannot invoke "java.lang.Class.getDeclaredFields()" because "cls" is null
+  at net.optifine.reflect.FieldLocatorName.getDeclaredField <- ReflectorField.resolve
+  <- ReflectorResolver.resolve <- GameRenderer.frameInit
+```
+
+可复现(连续三次同一数值),并且已经**排除**了两个嫌疑:把 `shaderpacks` 目录清空后仍是 17856;把 Forge stub 换回
+修复前的 61 个类重建后仍是 17856。剩下的嫌疑是本次的 carry 修复或 gamedir 里累积的状态(saves 等),**尚未归因**,
+所以这条算"基线差异、原因未明",不是通过。
