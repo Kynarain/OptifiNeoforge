@@ -5066,3 +5066,27 @@ join keep plan(3 行:`GlDebug`、`AbstractTexture.setFilter`、`IntegratedServer
 用修好的生成器重做的 donor、用种类修复重做的 Forge stub(接口外壳 + Noop)、drop plan(3 行)以及本次的
 carry 修复。`--quickPlaySingleplayer` 在 1.20.4 上**无效**(早前实测),所以这条线的世界测试要靠
 `click-at.ps1 -FindButtons` 驱动菜单,而不是启动参数。
+
+**补记(2026-09-21 23:35-00:05,rig 侧 `world-test-1204.ps1`):**
+
+* **标题界面确认可用且可交互**:tracer 每次都走到 `GenericDirtMessageScreen -> TitleScreen`
+  (窗口 `Minecraft NeoForge* 1.20.4`,客户区 854x480,`responding=True`);在**窗口处于前台**的那次运行里,
+  (427,200) 的点击真的生效了 —— `TitleScreen -> SelectWorldScreen`。也就是说"标题界面能用"这一条在这条线上
+  是**实测通过**的,而不只是画出来了。
+* **世界入口仍未驱动成功**:世界列表里那一行试了四个位置(`225,70`/`225,110`/`225,150`/`300,80`),
+  双击都没有打开世界(`session.lock` 始终不存在、日志里没有世界行)。
+* 这一轮为此付了**五个 rig 缺陷**的代价,都已修并写进脚本注释:
+  (1) `-Mods` 用相对路径会失败(`launch.ps1` 按自己的工作目录解析),而且失败后截图会抓到**别的会话**的客户端;
+  (2) `-TitleMatch` 必须是游戏标题片段而不是 profile id(`neoforge-20.4.251` 永远匹配不到
+  `Minecraft NeoForge* 1.20.4`);(3) tracer 的 stderr 在 `logs\launch-<VersionId>.err.log`,读错文件会让屏
+  幕列表全空、每次点击都像没生效;(4) **投递给后台窗口的点击会被丢弃** —— GLFW 的 Minecraft 在自己不认为处于
+  前台时会忽略鼠标消息(实测那次 `is foreground: False`,标题界面纹丝不动),`click-at.ps1` 因此加了 `-Focus`
+  (AttachThreadInput + SetForegroundWindow + SW_RESTORE),加完同一个坐标就打开了 `SelectWorldScreen`;
+  (5) **`PrintWindow` 在这条线上返回的是过期的后台存档**,截图不能用来定位按钮 —— 世界列表界面时抓的图
+  `world1204-list.png` 里亮的还是标题界面的按钮带(image y 216-280),与 `world1204-title.png` 同为 12566 字节,
+  这也是 `-FindButtons` 在这里报"none found"的原因;两次点击因此都以 tracer 为准,而不是以图为凭。
+* 期间机器上有**另一个会话的客户端**(`Minecraft* 1.21.11 - Singleplayer`,pid 13228):按钮查找因此拒绝在
+  两个 `Minecraft` 窗口之间猜,第三次重试的三次点击也都没生效,而同一坐标在安静运行时是有效的。
+  该进程未被触碰。
+* 这条线要过世界测试,得在**安静机器**上、以 tracer 为判据逐点试世界列表那一行,或者给 harness 一条不经过 GUI
+  的入世途径。
