@@ -5368,3 +5368,116 @@ donor 带不过来 ⇒ 字段在、值为 null ⇒ 投影贴图里一碰到实�
 
 **这仍是生成器的一个缺口**:补进去的静态字段没有初始化语句,而生成器不会把这种情况自动改判为"整类保留运行期"。
 本轮的做法是**每条线一条 keep**(连同量测依据写在计划注释里),生成器侧的自动判定**尚未做**。
+
+### 十六、2026-09-22 凌晨(四续):**恢复计划是生成物却被静默复用**(真机崩过),以及一个仍未修的 `ModelDataManager` 空值
+
+#### 1. 根因:`rebuild-120x-line.ps1` / `add-line.ps1` 只在**载荷不存在**时才跑 `prepare-line`
+
+`work\<mc>\plan\member-restores.txt` 与 `work\<mc>\plan\donors\` 都是 `MemberRestorePlan` **生成**的,却因为
+`prepare-line` 被跳过而被静默复用。1.20.4 上量到的后果:jar 里那份计划是 **2026-09-21 23:02** 的,早于
+`da8b09d`(synthetic lambda 规则)的提交,于是**没有**这一条:
+
+```
+M net/minecraft/world/entity/Mob lambda$jumpInFluid$4 (Lnet/neoforged/neoforge/fluids/FluidType;)V
+```
+
+真机上表现为(同一台机器、同一条线,只是那次跑得久):
+
+```
+java.lang.NoSuchMethodError: 'void net.minecraft.world.entity.Mob.lambda$jumpInFluid$4(net.neoforged.neoforge.fluids.FluidType)'
+  at net.minecraft.world.entity.Mob.jumpInFluid(Mob.java:1496)
+  at net.minecraft.world.entity.LivingEntity.aiStep(LivingEntity.java:2646)
+  at net.minecraft.world.entity.monster.Creeper.tick(Creeper.java:161)
+  at net.minecraft.server.level.ServerLevel.tickNonPassenger(ServerLevel.java:755)
+```
+(`game\neoforge-20.4.251\crash-reports\crash-2026-09-22_03.16.11-server.txt`,集成服务端崩溃 → 客户端当场报一份崩溃)
+
+修法有两层:
+
+* **对这条线**:用**当前分支源码**重新编译生成器并重跑一次,计划从 264 条 / 72 donor 变成 **282 条 / 75 donor**,
+  上面那条 lambda 与 donor 里的同名方法都在了(`javap` donor 可见 `public void lambda$jumpInFluid$4(...)`)。
+* **对工具链**:`rebuild-120x-line.ps1` 里加了"每次都从本分支源码编译生成器再重算计划"的一步(生成器编译不出来
+  就**抛错**而不是继续嵌旧计划)。顺带记一个 PowerShell 5.1 的坑:`javac ... -d $dir @toolSrc` 这种同一行里混用
+  splat 的写法会把 classpath 传坏,javac 报 `无效的标记: :`;改成先拼 `$javacArgs` 数组再 `@javacArgs` 就好。
+  `add-line.ps1`(1.21.x 用)与 `prepare-fml10-line.ps1`(FML 10 三条线用)**还没有**这一步,它们下次重建前必须
+  按同样办法重算计划 —— 这一点已写进本轮交接说明。
+
+重算后的 1.20.4:验收 STARTED/user/sound/崩溃 0/stderr **14481** = 记录值;带 MakeUp 光影包的 180 秒世界跑
+(同一条菜单路)= 世界 yes、光影包 loaded、**崩溃 0**、`VerifyError` 0、`NoSuchMethodError` 0。
+
+#### 2. 仍未修:1.20.4 上 `Level.getModelDataManager()` 返回 null(已定位,非致命)
+
+同一次 180 秒跑里 `latest.log` 留下 **1** 次:
+
+```
+Caused by: java.lang.NullPointerException: Cannot invoke
+  "net.neoforged.neoforge.client.model.data.ModelDataManager$Active.getAtOrEmpty(net.minecraft.core.BlockPos)"
+  because the return value of "net.minecraft.world.level.Level.getModelDataManager()" is null
+  at net.minecraft.client.renderer.block.BlockModelShaper.getTexture(BlockModelShaper.java:31)
+  at net.minecraft.client.particle.TerrainParticle.updateSprite(TerrainParticle.java:107)
+  at net.optifine.reflect.Reflector.call(Reflector.java:1111)
+```
+
+`javap` 对照已经给出机制,和上面两件是同一族(载荷缺运行期的成员/初始化):
+
+| | 字段 | 构造器 |
+|---|---|---|
+| 运行期 `ClientLevel` | `private final net.neoforged.neoforge.client.model.data.ModelDataManager$Active modelDataManager;` | 偏移 139-147:`new ModelDataManager$Active(this)` + `putfield` |
+| 载荷 `ClientLevel` | `private final net.minecraftforge.client.model.data.ModelDataManager modelDataManager;`(**Forge 类型**) | 自己的偏移 139-147:构造 Forge 版并写自己的同名字段 |
+
+donor 里确实带了运行期那一份(`public ... ModelDataManager$Active modelDataManager;`、
+`public static void optifineoforge$init$modelDataManager(ClientLevel);`、两个 `getModelDataManager()`),也就是
+**注入的初始化调用没有把运行期那半边的字段写上**,于是 NeoForge 侧读到 null。它被 OptiFine 的
+`Reflector.call` 吞掉并记成日志,所以不崩,但"破坏方块的地形粒子取不到贴图"是真的。
+
+**如实边界**:这条日志只在 1.20.4 上出现过一次(20.2 / 20.6 的日志里 0 次),而三者的载荷 `ClientLevel` 都声明
+了 Forge 类型的同名字段 —— 所以"是这条线的注入没生效"与"另两条线只是没走到这个粒子路径"这两种解释**尚未区分**,
+本轮没有做那个区分实验。生成器侧的自动判断(补不了初始化的字段改判为整类保留)同样仍未做。
+
+### 十七、2026-09-22 凌晨(五续):1.20.4 的 **FXAA 配对本轮仍未测出来**(工具本身是稳的,是两次跑的**画面**不是同一个),以及 1.21.x 七条线的离线移植完成
+
+#### 1. FXAA:harness 稳、场景不稳 —— 如实记下"未测出"而不是硬报一个方向
+
+1.20.4 只能走菜单路进世界,所以这条线的 FXAA 配对由 `world-test-1204.ps1 -Frames <dir>` 在**世界内**按固定间隔
+抓帧(先按 `run-fxaa-capture.ps1` 的配方 pin:DayTime/GameTime 6000、无天气、冻结世界、`-Yaw 0 -Pitch 45`、
+`ofClouds:3`)。第三次尝试(FXAA 0 与 FXAA 2 各 4 帧,`logs\fxaa-1204c-*`)的结果:
+
+| 量 | FXAA off | FXAA on |
+|---|---|---|
+| 帧内 12 秒的场景漂移 | **0.0%**(帧 2 vs 帧 3,边缘能量 −0.1%) | **0.1%**(帧 3 vs 帧 4,边缘能量 0.0%) |
+| 帧亮度均值 | 188.7 | 45.1 |
+| 亮像素(>200)占比 | 66.4% | 4.3% |
+| 边缘能量 / 硬边(帧 4) | 17.40 / 51741 | 4.98 / 10615 |
+| 跨选项配对(off 帧 4 vs on 帧 4) | 场景差 **92.6%** ⇒ `fxaa-check.ps1` 判 **INCONCLUSIVE** | |
+
+也就是说:**同一次跑内部画面是冻住的**(12 秒内 0.0%/0.1%,说明抓帧与时机都没问题),但**两次跑的画面不是同一个**
+(亮度分布 66.4% 亮 vs 4.3% 亮)。`fxaa-check.ps1` 因此正确地拒绝把 71.4% 的边缘能量差读成 FXAA —— 那正是这个
+工具存在的意义(它在 1.20.2 上就抓过一次同类的假判)。机制与 1.20.2 那条备注一致:`pin-save-state.ps1` 写进
+`playerdata` 的 Rotation **不是客户端实际使用的那份**(客户端会把自己那份写回去),所以两次跑朝向不同;要把这条
+线的 FXAA 测出来,需要在**世界内控制姿势**(`send-chat.ps1` + `/tp @s ~ ~ ~ 0 45`,这要求该存档开着作弊)。
+本轮到此为止,结论就是**"1.20.4 的 FXAA 尚未测出"**,不写成"通过"也不写成"复现失败"。
+
+#### 2. 1.21.x 七条 ModLauncher 线:1.20.x 的加载器修复已**离线**移植、并已重建(真机未验)
+
+这一步由一个子代理完成(全部结论都来自 `javap` / `StackAudit` / 生成器输出,它**没有**启动任何客户端):
+
+* **移植**:`MemberRestorePlan` 的 synthetic 同名不同描述符规则、初始化字节码合成(`stackEffect`/`callEffect` 等)、
+  `MemberRestoreTransformer` 的"每次注入调用各自压一个接收者 + 栈效应验收 + 描述符检查"、`PatchedClassTransformer`
+  的"整类保留时补回载荷独有成员 + 携带静态初始化"、以及屏幕追踪(这条分支此前**完全没有** tracer)。
+* **两处由 A/B 抓出来的移植自身缺陷**(不是推理出来的,是同一组输入对跑出来的):ASM 的 `InsnList.add(node)`
+  会把节点**移动**出运行期类,导致每条线丢掉 3/3/3/6/6/7 个初始化器;以及 1.20.x 的验收门是"结构式"的、比它自己
+  注释里描述的模拟更窄,把合法形态(`MAP_CODEC = Variant.MAP_CODEC.xmap(f,f)`、`StackWalker.getInstance(opt)`、
+  `Component.translatable(...)`)判死。两者都已修,并记在提交里。
+* **计划条数/donor 数**(每条线,移植前 → 移植后):1.21 363→381 / 97→99;1.21.1 293→309 / 79→81;
+  1.21.3 293→314 / 78→82;1.21.4 316→336 / 83→86;1.21.6 345→375 / 83→87;1.21.7 355→385 / 87→91;
+  1.21.8 353→383 / 88→92。七条线的 `StackAudit` findings 5/1/1/1/0/0/0 → **全 0**。
+* **重建**:七条线都重新装配,且每条都打印了
+  `patch entries dropped for 1 class(es): [net/minecraft/client/renderer/block/ModelBlockRenderer$1]`(即上一节的
+  光影崩溃修复确实进了这些 jar);`1.21.4` 与 `1.21.8` 的 jar 已复制到 rig 实际启动用的
+  `jars-1.21.4-new` / `jars-1.21.8-payload`(旧文件留 `.pre-port-20260922`)。
+* **同时发现的两个 rig 级坑**(与 1.20.4 那次同源):`work\1.21.4\optifine-patched.jar` 是一次**被截断的 239 字节**
+  写入而 `add-line.ps1` 会复用它;`tools-classpath.txt` 以 `tools-patch-keepfix` 打头,而那里面的
+  `MemberRestorePlan.class` 是**另一条线**的版本,于是所有 `$tools` 调用(包括 `prepare-line` 第 3 步)用的都不是
+  本分支的代码 —— 9/19 那批计划就是这么生成的。这两点都已记录,重建时按"显式前置本分支编译出的类"处理。
+* **如实边界**:这七条线**仍然没有真机验证**(没有客户端进过世界),所以它们既不是"绿",也不能算本轮可发布;
+  下一步是逐线验收 + 进世界 + 建档光影 + FXAA。
