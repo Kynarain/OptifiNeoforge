@@ -5228,3 +5228,45 @@ MakeUp 光影包、不开 FXAA)上复跑:
 
 结论:这条差异**不是缺陷、也不致命**(四项检查全中、崩溃报告 0),它是 OptiFine 自己的反射对缺失类不判空在
 stderr 上留下的日志;要清零就得补上那 8 个(或更多)点号名 stub —— 记为下一步,而不是本轮顺手做的事。
+
+### 十四、2026-09-22 凌晨(再续):**1.20.1 也进世界了**(第三条),以及 1.20.4 的菜单驱动现状
+
+#### 1. 1.20.1:验收 + 建档光影测试都通过
+
+用**同一套修复**重建后(重新生成 donor:`MemberRestorePlan` 的 synthetic 规则 + stackEffect;其余修复本就在分支里):
+jar **1778641** 字节,SHA-256 `ACDAEFB46C1AF5E344A159F9DE875560DA420846ECE64B90C4FB92815B5F4491`,
+审计 619 个类 0 findings,keep plan 17 行,计划 904 条,donor 157 个。
+
+| 测试 | 结果 |
+|---|---|
+| 四项验收 | STARTED / user yes / sound yes / 崩溃 0 / stderr **0** = 记录值 |
+| 建档 + quick play(无包) | **STARTED / sound yes / 世界 yes(10 个 region 文件 + level.dat)/ 崩溃 0** |
+| 建档 + MakeUp 光影包 | **STARTED / sound yes / 世界 yes(10 个 region 文件 + level.dat)/ 崩溃 0 / `[Shaders] Loaded shaderpack: MakeUp-UltraFast-9.5e.zip`** |
+
+同一配置在本轮开始的**旧 jar** 上是崩的(`crash-2026-09-22_01.58.53-client.txt`;
+`NullPointerException: Cannot read field "f_108590_" because "this.f_109059_.f_91074_" is null` at
+`GameRenderer.m_109089_`,即"玩家还没到就渲染"那一族),重建后就没了 —— 与 1.20.2 上同一个根因(载荷自己的
+`Util`/披风链)被 carry 修复接上后玩家真的到场的结论一致。
+
+**这条线的重建命令有两个坑,都记在这里**(`rebuild-120x-line.ps1` 的注释没写):
+
+* 必须 `-InstallerArtifact forge`:1.20.1 的安装产物在 `libraries\net\minecraftforge\forge\1.20.1-47.4.23\`,
+  默认的 `neoforge` 会让脚本在"runtime classpath"一步抛 `no installed artifacts ...`;
+* **不能**传 `-SrgMappings`/`-ObfOfficial`:这一线的运行期本身是 SRG 命名的,`SrgRemap` 会**按设计拒绝**
+  ("refusing to rewrite: this runtime is SRG-named (49686 members match m_/f_), so the payload needs no
+  rewriting on this line",退出码 2),脚本随后抛 "the SRG remap produced no ...",jar 保持旧版本 —— 一次
+  "重建成功"的假象(日志里 Gradle 那行是 BUILD SUCCESSFUL)。
+
+#### 2. 1.20.4:标题界面可交互已实测,但菜单驱动**还没走通**
+
+这轮把这条线的驱动做得更可靠了,但世界列表那一行仍未命中:
+
+* `click-at.ps1 -Focus`(AttachThreadInput + SetForegroundWindow)之后,(427,200) 的点击**确实生效**
+  (title → SelectWorldScreen,多次复现);
+* 新加的 `capture-window.ps1 -Screen` 用**屏幕拷贝**代替 PrintWindow(窗口先被抬到前台),
+  因为这条线上 PrintWindow 返回的是**过期后台存档**(世界列表界面时抓的图与标题界面同尺寸同亮带);
+* 但**点击的生效明显滞后**:三次 (427,200) 点击各自等了最多 45 秒仍未看到 SelectWorldScreen,而到后面读 tracer
+  时它已经是 SelectWorldScreen —— 也就是"截图里的屏幕"总落后于"tracer 里的屏幕",于是按截图坐标去双击世界行
+  时,游戏还在标题界面。已把等待改成**轮询 tracer**,并加了"从活截图里自动找最亮横带当世界行"的逻辑(记录在脚本里),
+  仍需要在**安静机器**上、以 tracer 为准逐次推进;期间机器上另有别人的客户端
+  (`Minecraft* 1.21.6 - Singleplayer`、`Minecraft* 26.1.2`),按钮查找会(正确地)拒绝在两个匹配窗口之间猜。
