@@ -2013,3 +2013,28 @@ java -cp <tools> kynarain.cn.optifineoforge.optifine.SrgResidue joined-1.21.tsrg
 这件事因此仍然独立存在,下一轮仍要先把"选中行 → 点 Play"做成确定性步骤(本轮已知的线索:Play 在未选中行时是禁用的,
 而我的行点击只有一部分能选中)。
 1.21 的 stderr 差异(46767 vs 记录 14141)仍挂着,机制假设见上一节,未做 A/B。
+
+### 用 `SrgResidue` 的清单**定点修 1.21 的崩溃**:两处修好并复验,第三处否掉了错误的修法
+
+有了完整清单(见上一节),这一轮不再靠崩溃撞,而是照清单修:
+
+1. **`ChunkMap$TrackedEntity` 整类保留运行期版本** —— 载荷那份调用 `MinecraftServer.m_7186_(I)I`
+   (SRG 名,运行期没有),崩在实体追踪的 tick 路径。重建时打印
+   `patch entries dropped for 1 class(es): [net/minecraft/server/level/ChunkMap$TrackedEntity]`,**该服务器侧崩溃消失**
+   (复跑 `logs\world-121-run11.txt`:崩溃报告从 **2 份降到 1 份**)。
+2. **`IntegratedServer.m_129918_()Z` 补成返回 false**(= "not published")—— 载荷 `GameRenderer` 在
+   `tryTakeScreenshotIfNeeded` 里调它,而 `GameRenderer` 是光影钩子、**不能**整类保留。补桩后那一处不再崩。
+3. **第三处(`m_182649_()Ljava/util/Optional;`,同一方法里紧接着的一行)我试了"把
+   `tryTakeScreenshotIfNeeded` 这个方法体保留运行期版本"—— 这个修法被否掉并已回退**,因为量到
+   `build-jars` 会因此**把整个类的 patch 条目丢掉**
+   (`patch entries dropped for 1 class(es): [net/minecraft/client/renderer/GameRenderer]`),
+   也就是 **OptiFine 的 `GameRenderer`(光影入口)根本不会被装进去** —— 那不是"修残留",而是**悄悄丢掉光影支持**。
+   这条已作为反例写进 keep 计划的注释里。
+   另外记一条判据:**对 `Optional` 这类返回对象的方法补空桩会返回 null**,调用方 `Optional.isEmpty()` 直接 NPE,
+   所以这一族不能用补桩糊过去。
+
+**下一轮的直接结论**:`tryTakeScreenshotIfNeeded` 里那三个 SRG 调用(以及 `DebugScreenOverlay` 对
+`IntegratedServer.m_306290_/m_304767_/m_129880_` 的调用)只能靠**定向改写**(把载荷里这些 `m_*` 引用改成运行期
+official 名,用同在 rig 里的 `SrgMemberMap`,`SrgResidue.classify()` 已经把"官方名是什么"算出来了)或者
+"带正确语义体的桩"来修,这是下一轮的第一件事。1.21 现在的状态是:能起世界、能 join、能加载光影包,
+**剩下 1 份客户端崩溃**(`m_182649_`)与若干未触发的残留。
