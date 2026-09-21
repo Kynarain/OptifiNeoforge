@@ -1855,3 +1855,41 @@ SRG 成员**:`ServerLevel.m_7654_()`(`Level.getServer()`)、`MinecraftServer.m_1
 是禁用的)。**因此 1.21 目前既不能记成"进世界",也不能记成"确认失败"**;下一步是把"先确认行被选中
 (用键盘 Down 选中后在截图/tracer 上确认)再点 Play"做成确定性步骤,并把 `Down+Enter` 这条纯键盘路作为主路。
 其余六条线在 ModelPart/IntegratedServer 改动后还没重跑建档光影(1.21.8 也换了整类保留)。
+
+### 1.21 已经**进到世界里**(joined the game),但随即死在同一个"缺 vanilla SRG 成员"的家族上 —— 这个家族不再用补桩处理
+
+入口现在稳定了:给菜单驱动加了"**没有确认世界列表真的起来了就不开始第二步**"的等待(`world-test-121.ps1` 的
+step 1b;1.20.4 那份同一处假设也一并补上),因为量到过"打开列表的点击在第一步的轮询窗口之后才被处理,
+于是第二步的全部尝试都花在标题界面上"。加了这个守卫之后的一次运行(`logs\world-121-run8.txt`):
+
+* 世界列表已就绪 → 行点击 + Play → `GenericMessageScreen` x3 → `ProgressScreen` → `LevelLoadingScreen`;
+* 标记:`Preparing spawn area` / `Preparing start region` / `Time elapsed` / `Loaded recipes+advancements` /
+  `Changing view distance to` / `Generating keypair`,并且 **`joined the game` = True**;
+* 光影包 `MakeUp-UltraFast-9.5e.zip` **loaded**;NullPointerException 0;
+* 但随后 **2 份崩溃报告**,而且都是同一个家族:
+
+```
+[Server thread] Description: Exception in server tick loop
+java.lang.NoSuchMethodError: 'int net.minecraft.server.MinecraftServer.m_7186_(int)'
+  at net.minecraft.server.level.ChunkMap$TrackedEntity.scaledRange(ChunkMap.java:1541)
+  at ...ChunkMap.addEntity -> ServerChunkCache.addEntity
+
+[Render thread] Description: Unexpected error
+java.lang.NoSuchMethodError: 'boolean net.minecraft.client.server.IntegratedServer.m_129918_()'
+  at net.minecraft.client.renderer.GameRenderer.tryTakeScreenshotIfNeeded(GameRenderer.java:1236)
+  at ...GameRenderer.render
+```
+
+加上上一轮的 `MinecraftServer.m_195518_()`(`isSaving()`),这已经是**三个**同类成员:都是 **vanilla 的 SRG 名字**、
+都被**运行期自己的类**(`ChunkMap$TrackedEntity`、`GameRenderer`)调用,而启动时用的那份运行期类里**都没有**。
+它们不在宽 classpath 的桩表里(别的 MC 版本的 jar 让"缺失"看不出来),而在收窄 classpath 那一次里它们是**被列出来
+的**(`m_7186_` 就在那张 46 条的清单里)—— 这正好互相印证:**缺陷不在载荷,而在我们启动用的运行期视图/命名视图
+不完整**。
+
+**因此这一类不再逐个补桩**,理由是语义:补桩给的是"默认体",而这两个方法的默认值会把功能悄悄弄坏 ——
+`m_7186_(I)I` 是实体追踪距离的缩放(`scaledRange`),返回 0 会让实体追踪直接失效;`m_129918_()Z` 是
+`isPublished` 一类的状态查询,返回 false 也不是事实。**正确修法是让运行期真的带上这些成员**(或让载荷与运行期在
+命名上对齐),这属于比"每条线一张补桩表"更深的修复,已作为本轮的结论与下一步留在这里。
+
+**现状小结(如实)**:1.21 现在能起世界、能 join、能加载光影包,但会在 join 之后的 tick 循环里因缺成员崩溃,
+所以**不能记成绿**。其余六条 1.21.x 线在 ModelPart / IntegratedServer 改动之后还没重跑建档光影。
