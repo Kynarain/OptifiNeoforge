@@ -421,6 +421,15 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		addFirstField(targets, KEEP_RUNTIME);
 		addFirstField(targets, RUNTIME_INTERFACES);
 		addFirstField(targets, STUBS);
+		// A traced class has to be a target even when there is no payload for it, because this transformer
+		// is only called for its targets. Measured on 1.20.4: net.minecraft.client.Minecraft is not in the
+		// index, so -Doptifineoforge.traceScreen=true produced no output at all and the tracer looked
+		// broken. The property is read here rather than through the constant below on purpose: TARGETS is
+		// initialised before those constants, so reading one would still see its default value and the
+		// widening would silently do nothing.
+		if(Boolean.getBoolean(TRACE_SCREEN)) {
+			targets.add(SCREEN_OWNER.replace('/', '.'));
+		}
 		LOGGER.info("Patched-class targets: " + swapped + " to swap, " + targets.size() + " in all");
 		return Set.copyOf(targets);
 	}
@@ -753,6 +762,70 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 					new String[] {TEXTURE_UTILS, REGISTER_CUSTOM_SPRITES});
 		}
 	}
+
+	/**
+	 * {@code -Doptifineoforge.traceScreen=true} prints every screen the client switches to, by injecting a
+	 * line at the start of {@code Minecraft.setScreen(Screen)}.
+	 *
+	 * <p>Ported from the 1.20.x branch, where it exists because a screenshot cannot settle "which screen is
+	 * the client on": measured on 1.20.4, two captures 70 seconds apart both looked like the Mojang loading
+	 * overlay while the game's own log showed texture atlases being built and the render thread alive in its
+	 * frame loop. Printing the screen name is the measurement that does not depend on what a window happens
+	 * to have painted, and it is the only way a run that ends before its first world frame says where it got
+	 * to.</p>
+	 *
+	 * <p>The print goes through {@code String.valueOf}, not {@code getClass().getName()}, and that is the
+	 * half of the port that was measured rather than copied: {@code setScreen} is called with null as a
+	 * matter of course, NeoForge's {@code ClientHooks.popGuiLayer} does it whenever the last GUI layer is
+	 * popped, and the unconditional {@code getClass()} then threw
+	 * {@code NullPointerException: Cannot invoke "Object.getClass()" because "<parameter1>" is null} one
+	 * second <em>after</em> a successful join on 1.20.6 - which is why every tracer log of that rig stopped
+	 * at {@code ReceivingLevelScreen}. {@code valueOf} answers "null" instead, needs no branch (so no stack
+	 * map frames have to be computed for the injected sequence) and keeps the class name in the line for
+	 * every screen that is not null.</p>
+	 *
+	 * <p>It runs before the payload lookup, next to the other tracers, because the class it instruments is
+	 * often one OptiFine does not patch at all: {@code net.minecraft.client.Minecraft} has no payload copy
+	 * on several lines, so a tracer called only from the swap path would never have run - measured on 1.20.4,
+	 * where the property produced no output at all until the target was registered from the property.</p>
+	 */
+	private static void traceScreen(ClassNode input) {
+		if(!Boolean.getBoolean(TRACE_SCREEN) || !SCREEN_OWNER.equals(input.name)) {
+			return;
+		}
+		for(MethodNode method : input.methods) {
+			if(!SET_SCREEN.equals(method.name) || !SET_SCREEN_DESC.equals(method.desc) || method.instructions == null) {
+				continue;
+			}
+			InsnList trace = new InsnList();
+			trace.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "err", "Ljava/io/PrintStream;"));
+			trace.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
+			trace.add(new InsnNode(Opcodes.DUP));
+			trace.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false));
+			trace.add(new LdcInsnNode("OPF-SCREEN "));
+			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+					"(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+			trace.add(new VarInsnNode(Opcodes.ALOAD, 1));
+			trace.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/lang/String", "valueOf",
+					"(Ljava/lang/Object;)Ljava/lang/String;", false));
+			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+					"(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
+					"()Ljava/lang/String;", false));
+			trace.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println",
+					"(Ljava/lang/String;)V", false));
+			method.instructions.insert(trace);
+			LOGGER.info("Tracing every screen switch in Minecraft.setScreen");
+		}
+	}
+
+	/** The switch the screen tracer hangs on; read from the property, never from a constant. */
+	private static final String TRACE_SCREEN = "optifineoforge.traceScreen";
+
+	/** The class that owns the screen switch, and the member it happens in. */
+	private static final String SCREEN_OWNER = "net/minecraft/client/Minecraft";
+	private static final String SET_SCREEN = "setScreen";
+	private static final String SET_SCREEN_DESC = "(Lnet/minecraft/client/gui/screens/Screen;)V";
 
 	/**
 	 * Inserts a list after an instruction, which {@code InsnList.insert(location, ...)} does not do.
@@ -1222,6 +1295,11 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		// What that cost, on the line it was measured: the runtime's own ModelWrapper calls
 		// UnbakedGeometry.bake(..., ContextMap), a method only UnbakedGeometryExtension declares.
 		injectPlannedInterfaces(input);
+		// And the tracers, also before the payload lookup, for the same reason the interface injection sits
+		// here: the classes most worth tracing are often ones OptiFine does not patch at all - measured on
+		// 1.20.4, net.minecraft.client.Minecraft has no payload copy, so a tracer called only from the swap
+		// path never ran and the screen switch it was supposed to report produced no output at all.
+		traceScreen(input);
 		ClassNode patched;
 		try(InputStream stream = PatchedClassTransformer.class.getResourceAsStream(PREFIX + input.name + ".class")) {
 			if(stream == null) {
