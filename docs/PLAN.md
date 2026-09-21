@@ -1723,3 +1723,25 @@ donor 里 `BlockEntity` 已经是 NeoForge 的形状
 3. 再不然回退这条线的 `reparent` 计划里 `BlockEntity` 的那一条,并量一次验收(代价是 NeoForge 的扩展接口丢失)。
 
 无论哪条,**在三条线回到四项验收全绿之前不发布**;旧 jar 都在 `*.pre-port-20260922`。
+
+### 修:计划里的运行期成员桩在**换装的类**上被丢掉(三条红线的真正原因)
+
+`decide()` 抓取载荷**之前**先无条件调 `stubMissing()`,因为有些桩的宿主是永不换装的运行期类 —— 但紧接着
+`input.methods = methods` 这一句会用载荷的成员表**整体替换**运行期那份,刚加进去的桩跟着一起没了。
+`stubMissing()` 只补缺的(幂等),所以在替换之后**再调一次**就是修法(已提交)。
+
+量测(2026-09-22,三条线崩点相同):
+
+* 修复计划把 `net/minecraft/world/level/block/entity/BlockEntity` 改挂到
+  `net/neoforged/neoforge/attachment/AttachmentHolder`;载荷的 `BlockEntity.<init>` 调
+  `this.gatherCapabilities()`,该方法原本来自被改挂丢掉的 Forge 父类(运行期的 `BlockEntity` 自己也没有);
+* 该成员**确实在**交给装载器的桩表里(交付 jar 内 `optifineoforge/stubs.txt` 有这一行,`javap` 验过),
+  第一次 `stubMissing()` 也确实把它加到了运行期节点上,然后被那句赋值扔掉 —— 所以"桩在 jar 里却仍然
+  NoSuchMethodError" ;
+* 症状:`Initializing game` 阶段
+  `NoSuchMethodError: 'void net.minecraft.world.level.block.entity.BlockEntity.gatherCapabilities()'`
+  at `BlockEntity.<init>(BlockEntity.java:59/60)`;
+* 修后三条线的四项验收:**1.21** STARTED/user yes/sound yes/崩溃 0/stderr **14141 = 记录值**;
+  **1.21.1**、**1.21.3** 同样全绿(0 崩溃、stderr 0 = 记录值)。修前同一处 OptiFine 只走到 28/27/27 行,
+  修后 **377/232/225** 行 —— 也就是说之前那三条线其实是"启动 1 秒就崩"。
+* 1.20.x 分支有同一处形状(`stubMissing` 在换装赋值之前),已在该分支单独修并复验。

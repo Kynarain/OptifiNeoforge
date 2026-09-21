@@ -1547,6 +1547,23 @@ public final class PatchedClassTransformer implements ITransformer<ClassNode> {
 		}
 		input.fields = fields;
 		input.methods = methods;
+		// The planned runtime stubs have to be applied a second time here, and this is measured rather than
+		// defensive. `decide()` calls stubMissing() before it even looks at the payload, because some stub
+		// owners are classes that are never swapped - but for a class that IS swapped, the assignment above
+		// replaces the runtime's whole member list with the payload's, and the stub added a moment earlier goes
+		// with it. stubMissing() only adds what is absent, so calling it again is idempotent.
+		//
+		// Measured on 1.21 / 1.21.1 / 1.21.3 (2026-09-22): the repair plan reparents
+		//   net/minecraft/world/level/block/entity/BlockEntity -> net/neoforged/neoforge/attachment/AttachmentHolder
+		// and the payload's BlockEntity.<init> calls this.gatherCapabilities(), a method that came from the Forge
+		// superclass the reparent drops (the runtime's BlockEntity does not declare it either). The member was in
+		// the stub list the loader received for those lines, the first stubMissing() did add it to the runtime
+		// node, and this assignment threw it away again - the client died at "Initializing game" with
+		//   java.lang.NoSuchMethodError: 'void net.minecraft.world.level.block.entity.BlockEntity.gatherCapabilities()'
+		//   at BlockEntity.<init>(BlockEntity.java:59/60)
+		// (crash-2026-09-22_03.56.08-client.txt and its 1.21.1/1.21.3 twins, all after the stub was verified to be
+		// inside the shipped jar's optifineoforge/stubs.txt).
+		stubMissing(input);
 		keepRuntimeBodies(input, originalMethods);
 		LOGGER.info("Replaced " + input.name.replace('/', '.') + " with OptiFine's patched version ("
 				+ fields.size() + " fields, " + methods.size() + " methods)");
