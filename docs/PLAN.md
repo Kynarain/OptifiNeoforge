@@ -1795,3 +1795,16 @@ java.lang.IllegalStateException: Cannot get config value before config is loaded
    (`vertex_shader`/`fragment_shader`),而这条线的 OptiFine 构建仍是旧格式 —— 这看起来是 **OptiFine 版本与 MC
    版本之间的不兼容**,不是我们加载器制造的;要如实定论还需一次对照(把同一份 OptiFine 直接放进同版本 NeoForge
    跑一次,看是否同样报错),本轮没做。
+
+#### 1.21 的 quick play 沉默:一个被证伪的假设,如实记下
+
+上面那条"1.21 的 quick play 什么都不做"我试着用"存档是旧的/更新的版本"解释:那个 gameDir 里
+`saves\RigSession\level.dat` 的时间戳是 **2025-12-13 17:51:43**,看起来像上一个版本留下的存档。**已量测并证伪**:
+删掉整个 `saves\RigSession` 再跑一次,harness 日志写的是
+`save: created RigSession from ...\templates\level-1.20.4.dat`,而新建出来的 `level.dat` 仍是那个 2025-12-13
+时间戳 —— 那只是**模板文件自己的 mtime**(`Copy-Item` 保留原时间戳),存档本身每次都是从模板新建的、
+DataVersion 就是 1.20.4 的,和其他六条线完全一样。结果还是 `world NO`、0 region 文件。
+
+所以:**两条解释都已排除**(join 钩子缺失、存档版本),这一条仍是线特有的、未解释的 quick play 沉默;
+下一步按 1.20.4 已经成功的办法做——用菜单驱动进世界(真实光标点击 + 从客户端字节码读出的世界列表几何),
+而不是继续在 quick play 上花时间。
