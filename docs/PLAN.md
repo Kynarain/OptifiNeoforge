@@ -1659,3 +1659,45 @@ payload 不存在时才跑 `prepare-line`,否则 `plan\member-restores.txt` 与 
   `MemberRestorePlan`(即 `prepare-line.ps1` 第 3 步)用的都是它,而不是本分支的代码**。9/19 生成的那些
   计划就是这么来的(1.21.4 = 316 条目 / 83 donor,与那一版一致)。本轮所有重建都显式把"从当前源码编译的
   那一份"放在 `-cp` 最前面,所以交付的计划确实来自本分支;这条陷阱本身没有动(不在授权范围内)。
+
+### 移植后的**真机验收**:七条线里 4 绿 3 红线(如实记录,未发布)
+
+上面的移植全部是离线量测(`javap` / `StackAudit` / 生成器输出)。随后在真机上按项目自己的四项验收标准
+逐条跑了一遍(`retest-all.ps1 -Only 1.21,1.21.1,1.21.3,1.21.4,1.21.6,1.21.7,1.21.8`,
+记录在 rig 的 `logs\retest-121x-after-port.txt`),结果是:
+
+| 线 | 判定 | user | sound | 崩溃报告 | stderr |
+|---|---|---|---|---|---|
+| 1.21 | **FAILED** | yes | **NO** | **1** | 0(记录值 14141) |
+| 1.21.1 | **FAILED** | yes | **NO** | **1** | 0 = 记录值 |
+| 1.21.3 | **FAILED** | yes | **NO** | **1** | 0 = 记录值 |
+| 1.21.4 | STARTED | yes | yes | 0 | 0 = 记录值 |
+| 1.21.6 | STARTED | yes | yes | 0 | 0 = 记录值 |
+| 1.21.7 | STARTED | yes | yes | 0 | 0 = 记录值 |
+| 1.21.8 | STARTED | yes | yes | 0 | 0 = 记录值 |
+
+三条失败线的崩溃点完全一致(1.21 / 1.21.1 / 1.21.3,`crash-2026-09-22_03.38/03.40/03.42-client.txt`):
+
+```
+Description: Initializing game
+java.lang.NoSuchMethodError: 'void net.minecraft.world.level.block.entity.BlockEntity.gatherCapabilities()'
+  at net.minecraft.world.level.block.entity.BlockEntity.<init>(BlockEntity.java:59/60)
+  at net.minecraft.world.level.block.entity.BaseContainerBlockEntity.<init>(BaseContainerBlockEntity.java:33)
+  at net.minecraft.world.level.block.entity.RandomizableContainerBlockEntity.<init>(...)
+  at net.minecraft.world.level.block.entity.ShulkerBoxBlockEntity.<init>(...)
+  at net.minecraft.client.renderer.BlockEntityWithoutLevelRenderer.lambda$static$0(...)
+```
+
+**已经量到的部分**:载荷的 `BlockEntity` 是 Forge 时代的编译产物
+(`extends net.minecraftforge.common.capabilities.CapabilityProvider implements net.minecraftforge.common.extensions.IForgeBlockEntity`),
+它的构造器里对**自己**调用 `gatherCapabilities()`(该方法是 Forge 那个父类提供的);而交付出去的
+donor 里 `BlockEntity` 已经是 NeoForge 的形状
+(`extends net.neoforged.neoforge.attachment.AttachmentHolder implements IBlockEntityExtension`)——
+也就是说这个调用在运行期的继承链里没有了着落。Forge 侧的壳类**不是**缺的:交付 jar 里
+`net/minecraftforge/common/capabilities/CapabilityProvider` 存在且**有** `gatherCapabilities()`
+(`javap` 验过,`work\1.21\stubs` 与 `stubs.pre-port` 都有,86 → 90 个类)。
+
+**尚未量到的部分**:这是"移植引入的"还是"重建时重新生成壳/计划带出来的",本轮没有做 A/B 对照
+(可行的做法:把 `jars-1.21\OptifiNeoforge-1.0.0+mc1.21-registered.jar.pre-port-20260922` 与现在这份
+逐类对照,尤其是 `BlockEntity` 的超级类/接口与 `reparent` 计划)。在查清之前,**这条分支不发布**;
+三条线的旧 jar 都留在 `*.pre-port-20260922`,可以随时对照或回退。
