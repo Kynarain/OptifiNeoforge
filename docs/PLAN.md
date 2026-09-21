@@ -1940,3 +1940,51 @@ official 名(`add-line.ps1` 的 `-SrgMappings` + `-ObfOfficial`,配套 `proguard
    —— 1.21.x 从未做过这一步,也没有对应的 `obf-official-1.21*.tsrg`;
 3. 先在**一条**已有世界+光影记录的线上试(1.21.4 或 1.21.8),重跑验收 + 建档光影,用它判断"残留清干净之后
    整族崩溃是否消失"。**这条分支接下来不再往 `stub-additions` 里加这族成员**(默认体会把功能悄悄弄坏)。
+
+### SRG 残留的**预测性审计**跑起来了:1.21 这条线 114 条残留(而且三条崩溃成员都在名单里),其余线 0 条
+
+上一轮把"载荷里残留少量 SRG 名"这件事量到了一半。这一轮用 rig 里**早就有的** `SrgResidue` 工具把它量完整了:
+先给 1.21 建表(neoform zip 里的 `config/joined.tsrg` + `proguard-to-tsrg.ps1` 从 Mojang mappings 生成的
+`obf-official-1.21.tsrg`,8269 类 / 37906 字段 / 73419 方法),然后跑:
+
+```
+java -cp <tools> kynarain.cn.optifineoforge.optifine.SrgResidue joined-1.21.tsrg <neoform-merged> \
+     work\1.21\optifine-patched.jar work\1.21\runtime-1.21.jar
+```
+
+| 线 | SRG 形状引用 | 载荷自己声明的 SRG 名 | residue |
+|---|---|---|---|
+| **1.21** | **306** | **84** | **114 distinct**(全部 "no table entry") |
+| 1.21.4 | 0 | 0 | **none - every SRG reference resolves to a runtime member** |
+
+关键点:本轮真机上崩掉的三个成员**都在名单里** ——
+`Gui -> MinecraftServer.m_195518_()Z`、`GameRenderer -> IntegratedServer.m_129918_()Z`、
+`ChunkMap$TrackedEntity -> MinecraftServer.m_7186_(I)I`。也就是说这个审计**能先于崩溃把家族列出来**
+(完整清单在 `logs\srgresidue-1.21.txt`,306 条引用 / 114 条去重,去重后候选 63 条)。
+**而且 1.21.4 是干净的** —— 所以这不是整条分支的问题,而是**1.21.0 这条线自己的 OptiFine 构建
+(`OptiFine_1.21_HD_U_J1_pre9`)是个混合体:大部分成员是 official 名,却残留了这批 SRG 名引用**。
+
+#### 两条"看起来能修"的路,都量过并**否掉**了
+
+1. **换成更新的 OptiFine 构建** —— 不行:1.21.0 的正式版 `OptiFine_1.21_HD_U_J1.jar` 在 optifine.net 上
+   已下架(`File not found.`),镜像(`bmclapi2`)对 `1.21/HD_U_J1` 与 `1.21/HD_U_J1_pre9` 都是 404。
+2. **照 1.20.2/1.20.4 那样做 `SrgRemap`** —— 不行,而且这次是**量出来的**不行:`prepare-line -SrgMappings
+   joined-1.21.tsrg -ObfOfficial obf-official-1.21.tsrg` 跑完的输出是
+   `rewrote 0 method and 0 field names, 34261 could not be resolved, 0 renames refused`;新载荷还变小了
+   (5420805 字节),plan 暴涨到 **6167 条 / 388 donor**(对照原来的 381/99)——因为 `SrgRemap` 的输入假定是
+   obf/SRG 命名的载荷,而这条线的载荷**大部分已经是 official 名**,表里没有对应项,于是"什么都没改"。
+   这次实验的载荷与 runtime 视图**已回退**(`*.pre-srgremap`)。
+
+#### 剩下的路(下一轮的候选,按代价排序)
+
+1. **针对残留本身修**:114 条去重里有一大批是**载荷自己内部类之间的自引用**
+   (`RenderSystem$AutoStorageIndexBuffer` 调自己的 `f_157469_` 等 9 条、`GlStateManager$*` 一族、
+   `ParticleEngine$ParticleDefinition` 一族),只要载荷那份类被装进去就能自己解析;真正跨到**运行期**的
+   集中在少数几个类:`Gui`、`ChunkMap$TrackedEntity`、`GameRenderer`、`DebugScreenOverlay`、`TitleScreen`、
+   `ClientLevel`、`ClientLevel$EntityCallbacks`、`VertexBuffer`/`VertexConsumer`、`ModelPart`
+   (`ModelPart.m_171324_` 就是 `getChild`,而我们已经把该类整份换成运行期的了)。
+   可行的做法是**按 owner 类做定向改写**(用同在 rig 里的 `SrgMemberMap`,把载荷里这些 `m_*/f_*` 引用改写成
+   运行期的 official 名),而不是按 obf 名字空间整体 remap —— 这也是 `SrgResidue` 的 `classify()` 已经在做的判断,
+   只差一个写回步骤。
+2. 或者对列表里那几个"OptiFine 补丁并非关键"的类(如 `ChunkMap$TrackedEntity`)先按整类保留处理,把崩溃面缩小,
+   再逐条处理剩余 —— 但这是**权宜**,不解决 `Gui` 这种必然要装载荷的类。
