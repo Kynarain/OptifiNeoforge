@@ -44,6 +44,7 @@ import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.MultiANewArrayInsnNode;
 
 /**
  * Works out which members OptiFine's replacements drop, before the game runs.
@@ -718,7 +719,11 @@ public final class MemberRestorePlan {
 				INITIALISER_PREFIX + field.name, "(L" + internalName + ";)V", null, null);
 		initialiser.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
 		for(AbstractInsnNode step : value) {
-			initialiser.instructions.add(step);
+			AbstractInsnNode copy = copyOf(step, field, "initialiser", value);
+			if(copy == null) {
+				return null;
+			}
+			initialiser.instructions.add(copy);
 		}
 		initialiser.instructions.add(new FieldInsnNode(Opcodes.PUTFIELD, internalName, field.name, field.desc));
 		initialiser.instructions.add(new InsnNode(Opcodes.RETURN));
@@ -729,6 +734,48 @@ public final class MemberRestorePlan {
 		initialiser.maxStack = 8;
 		initialiser.maxLocals = 1;
 		return initialiser;
+	}
+
+	/**
+	 * A detached copy of one instruction of a lifted run, or {@code null} when its kind cannot be copied.
+	 *
+	 * <p>A copy, and never the node itself, because {@link InsnList#add(AbstractInsnNode)} <em>moves</em>
+	 * the node it is handed: an ASM instruction list is an intrusive linked list, so adding a node that
+	 * already belongs to the runtime class's constructor takes it out of that constructor. The donor is
+	 * built from that same node - it is the code every later field is scanned against, and the constructors
+	 * a donor carries are copied out of it - so moving instructions out of it corrupts the rest of the
+	 * class's donors. Measured on 1.21.8: the plan carried {@code ClientLevel.dayTimeFraction}, an earlier
+	 * field's helper took the instructions around its store, the store itself then could not be found in
+	 * the constructor, and the field shipped with no initialiser at all - the loss is real either way,
+	 * because a field the plan restores is one the payload's own code never assigns.</p>
+	 */
+	private static AbstractInsnNode copyOf(AbstractInsnNode insn, FieldNode field, String what,
+			List<AbstractInsnNode> value) {
+		AbstractInsnNode copy = null;
+		if(insn instanceof InsnNode plain) {
+			copy = new InsnNode(plain.getOpcode());
+		} else if(insn instanceof MethodInsnNode call) {
+			copy = new MethodInsnNode(call.getOpcode(), call.owner, call.name, call.desc, call.itf);
+		} else if(insn instanceof FieldInsnNode stored) {
+			copy = new FieldInsnNode(stored.getOpcode(), stored.owner, stored.name, stored.desc);
+		} else if(insn instanceof TypeInsnNode type) {
+			copy = new TypeInsnNode(type.getOpcode(), type.desc);
+		} else if(insn instanceof LdcInsnNode constant) {
+			copy = new LdcInsnNode(constant.cst);
+		} else if(insn instanceof IntInsnNode immediate) {
+			copy = new IntInsnNode(immediate.getOpcode(), immediate.operand);
+		} else if(insn instanceof InvokeDynamicInsnNode dynamic) {
+			copy = new InvokeDynamicInsnNode(dynamic.name, dynamic.desc, dynamic.bsm, dynamic.bsmArgs.clone());
+		} else if(insn instanceof VarInsnNode var) {
+			copy = new VarInsnNode(var.getOpcode(), var.var);
+		} else if(insn instanceof MultiANewArrayInsnNode array) {
+			copy = new MultiANewArrayInsnNode(array.desc, array.dims);
+		}
+		if(copy == null) {
+			refuse(field, what, "an instruction of kind " + insn.getClass().getSimpleName()
+					+ " has no copy here", value);
+		}
+		return copy;
 	}
 
 	/**
@@ -747,6 +794,24 @@ public final class MemberRestorePlan {
 	 * <p>The wrapper's own {@code aload_0} is deliberately not simulated: the question is only what the
 	 * lifted run does, and a run that reads {@code this} freely starts from a stack of zero here, which
 	 * is exactly how it will be entered.</p>
+	 *
+	 * <p>The 1.20.x form of this gate recognised two <em>structures</em> instead - one instruction that
+	 * leaves a value, or a {@code new}/{@code dup}/{@code <init>} group - and that is narrower than the
+	 * question it asks, measurably so on this branch. Measured against the generator this replaces, on
+	 * the same pair of jars, the structural form lost 3 initialisers on 1.21 / 1.21.1 / 1.21.3 and 6-7 on
+	 * 1.21.6 / 1.21.7 / 1.21.8, every one of them a run that leaves exactly one value and is neither of
+	 * the two shapes:</p>
+	 *
+	 * <pre>MAP_CODEC = Variant.MAP_CODEC.xmap(f, f)
+	 *   getstatic Variant.MAP_CODEC; invokedynamic; invokedynamic; invokevirtual MapCodec.xmap
+	 * STACK_WALKER = StackWalker.getInstance(Option.RETAIN_CLASS_REFERENCE)
+	 *   getstatic Option.RETAIN_CLASS_REFERENCE; invokestatic StackWalker.getInstance
+	 * TITLE = Component.translatable("options.videoTitle")
+	 *   ldc "options.videoTitle"; invokestatic Component.translatable</pre>
+	 *
+	 * <p>the first of which the comment on {@link #invoke} records as fatal on this very line (every
+	 * blockstate fails with a null codec). So the structural cases are kept as the explicitly named first
+	 * test and the run is then simulated, which is what this method claims to do either way.</p>
 	 */
 	private static boolean assemblesOneValue(List<AbstractInsnNode> value, FieldNode field, String what) {
 		// Two shapes are lifted, and both are recognised by their structure rather than by arithmetic.
@@ -767,18 +832,49 @@ public final class MemberRestorePlan {
 		// and a group whose constructor call is missing or belongs to another class is the same class of
 		// mistake made differently. A field left at its default fails visibly in one place; a lifted run
 		// that is wrong fails as a class the JVM will not load.
-		if(value.size() == 1) {
-			Integer effect = stackEffect(value.get(0));
-			if(effect != null && effect == 1) {
+		if(value.size() == 1 || isConstructionGroup(value)) {
+			String structural = runProblem(value);
+			if(structural == null) {
 				return true;
 			}
-			return refuse(field, what, "its single instruction does not leave exactly one value", value);
+			return refuse(field, what, structural, value);
 		}
-		if(isConstructionGroup(value)) {
-			return true;
+		String problem = runProblem(value);
+		if(problem != null) {
+			return refuse(field, what, problem, value);
 		}
-		return refuse(field, what, "its run is neither one value-producing instruction nor a"
-				+ " new/dup/constructor group", value);
+		return true;
+	}
+
+	/**
+	 * Why a lifted run would not load as one value-producing expression, or {@code null} when it would.
+	 *
+	 * <p>This is the simulation itself, and it is shared by the acceptance rule and by the walk that
+	 * looks for a run: the walk can only recognise a complete run if it can ask the same question, and
+	 * asking a different one in each place is how a complete expression came to be walked past.</p>
+	 */
+	private static String runProblem(List<AbstractInsnNode> value) {
+		if(value.isEmpty()) {
+			return "it is empty";
+		}
+		if(endsUnconstructed(value)) {
+			// `new` alone, or `new; dup`: the right height with a reference that no constructor has
+			// turned into an object yet, which the verifier refuses at the store.
+			return "it ends on a reference that is created but not constructed";
+		}
+		int height = 0;
+		for(AbstractInsnNode insn : value) {
+			Integer effect = stackEffect(insn);
+			if(effect == null) {
+				return "the effect of " + insn.getClass().getSimpleName().replace("InsnNode", "")
+						+ " is not known here";
+			}
+			if(effect < 0 && height + effect < 0) {
+				return "it takes " + (-effect) + " value(s) with only " + height + " on the stack";
+			}
+			height += effect;
+		}
+		return height == 1 ? null : "it leaves " + height + " value(s) rather than one";
 	}
 
 	/** Whether a run is exactly {@code new X; dup; X.<init>(...)}. */
@@ -954,7 +1050,20 @@ public final class MemberRestorePlan {
 				}
 				List<AbstractInsnNode> value = valueRun(insn);
 				if(value != null) {
-					return staticInitialiserFrom(internalName, field, value);
+					MethodNode fromRun = staticInitialiserFrom(internalName, field, value);
+					if(fromRun != null) {
+						return fromRun;
+					}
+				}
+				// The same fallback the instance path carries: a construction the requirement walk cannot
+				// complete on its own - `new X; dup; <args>; X.<init>` meets the requirement at the `new`
+				// and the `dup` then takes it below zero - is looked for forward from its own creation.
+				List<AbstractInsnNode> fromNew = objectCreationRun(insn, field);
+				if(fromNew != null) {
+					MethodNode created = staticInitialiserFrom(internalName, field, fromNew);
+					if(created != null) {
+						return created;
+					}
 				}
 			}
 		}
@@ -1028,6 +1137,12 @@ public final class MemberRestorePlan {
 	 * because the constant alone satisfies the requirement. Anything whose effect is not known here
 	 * ends the walk, and a read of a local other than the receiver does too - the value would depend on
 	 * code outside the run, which is what the instance path refuses as well.</p>
+	 *
+	 * <p>A completed {@code new}/{@code dup}/{@code <init>} group is the one run that satisfies the
+	 * requirement without ending on a value, and it is accepted on its structure for that reason - see
+	 * the note inside the loop. Without it the port lost
+	 * {@code RenderSystem.PIPELINE_MODIFIERS} on 1.21.8 and 1.21.6, measured against the generator this
+	 * replaces on the same pair of jars.</p>
 	 */
 	private static List<AbstractInsnNode> valueRun(AbstractInsnNode store) {
 		List<AbstractInsnNode> slice = new ArrayList<>();
@@ -1051,37 +1166,22 @@ public final class MemberRestorePlan {
 			if(needed < 0) {
 				return null; // more values than the store can consume: not one expression
 			}
-			if(needed >= 0 && !hasValueAt(slice)) {
-				continue; // balanced, but the value is not produced yet: keep walking
+			if(needed == 0 && runProblem(slice) == null) {
+				// The requirement is met and the run is one expression: the receiver the wrapper pushes is
+				// never part of it, and the run neither takes a value nobody pushed nor ends on a
+				// reference that is not constructed yet. Asked this way rather than by "does the last
+				// instruction leave a value", which is a different question and refused real fields - a
+				// call that returns a value contributes a *negative* effect when it consumes more than it
+				// produces, so `Variant.MAP_CODEC.xmap(f, f)` and `StackWalker.getInstance(option)` were
+				// both walked past. See the note on the gate for what that cost.
+				return slice;
 			}
-			return slice;
+			// Either the requirement is not met yet, or it is met by a run that is not one expression -
+			// keep walking. A run that has swallowed the store's own receiver does not improve with more
+			// instructions: the next one that pushes a value takes the requirement below zero, which ends
+			// the walk on the line above.
 		}
 		return null;
-	}
-
-	/**
-	 * Whether the run now ends with the value produced, rather than with something consumed.
-	 *
-	 * <p>A run is complete when its last instruction leaves a value - {@code new}, a constant, a call
-	 * with a return type - and not when it consumes one. Balancing alone cannot tell the difference, and
-	 * on 1.20.6's {@code SectionRenderDispatcher$RenderSection} it did not: the run
-	 * {@code [aload_0, invokestatic Collectors.toMap, invokeinterface Stream.collect]} balances against
-	 * the store, but the {@code invokeinterface} <em>consumes</em> - it is the tail of an expression
-	 * whose stream source has been left behind, and the value it leaves on the stack is the wrong one
-	 * for the field. Walking on from there takes the rest of the expression, and the check is what makes
-	 * the walk keep going instead of stopping one instruction short.</p>
-	 *
-	 * <p>For {@code this.lastState = Optional.empty()} and {@code this.layerManager = new GuiLayerManager()}
-	 * the last instruction already produces - {@code invokestatic Optional.empty} and
-	 * {@code invokespecial GuiLayerManager.<init>} - so both stop where they should.</p>
-	 */
-	private static boolean hasValueAt(List<AbstractInsnNode> slice) {
-		if(slice.isEmpty()) {
-			return false;
-		}
-		AbstractInsnNode last = slice.get(slice.size() - 1);
-		Integer effect = stackEffect(last);
-		return effect != null && effect > 0;
 	}
 
 	/**
@@ -1314,10 +1414,28 @@ public final class MemberRestorePlan {
 	 */
 	private static MethodNode staticInitialiserFrom(String internalName, FieldNode field,
 			List<AbstractInsnNode> value) {
+		for(AbstractInsnNode step : value) {
+			if(step instanceof VarInsnNode) {
+				// A static helper has no arguments and therefore no local 0, so a read of any slot either
+				// belongs to the method the run was lifted out of - measured on 1.21.6 and 1.21.7, where
+				// RenderSystem.enableStencil(StencilTest) assigns STENCIL_TEST from its own parameter and
+				// the helper shipped as `aload_0; putstatic STENCIL_TEST`, which the verifier rejects with
+				// "Trying to get an inexistant local variable 0" - or to a local built outside the run.
+				// The instance form allows the same read because its wrapper pushes the receiver into
+				// slot 0; here there is nothing to push.
+				refuse(field, "static initialiser", "it reads local variable " + ((VarInsnNode) step).var
+						+ ", and a static helper has no local to read", value);
+				return null;
+			}
+		}
 		MethodNode initialiser = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
 				INITIALISER_PREFIX + field.name, "()V", null, null);
 		for(AbstractInsnNode step : value) {
-			initialiser.instructions.add(step);
+			AbstractInsnNode copy = copyOf(step, field, "static initialiser", value);
+			if(copy == null) {
+				return null;
+			}
+			initialiser.instructions.add(copy);
 		}
 		initialiser.instructions.add(new FieldInsnNode(Opcodes.PUTSTATIC, internalName, field.name, field.desc));
 		initialiser.instructions.add(new InsnNode(Opcodes.RETURN));
