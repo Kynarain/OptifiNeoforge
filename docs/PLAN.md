@@ -1988,3 +1988,19 @@ java -cp <tools> kynarain.cn.optifineoforge.optifine.SrgResidue joined-1.21.tsrg
    只差一个写回步骤。
 2. 或者对列表里那几个"OptiFine 补丁并非关键"的类(如 `ChunkMap$TrackedEntity`)先按整类保留处理,把崩溃面缩小,
    再逐条处理剩余 —— 但这是**权宜**,不解决 `Gui` 这种必然要装载荷的类。
+
+#### 收尾状态与一个**新的差异**(如实记,下一轮必须查)
+
+那两条被否掉的路都留下了痕迹,已清理并复验:
+
+* `SrgRemap` 那次实验产生的载荷与 runtime 视图**已回退**(`work\1.21\*.pre-srgremap`),失败实验写下的
+  plan(6167 条 / 388 donor)**已重新生成**:用本分支源码编译的生成器重算 + 清空 donor 目录后重算,
+  现在是 **plan 381 条 / donor 99 个 / keep plan 3 行 / interface plan 13 行 / access plan 255 条**,
+  与这条线此前可用的那一份同量级,registered jar 已重建(`add-line.ps1 -SkipInstall`)。
+* 重建后 1.21 的四项验收仍然通过(STARTED / user yes / sound yes / 崩溃 0),**但 stderr 从记录值
+  **14141** 变成 **46767** 字节**([OptiFine] 241 行)。这是一个**新的、尚未解释的差异**,必须先查清再谈这条线是绿
+  —— 最可能的原因是:这一次的 plan/donor 是用**本分支源码**的生成器重算的,而此前那次用的是
+  `tools-classpath.txt` 里那份**别的分支时代**的生成器(`tools-patch-keepfix`,上一轮已记录它"把自己屏蔽了"),
+  两份生成器产出的计划不同 ⇒ 载荷里被"补回来"的成员不同 ⇒ OptiFine 的 Reflector 噪声(非致命日志)随之变化。
+  这条假设下一轮用一次 A/B 就能定(同一个载荷,两份生成器各出一份 plan,分别重建后比 stderr 与
+  `logs\srgresidue-1.21.txt` 的两组数字)。
