@@ -1893,3 +1893,32 @@ java.lang.NoSuchMethodError: 'boolean net.minecraft.client.server.IntegratedServ
 
 **现状小结(如实)**:1.21 现在能起世界、能 join、能加载光影包,但会在 join 之后的 tick 循环里因缺成员崩溃,
 所以**不能记成绿**。其余六条 1.21.x 线在 ModelPart / IntegratedServer 改动之后还没重跑建档光影。
+
+### 定位到本轮最重要的结论:**这条分支的载荷是 SRG 命名,而启动用的运行期类不是** —— 1.20.2/1.20.4 当年靠 `SrgRemap` 解决过同一件事,1.21.x 从没做过
+
+上一节那三个缺失成员(`MinecraftServer.m_7186_(I)I`、`m_195518_()Z`、`IntegratedServer.m_129918_()Z`)
+一直被当作"我们的运行期视图不完整"。这一轮把它查到了底,量测如下:
+
+| 检查 | 结果 |
+|---|---|
+| 四条线的构建视图 `work\<mc>\runtime-<mc>.jar`(`javap`) | 1.21 / 1.21.1 / 1.21.3 / 1.21.8 **都没有**这三个成员 |
+| 启动用的客户端 jar `libraries\net\minecraft\client\1.21-20240613.152323\client-1.21-...-srg.jar` | 有 `MinecraftServer`、`IntegratedServer`,但 **同样没有** `m_7186_` / `m_195518_` / `m_129918_` |
+| 同一个类的字段名 | `private volatile boolean isSaving` —— **Mojang 风格的名字**,不是 SRG 的 `f_..._` |
+| NeoForge universal jar | 不含这两个类(它只是补丁集) |
+| 交付 jar 里这些类的来源 | `optifineoforge/patched/.../ChunkMap$TrackedEntity.class`、`GameRenderer.class`、`IntegratedServer.class` —— **载荷自己的编译产物被装了进去** |
+
+也就是说:崩的那两处调用(`ChunkMap$TrackedEntity.scaledRange` 里 `MinecraftServer.m_7186_(I)I`、
+`GameRenderer.tryTakeScreenshotIfNeeded` 里 `IntegratedServer.m_129918_()Z`)**来自载荷自己的类**,而载荷是按
+**SRG 成员名**编译的(OptiFine 1.21 的构建即如此),启动用的运行期里那些成员却是 **Mojang 名**。这不是"视图缺成员",
+而是**两套命名没有对齐** —— 也就是 1.20.2 / 1.20.4 当年必须做的那一步:`SrgRemap` 把载荷的 SRG 名改写成运行期的
+official 名(`add-line.ps1` 的 `-SrgMappings` + `-ObfOfficial`,配套 `proguard-to-tsrg.ps1` 生成 obf→official 表)。
+**1.21.x 的这些线全部是在没有这一步的情况下建的**,所以:
+* 大多数**载荷自己的类之间**的调用能跑(同一个编译产物,名字一致),这就是为什么这些线能起、能进世界;
+* 一旦载荷的**补丁类**去调**运行期**的 vanilla 成员(而且是按 SRG 名写的),就会 `NoSuchMethodError` ——
+  触发点取决于跑到哪条代码路径,所以表现为"有的线看着没事、有的线 join 之后崩"。
+
+**下一步(下一轮的第一件事)**:给 1.21.x 建 `SrgMappings`(MCPConfig 的 joined tsrg)与 `ObfOfficial`
+(`proguard-to-tsrg.ps1` 从 Mojang client mappings 生成,1.20.x 已有 `obf-official-1.20.4.tsrg` 的先例),
+用 `add-line.ps1 -SrgMappings ... -ObfOfficial ...` 重建其中一条线(建议 1.21.4 或 1.21.8,它们已有世界+光影
+记录可对照),然后重跑验收与建档光影。**如果这一步成立,它应当一次消掉整族缺成员崩溃**,而不是继续一个成员一个成员地补桩
+—— 这条分支接下来不再往 `stub-additions` 里加这族成员。
