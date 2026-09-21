@@ -5206,3 +5206,25 @@ MakeUp 光影包、不开 FXAA)上复跑:
 而几分钟前同一配置在两条线上都崩(`crash-…01.22.40-server.txt` 的 `Mob.java:1578`、
 `crash-…01.29.22-server.txt` 的 `Mob.java:1492`)。之前试过的"`Mob` 整类保"是错的工具(已证伪并撤回);
 **计划生成器才是对的地方**。
+
+### 十三、1.20.6 stderr 那 17856 字节的**定位**(仍未修,但不是缺陷):OptiFine 只以点号字符串提到的那 8 个 Forge 类
+
+第十一节里那个"基线差异"这轮往下推了一步,量到的是:
+
+* 那 6 段 NPE 的来源:**OptiFine 自己的反射表里点名的 Forge 类不存在**。它自己的日志把这件事说得很清楚
+  (stdout,各一行):`[OptiFine] (Reflector) Class not present: net.minecraftforge.common.extensions.IForgeEntity`
+  / `net.minecraftforge.logging.CrashReportExtender` / `net.minecraftforge.client.ForgeHooksClient` /
+  `net.minecraftforge.client.settings.KeyConflictContext` / `KeyModifier` / `net.minecraft.launchwrapper.Launch` /
+  `net.minecraftforge.versions.forge.ForgeVersion` / `net.minecraftforge.internal.BrandingControl` /
+  `net.minecraftforge.fml.loading.ImmediateWindowHandler`;
+  随后 `GameRenderer.frameInit` 解析这些字段时**没有判空**(`FieldLocatorName.getDeclaredField` 直接对 null 调
+  `getDeclaredFields()`),于是每次解析都在 stderr 上留下 6 段 NPE。
+* **为什么现在的 shim 覆盖不到它们**:这 8 个名字只以**点号字符串**出现在 OptiFine 的反射表里,而
+  `ForgeApiShims.referencedTypes` 扫的是**常量池里的类型引用**(斜杠形式),所以它们既不在 66 个 stub 里,也
+  没被扫描到 —— 已在 jar 里核对:这 8 个 `net/minecraftforge/...class` 全部 **ABSENT**(而 stub 总数是 66)。
+* **顺手量到的边界**:把扫描改成"也认点号名"之后,类型数从 59 涨到 **99**,但里面混进了截断垃圾
+  (`net/minecraftforge/cli`、`cliHent/model/data/ModelDataManager`,来自常量池里被拼接的字符串),所以这个
+  改法**没有采用**(已撤回),正确的形状是**只取反射表里那些完整类名**的有界列表。
+
+结论:这条差异**不是缺陷、也不致命**(四项检查全中、崩溃报告 0),它是 OptiFine 自己的反射对缺失类不判空在
+stderr 上留下的日志;要清零就得补上那 8 个(或更多)点号名 stub —— 记为下一步,而不是本轮顺手做的事。
