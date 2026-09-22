@@ -2714,3 +2714,30 @@ FML 10 线的两个 jar 名字完全不同(载荷 + 外壳/own-classes)、启动
 **因此 FXAA 的像素级证据仍缺**,而且现在明确了要换抓帧手段:用**游戏自己的截图**而不是 `PrintWindow`
 (按 F2 / `Screenshot` 类把合成后的帧存到 `screenshots/`,装置已有 `click-at.ps1 -Key` 可以发按键),
 再对同一存档的关/开两帧跑 `fxaa-check.ps1`。在拿到这个之前,不得把 FXAA 记成"已验证"。
+
+#### FXAA 打开后画面是黑的 —— 用**游戏自身截图**测出来的真缺陷(不是抓帧假象)
+
+上一轮怀疑 `PrintWindow` 拿不到 FXAA 合成后的画面,于是这一轮改用**游戏自己的截图**(发 F2,VK 113,
+`click-at.ps1 -Key 113`,窗口自动置前;截图落在 `<gameDir>\screenshots\`),同一钉死存档、同样带
+`MakeUp-UltraFast-9.5e.zip`,只改 `optionsshaders.txt` 的 `antialiasingLevel`:
+
+| 条件 | 三帧大小 | 平均亮度 | 不同颜色数 | 内容 |
+|---|---|---|---|---|
+| FXAA 关(0) | 729947 / 721492 / 714434 B | 134.2 | 166 / 170 | 正常世界画面 |
+| FXAA 开(2) | 29869 / 30756 / 30756 B | 11.8 / 14.3 / 14.3 | **118**(三帧恒为 118) | **近乎全黑** |
+
+帧来自游戏自己写出(854x480,`Screenshot` 类),与 `PrintWindow` 无关,而且两次运行的日志都显示
+`Loaded shaderpack: MakeUp-UltraFast-9.5e.zip`、所有 program 编译加载完成、无报错。也就是说:
+
+**在 1.21.9 上打开 OptiFine 的 FXAA(2x)会得到一帧几乎全黑的画面**;这不是抓帧假象,是一个真缺陷。
+(此前"FXAA 管线编译失败"已经修掉 —— 现在它编译通过了,但输出是黑的,说明问题从"编译不过"变成了"合成结果不对"。)
+
+最可能的位置:我这一轮只把 **blit 趟**的顶点阶段改成了 `minecraft:core/screenquad`(与原版自身一致),
+**FXAA 趟仍然用 OptiFine 自带的 `post/fxaa_of_2x.vsh`** —— 那个顶点着色器按的是 1.21.5 时代的
+`Position`/`Projection`/`SamplerInfo` 约定,而 1.21.9 的后处理渲染器给的是新约定;它"能编译"不等于
+"varying/输出写对",于是 FXAA 趟把黑写进 `swap`,blit 趟老老实实把黑拷回 `minecraft:main`。
+下一步就是把这个环节也按该线版本适配(OptiFabric 参考实现的两步做法:FXAA 趟的顶点阶段同样用该线存在的
+阶段,并按新 schema 给出对应的 vsh/fsh),然后再用同一对截图判定:FXAA 关/开两帧应当是**同一场景**且
+开的一侧边缘能量更低(硬边更少),那才算"FXAA 生效"。
+
+结论:FXAA 仍未通过 —— 现在是**实测到"开了就黑屏"**,因此 release 不发。
