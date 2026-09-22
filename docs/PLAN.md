@@ -2073,3 +2073,32 @@ crash reports   : 0         NullPointerException : 0
   尚未 A/B;
 * 其余六条 1.21.x 线**还没重跑建档光影**(它们在 ModelPart / IntegratedServer 两处改动之后需要重跑),
   而它们各自是否也有这条线的 `SrgResidue` 清单之外的缺失成员,要按同一套办法逐条量。
+
+### 把这套办法铺到其余六条线:5/7 条做到"进世界 + 光影包加载 + 0 崩溃"
+
+上一节修好 1.21 之后,按同一套办法把这条线的五个缺失成员**铺到其余六条线**
+(`stub-additions-<mc>.txt`;装载器只在该成员确实缺失时才注入,所以在不需要它的线是惰性的),逐条重建并重跑
+建档 + 光影包(quick play,RigSession,MakeUp-UltraFast-9.5e):
+
+| 线 | 铺开前 | 铺开后 |
+|---|---|---|
+| 1.21.1 | **FAILED**(崩溃 1;世界 yes、光影 loaded) | **STARTED / world yes / 光影 loaded / 崩溃 0** |
+| 1.21.3 | **FAILED**(同上) | **STARTED / world yes / 光影 loaded / 崩溃 0** |
+| 1.21.4 | STARTED / world yes / 光影 loaded / 崩溃 0 | 同上(铺开是惰性的) |
+| 1.21.8 | STARTED / world yes / 光影 loaded / 崩溃 0 | 同上 |
+| 1.21.6 | STARTED / world yes / **光影包没加载** | 同左(与本轮无关的独立缺陷) |
+| 1.21.7 | STARTED / world yes / **光影包没加载** | 同左 |
+| 1.21(菜单路) | join + 光影 loaded + 崩溃 0 | 同左 |
+
+记两个细节:
+* 1.21.1 / 1.21.3 修前的崩溃正是**同一批成员**(它们在铺开前没有这几条补桩),铺开后两线都变成 0 崩溃 —— 这也
+  反过来说明"这套清单是本载荷家族的共性,不是 1.21 的特例";
+* `BakedModel.useAmbientOcclusion(...)` 的桩仍然回答 false,即**那个模型不做环境光遮蔽**,这是套在整族上的
+  **可见视觉代价**,最终仍应由"定向改写"替代(见上一节)。
+
+**仍未通过的四条线与原因**(如实):1.21.6 / 1.21.7 的世界与光影都要么缺一:
+`Failed to parse post chain at minecraft:post_effect/fxaa_of_2x.json | JsonSyntaxException: No key
+fragment_shader / No key vertex_shader` —— 1.21.5 起后处理链格式从 `shaders/post`(vertex/fragment)换成
+`post_effect`(vertex_shader/fragment_shader),而这条线的 OptiFine 构建仍是旧格式;要给它定性还欠一次对照
+(同一份 OptiFine 放进同版本、**不带**我们加载器的 NeoForge 跑一次,看是否同样报错 —— 那才叫"OptiFine 与版本不兼容",
+现在的说法只是"载荷与解析器不匹配")。
