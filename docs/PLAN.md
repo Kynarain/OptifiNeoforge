@@ -2492,3 +2492,33 @@ at `ModelBlockRenderer.tesselateWithAO:143`。这与 1.20.4 起 ml11 各线早�
 `Properties` 同时是 `optionsshaders.txt` 里 `shaderPack` 值的真实解析器,所以下一个探针应当直接打印
 `Shaders.configFile`、`Shaders.shaderPacksDir`、`shaderPacksDir.exists()` 和
 `shadersConfig.getProperty("shaderPack","<absent>")`,而不是再靠改文件猜。
+
+#### 1.21.9 光影包异常的**在机内实测**(临时探针),以及被证伪的假设
+
+装置侧新增一次性探针 `optifineoforge-test\diagnostic\...\ShaderStateProbe.java`(只装在 `diagnostic-out`,
+不进 mod;用 `launch-fml10.ps1 -MainClass ...ShaderStateProbe` 启动),在**客户端进程内**读/调用 OptiFine 的
+`Shaders`。实测结果,逐条:
+
+1. `Config.isAntialiasing()=false`、`Config.getAntialiasingLevel()=0`、`Config.isGraphicsFabulous()=false`
+   —— `loadShaderPack()` 里那条"跳过"分支(会 `shaderPackLoaded=false` 且只打 `Antialiasing is enabled` /
+   `Fabulous Graphics` 两句话)**不成立**,日志里也确实没有这两句。
+2. `<profile>\optionsshaders.txt` 与 1.21.10 的那份**逐字节相同**(59B),并且在同一个 JVM 里用
+   **OptiFine 自己的** `net.optifine.util.PropertiesOrdered.load(FileReader)` 与平台 `Properties.load`
+   都能读出 `shaderPack=MakeUp-UltraFast-9.5e.zip`(size=2)—— 文件和读取器都没问题。
+3. `Shaders.configFile` 与 `Shaders.shaderPacksDir` 实测为**正确的绝对路径**且都存在;
+   `shaderpacks\MakeUp-UltraFast-9.5e.zip` 在(400417B,zip 可开,357 项,含 `shaders/`),目录里 6 个包;
+   并且 `Shaders.getShaderPack("MakeUp-UltraFast-9.5e.zip")` 直接返回 `ShaderPackZip`、
+   `getShaderPack("(debug)")` 返回 `ShaderPackDefault` —— **查找路径本身是好的**。
+4. 事后直接调 `Shaders.loadShaderPack()`、以及再调一次 `Shaders.loadConfig()`,**都仍然是**
+   `No shaderpack loaded.` —— 因此不是"启动时机/文件还没就绪",而是**每次都会复现的状态**。
+5. 运行中的 `Shaders` 来自 `mods/optifine-own-classes.jar`,其字节与载荷里 `srg/` 那份**完全相同**
+   (sha256 `12119f0a…`),排除"两份不同副本、静态状态分裂"。
+6. **探针自身的坑,记下来**:在游戏起来之前碰到 `Shaders` 会让它自己的 `<clinit>` 抛
+   `ExceptionInInitializerError`(它解引用 `Minecraft.getInstance()`),此后该类彻底不可用
+   (`NoClassDefFoundError: Could not initialize class`),整轮不会再有光影日志 —— 所以探针必须先等到
+   `Sound engine started` 再碰它。
+7. 仍未解开的矛盾:`loadShaderPack()` 里读到的名字看起来是空的(否则按 3 必然加载),而 `shadersConfig`
+   里明明有值、`configFile` 也存在。**下一步不能再靠反射**(`optifine` 模块已拒绝私有成员的
+   `setAccessible`),要在**字节码层**给 own-classes 里那份 `Shaders.loadShaderPack` 临时插一行打印
+   (我们的管线本来就会改写 OptiFine 的类),把 `name`、`shaderPacksDir`、`configFile.exists()` 三个值
+   打在它自己的调用点上;测完即撤。这条线达标前不发 release。
