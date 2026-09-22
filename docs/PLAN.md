@@ -3074,3 +3074,21 @@ FXAA 本来就没有可平滑的边缘,`fxaa-check` 于是给出 NOT VISIBLE。�
 与 `FxaaPostChainRepair`)。注意 26.1.2 走的是**它自己那套**(OptiFine 自带类处理器、载荷是重建过的 OptiFine jar),
 所以那两条修法不会自动落到它身上 —— 需要先按它的架构重新生成 own-classes,再实跑一次看世界为什么不启动
 (而不是继续沿用"载荷缺修复"这个已经过期的判断)。
+
+#### 装置修正:窗口必须按**进程身份**解析,已写好并对着真实的"别人家客户端"验证过
+
+新增 `client-window.ps1`:给定 profile,返回**我方**客户端的 `pid / hwnd / title`,判据是**命令行同时含**
+该 profile 与 `optifineoforge-test\game\<profile>`;标题完全不参与判断。它带一个 `-Explain`(不是 `-Verbose`
+—— 后者是 PowerShell 通用参数,重名会让整个脚本加载失败,这个坑当场踩过一次)。
+
+实测(对着当前机器上的活进程):
+
+| 查询 | 结果 |
+|---|---|
+| 我方 `neoforge-21.4.149` | `no client of this rig ... (candidates: 0)` —— 我方当前确实没有客户端在跑 |
+| 我方 `neoforge-21.9.16-beta` | 同上,0 个 |
+| 别的项目的 `1.21.4-sweep` | `pid 12348 window=True ownsRigDir=False title='Minecraft* 1.21.4 - Singleplayer'` → **被正确拒绝** |
+
+也就是说:同一个"标题看起来一模一样"的客户端,该助手能凭命令行把它认成**不是我们家的**,这正是前几轮
+0 帧问题的根因所在。下一步把它接进抓帧流程(F2 之前先用它确认"本次运行的客户端确实是我方的、且窗口可用"),
+再做 1.21.4 的成对抓帧;随后才是 `pin-save-state.ps1` 钉 `Pos`(绕开聊天栏)与 1.20.x/1.21 各线。
