@@ -2621,3 +2621,40 @@ release 仍未发布。
 
 结论:**FXAA 目前不是绿的**,因此 release 不发。四条线(1.21.6、1.21.7、1.21.9、1.21.10、1.21.11)的 FXAA
 都卡在这一个原因上。
+
+#### FXAA 修好了:OptiFine 的 FXAA 后处理链引用了这条线不存在的顶点阶段
+
+上一条定位到的编译失败(`Couldn't find source for VERTEX shader (minecraft:post/blit)`)根因确认,并在**管线里**修掉:
+
+* 1.21.9 的原版客户端只有 `assets/minecraft/shaders/post/*.fsh`(fragment),`post/` 下**唯一的顶点阶段是
+  `rotscale.vsh`**——没有 `post/blit.vsh`;原版自己的后处理 JSON(`post_effect/blur.json`、
+  `entity_outline.json`)**每一趟都用 `minecraft:core/screenquad` 当顶点阶段**,其中 entity_outline 的 blit 趟
+  正好就是 `core/screenquad` + `post/blit` + `BlitConfig`。
+* OptiFine 自己的 `assets/minecraft/post_effect/fxaa_of_{2,4}x.json` 是两趟:第一趟
+  `post/fxaa_of_{2,4}x`(vsh+fsh,OptiFine 自带、能编译),第二趟 blit 却把**顶点阶段**写成
+  `minecraft:post/blit` —— 这个 `.vsh` 在 1.21.9/1.21.10 上不存在,于是管线编译失败、FXAA 静默失效(不崩溃)。
+* 实测三条线的**用户 OptiFine 原始 jar**里 `post/blit` 出现次数:1.21.9 = **2**(顶点+片元,有缺陷)、
+  1.21.10 = **2**(同样有缺陷)、1.21.11 = **1**(J9 已经自己修好,只留片元)。
+
+**修法**(`src/main/java/.../optifine/FxaaPostChainRepair.java`,同样由 `OptifinePipeline.split` 在写资源时应用):
+把 blit 趟的 `"vertex_shader": "minecraft:post/blit",` 改成 `"minecraft:core/screenquad",` ——
+也就是变成与原版自己那趟完全相同的组合;FXAA 那趟不动(它命名的是 OptiFine 自带、能编译的顶点阶段)。
+该字符串在每个文件里只出现一次,且只在 blit 趟,所以不会误改。三条线重新生成后的交付 jar 里都是
+`post/fxaa_of_{2,4}x`(vsh+fsh)+ `core/screenquad` + `post/blit`。
+
+**实测(FXAA 2x,`-AaLevel 0 -ShaderAaLevel 2`,MakeUp-UltraFast-9.5e.zip)**:
+
+| 线 | 管线修复 | 四道验收/建档 | FXAA 管线编译错误 | 崩溃 |
+|---|---|---|---|---|
+| 1.21.9 | 两条链都修 | STARTED/sound/4 region | **0** | 0 |
+| 1.21.10 | 两条链都修 | STARTED/sound/6 region | **0** | 0 |
+| 1.21.11 | 报告"无需修"(J9 本身已对) | STARTED/sound/9 region | **0** | 0 |
+
+修前同样的 FXAA 运行会打出 `Couldn't compile pipeline minecraft:fxaa_of_2x/1: vertex shader
+minecraft:post/blit was invalid`,修后该行**完全消失**,三条线光影包仍正常加载(`Loaded shaderpack`)、
+stderr 0 字节、0 崩溃。启动期剩下的
+`Resource not found: minecraft:shaders/post/fxaa_of_{2,4}x.json` 是 OptiFine 仍在探测**旧路径**
+(1.21.6+ 起原版把后处理搬到 `post_effect/`),属良性:真正生效的是新路径那条链,而它现在能编译。
+
+至此 **FML 10 三条线的光影与 FXAA 都通了**;1.21.6 / 1.21.7(用户已同意暂缓)若要继续,同一条修法可以直接用上。
+release 仍未发布:26.1.2(sound NO + 世界未启动)、1.21.6/1.21.7 的后处理链、以及逐线 FXAA 的像素级 A/B 量测仍在待办。

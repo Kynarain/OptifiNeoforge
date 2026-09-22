@@ -170,6 +170,19 @@ public final class OptifinePipeline {
 							System.out.println("  " + stripped + ": no shader-pack branch to repair in this build");
 						}
 					}
+					// ... and the one resource repair: OptiFine's FXAA post chain asks for a vertex shader stage this
+					// game version does not ship, so FXAA fails to compile the moment it is switched on. See
+					// FxaaPostChainRepair - it reports what it did and leaves anything else alone.
+					if(java.util.Arrays.asList(FxaaPostChainRepair.ENTRIES).contains(stripped)) {
+						byte[] repaired = FxaaPostChainRepair.apply(data);
+						if(repaired != null) {
+							data = repaired;
+							System.out.println("  repaired " + stripped
+									+ ": its blit pass now uses minecraft:core/screenquad, the vertex stage this version ships");
+						} else {
+							System.out.println("  " + stripped + ": no missing vertex stage to repair");
+						}
+					}
 					ZipEntry copy = new ZipEntry(stripped);
 					copy.setTime(entry.getTime());
 					out.putNextEntry(copy);
