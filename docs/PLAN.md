@@ -2298,3 +2298,33 @@ java.lang.ClassCastException: class net.neoforged.neoforge.network.handling.Queu
 * 三条线(1.21.9 / 1.21.10 / 1.21.11)的建档+光影**仍 FAILED**,各崩 1 次(上面这条错误);
   它们也仍报 `Resource not found: minecraft:shaders/post/fxaa_of_{2,4}x.json`,与 1.21.6/7 同源,
   按 OptiFabric 那两步(补写老式链文件 + 移除 `post_effect/` 那份)一并处理。
+
+### FML 10 的 `PacketProcessor`:两个方向的实测结果与**下一步的机制缺口**
+
+两条路都量过(三条线一致):
+
+| keep 方式 | 结果 |
+|---|---|
+| 整类保留 `PacketProcessor` | `ClassCastException: QueuedPacket$CustomPayload → PacketProcessor$…` **消失**,换成 `NoSuchMethodError: PacketProcessor.clientPreProcessPacket(Packet)` at `PacketProcessor$ListenerAndPacket.handle:93` |
+| 只保留 `PacketProcessor$QueuedPacket` | **没用**:`ClassCastException` 原样回来(`crash-2026-09-23_00.45.57`,同一个 `processQueuedPackets:77`) |
+
+也就是说:**整类保留是必须的**(载荷那份 `PacketProcessor` 的处理循环与 NeoForge 的队列对象不兼容),
+而整类保留之后缺的是 **NeoForge 在加载期给这个类加过的成员** `clientPreProcessPacket(Packet)`。查过三份 jar:
+
+```
+neoforge-21.9.16-beta-client.jar  有 PacketProcessor,但没有 clientPreProcessPacket
+neoforge-21.9.16-beta-universal.jar 根本没有这个类
+work\1.21.9\runtime-1.21.9.jar    有 PacketProcessor,也没有 clientPreProcessPacket
+```
+⇒ 这条成员是 **NeoForge 自己的运行期转换器加上去的**;我们把 jar 里那份整类装进去,就等于**把它冲掉了**
+(或者我们的处理器跑在 NeoForge 之后)。这正是 ml11 那条加载器里 `stubMissing()`(`optifineoforge/stubs.txt`)存在的理由,
+而**FML 10 的处理器没有这个机制** —— 它只认 `keep-runtime.txt` / `member-restores.txt`(+ donors)/ `reparent.txt`
+(`OptifinePayloadClassProcessor` 第 62/460/796/1209 行)。
+
+**下一步(已具体到机制)**:
+1. 把 ml11 的 **stub 机制移植进 FML 10 处理器**(读 `/optifineoforge/stubs.txt`,对"被整类保留的类"补上列出的成员);
+2. 给这三条线的载荷加一行 `net/minecraft/network/PacketProcessor	clientPreProcessPacket	(Lnet/minecraft/network/protocol/Packet;)V`,
+   并**如实标注语义风险**:这是"每个包都经过"的路径,空实现会让 NeoForge 的客户端自定义包分发被跳过 —— 先用它把线跑起来量测,
+   最终修法是让 NeoForge 的那条成员不被冲掉(处理器顺序或"在保留前先取转换后的字节")。
+3. 三条线仍共有的 `Resource not found: minecraft:shaders/post/fxaa_of_{2,4}x.json` 与 1.21.6/7 同源,
+   按 OptiFabric 两步(补写老式链文件 + 移除 `post_effect/` 那份)一起修。
