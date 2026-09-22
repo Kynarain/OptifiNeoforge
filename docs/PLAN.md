@@ -2373,3 +2373,25 @@ NeoForge 自己的 `scheduleIfPossible` 往队列里放 `QueuedPacket`,而 OptiF
 
 另外三条线仍共有 `Resource not found: minecraft:shaders/post/fxaa_of_{2,4}x.json`(与 1.21.6/7 同源),
 按 OptiFabric 两步(补写老式链文件 + 移除 `post_effect/` 那份)一起修。
+
+#### FML 10 的 `IClientItemExtensions`:**外壳 kind 的实锤**(与 ml11 已修的那件同源)
+
+`javap` 逐字节对照(1.21.9):
+
+```
+交付的壳: jars-1.21.9\optifine-own-classes.jar
+  net/minecraftforge/client/extensions/common/IClientItemExtensions.class (876 字节)
+  public class ...IClientItemExtensions { public static ... DUMMY; public ...IClientItemExtensions(); }   <- 是"类"
+
+调用点: 载荷 ItemInHandRenderer
+  598: invokestatic  ... IClientItemExtensions.of:(Lnet/minecraft/world/item/ItemStack;)...    <- 静态工厂
+  619: invokeinterface ... IClientItemExtensions.applyForgeHandTransform:(...)Z                <- 接口调用
+```
+
+⇒ 壳必须是**接口**,而 FML 10 三条线交付的是**类**(`DUMMY` 字段 + 构造器,是旧生成器的产物),
+于是 `IncompatibleClassChangeError`。这与 ml11 线早已修过的 `af0b296`/`345ef82`(**外壳 kind 由调用点决定**)是同一件,
+只是 FML 10 这条路径的壳在 **`optifine-own-classes.jar`**(每条线一个,由 `build-fml10-own-classes.ps1` 生成),
+而不是 ml11 的 `stubs/` 目录 —— 所以那次修复没有覆盖到这里。
+
+**下一轮第一件事**:用当前分支的 `ForgeApiShims`(kind 由调用点决定)重新生成三条线的 `optifine-own-classes.jar`,
+重建载荷并重跑建档+光影;26.1.2 的同类壳(`jars-26.1.2\optifine-own-classes.jar`)也一并复查。
