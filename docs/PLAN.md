@@ -2186,3 +2186,34 @@ OptiFine 预览构建仍按 1.21.5 的写法。**因此这不是我们加载器�
   (例如"载荷"两字都在该区间),于是把本仓库的 `README.md`、`docs/PLAN.md`、`docs/VERSIONING.md`、
   `docs/VERSIONS.md` 也改坏了(表现为整文件行行不同)。这四个文件**已从上一个提交精确还原**,本节是重新追加的。
   教训:**这台机器上读写 UTF-8 文本必须显式 `-Encoding UTF8`(读也一样),而且不要用启发式去"反转"编码**。
+
+### 十五条线的四项验收**全部通过**(FML 10 四条线用当前分支头重建后重跑),1.21.6/1.21.7 暂缓并记下参考实现
+
+`retest-all.ps1 -Group fml10 -Rebuild`(四条线都用当前分支头重建载荷后再跑,`logs\retest-fml10-round156.txt`):
+
+| 线 | 判定 | user | sound | 崩溃 | stderr |
+|---|---|---|---|---|---|
+| 1.21.9 | STARTED | yes | yes | 0 | 0 = 记录值 |
+| 1.21.10 | STARTED | yes | yes | 0 | 0 = 记录值 |
+| 1.21.11 | STARTED | yes | yes | 0 | **107 = 记录值** |
+| 26.1.2 | STARTED | yes | yes | 0 | **107 = 记录值** |
+
+加上此前十一条 ModLauncher 线(§上),**十五条线现在四项验收全绿**(差异只剩 1.21 的 stderr 46767 vs 14141、
+1.20.2 的 14631 vs 14625、1.20.6 的 17856,三件都已挂账)。
+
+#### 1.21.6 / 1.21.7 的 post chain:**暂缓**,但修法已从本机 OptiFabric 项目读到(用户建议参考它)
+
+本机 `C:\Users\kynar\IdeaProjects\OptiFabric` 的 `DEVELOPMENT.md` 里已经把这件事写过并且修过,要点(照抄其结论):
+
+* OptiFine 的 FXAA 走游戏 post effect 系统;**1.21.6 起是新格式**;其自带的
+  `assets/minecraft/post_effect/fxaa_of_{2,4}x.json` 里**第二个 pass(把 `swap` 拷回 `main`)是麻烦所在**;
+* **1.21.9 起**游戏只提供 `assets/minecraft/shaders/post/blit.fsh`,**顶点阶段改用 `core/screenquad`**
+  (原版 `post_effect/transparency.json` 就是这么写的),于是出现
+  `Couldn't compile pipeline minecraft:fxaa_of_4x/1: vertex shader minecraft:post/blit was invalid`;
+* 他们的修法不是"改写新格式"(我这轮试过、无效),而是两步:**①按 OptiFine 自己的 schema 补写
+  `assets/minecraft/shaders/post/fxaa_of_{2,4}x.json`(只引用用户那份 OptiFine 里**已存在**的
+  `post/fxaa_of_*.vsh/.fsh`);②把游戏那条 `assets/minecraft/post_effect/fxaa_of_{2,4}x.json` 移除**,
+  让抗锯齿只由一个机制负责(`OptifinePostChainFixer`);
+* 另有一条相关事实:1.21.8 起的构建**不再带老式链文件**,只带新形式的 `post_effect/fxaa_of_*.json`。
+
+按用户指示,这两条的收尾**暂缓**,等其它版本(尤其 FXAA 量测与 FML 10 的建档光影)做完再回来照上面两步做。
