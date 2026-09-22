@@ -2522,3 +2522,55 @@ at `ModelBlockRenderer.tesselateWithAO:143`。这与 1.20.4 起 ml11 各线早�
    `setAccessible`),要在**字节码层**给 own-classes 里那份 `Shaders.loadShaderPack` 临时插一行打印
    (我们的管线本来就会改写 OptiFine 的类),把 `name`、`shaderPacksDir`、`configFile.exists()` 三个值
    打在它自己的调用点上;测完即撤。这条线达标前不发 release。
+
+### 1.21.9 光影包之谜解开:是 **OptiFine 自己那个预览版的字节码缺陷**,修在我们管线里
+
+上一轮把它收敛到"`loadShaderPack()` 里拿到的名字像是空的"。这一轮用**字节码插桩**(不是反射:`optifine` 模块
+拒绝私有成员)把最后一个环节打了出来,并定位到根因:
+
+**根因(在 OptiFine 的类里,不在我们的代码里)**:`Shaders.loadShaderPack()` 在 1.21.9 上是
+
+```
+170: iload_2                                  // skip (antialiasing / fabulous)
+171: ifne 195                                 // skip != 0 -> 直接去"清空"
+174: aload_3; 175: invokestatic getShaderPack // 查包
+178: putstatic shaderPack
+181-192: shaderPackLoaded = shaderPack != null   // 查包结果写进字段
+195: iconst_0                                 // ← 没有 goto 跳过这里!
+196: putstatic shaderPackLoaded               // ← 无条件再清成 false
+199: getstatic shaderPackLoaded; 202: ifeq 219
+219: "No shaderpack loaded."  ... 225-232: shaderPack = new ShaderPackNone()
+```
+
+`if (skip != 0)` 的 else 块**丢了那条跳过它的跳转**,于是查包结果立刻被自己抹掉。1.21.10(J7 pre11)与
+1.21.11(J9)在同一处的字节码是 `192: putstatic` 之后**直接** `195: getstatic`(else 块与它的跳转根本不存在),
+所以只有 1.21.9 中招。optifine.net 上 1.21.9 **只有 J7 pre1/pre2 两个构建**(都是 01.10.2025),没有修好的版本
+可以换,所以修必须由我们做。
+
+**在机内实测到的证据链**(都属于"每一次都正确,却仍然不加载"):
+* `configFile` / `shaderPacksDir` 是正确的绝对路径且都存在;`shaderPack` 属性是
+  `MakeUp-UltraFast-9.5e.zip`(25 字符,`chars=[M,a,k,e,...,p]`,无尾随空格),
+  `endsWith(".zip")=true`,`new File(shaderPacksDir, name).isFile()=true`;
+* `getShaderPack` 确实被调用,`ShaderPackZip.<init>` 确实进入,方法返回值打印为
+  `net.optifine.shaders.ShaderPackZip@...`(非 null);
+* `Config.isAntialiasing()=false`、`Config.isGraphicsFabulous()=false` → "跳过"分支**证伪**;
+* 运行中的 `Shaders` 来自 `mods/optifine-own-classes.jar`,与载荷 `srg/` 那份 sha256 相同(排除副本分裂);
+* 事后直调 `loadShaderPack()`、再调一次 `loadConfig()`,**仍然** `No shaderpack loaded.`(复现式)。
+
+**修法**(`src/main/java/.../optifine/ShadersPackLoadedRepair.java`,由 `OptifinePipeline.split` 在把 OptiFine
+自己的类写进 classpath jar 时应用,因此**每次新准备的行都会带上**):删掉那对多余的
+`iconst_0; putstatic shaderPackLoaded`,并把那条 `ifne` 从"清空"改指到 **"No shaderpack loaded." 分支**
+(它本来就是分支目标、自带 stack map frame)。这样 `skip != 0` 仍然走"不加载"路径,`skip == 0` 则保留查包结果。
+修后 1.21.9 的类:`171: ifne 215`,清空那两条不见了,`192: putstatic shaderPackLoaded` → `195: getstatic`。
+
+**两个被自己证伪的中间方案**(记下来免得重犯):
+* 在查包结果后插一条 `GOTO` 跳到"清空之后"的指令 → `VerifyError: Operand stack underflow` 之后是
+  帧不匹配:那条指令在原代码里只靠 fall-through 到达,**没有声明 frame**,跳到它必然验证失败;
+* 匹配序列时用"相邻指令"判断 → 找不到:清空那两条前面**夹着一个 LabelNode**(它就是 `ifne` 的目标),
+  必须跳过 ASM 的伪指令(label/line/frame)后再比较。
+* 另外,探针在游戏起来之前碰 `Shaders` 会让它 `<clinit>` 抛 `ExceptionInInitializerError` 并永久废掉该类。
+
+**实测结果(2026-09-24,单行启动)**:1.21.9 日志出现
+`[Shaders] Loaded shaderpack: MakeUp-UltraFast-9.5e.zip` 与 `[OptiFine] [Shaders] Worlds: -1, 0, 1`,
+`VERDICT: STARTED`、`Sound engine started`、**0 崩溃**、**stderr 0 字节**(无 VerifyError)。
+三条 FML 10 线的完整"建档 + 光影"闸门正在重跑,结果记在下一节。

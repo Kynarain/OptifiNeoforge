@@ -151,12 +151,29 @@ public final class OptifinePipeline {
 				if(isGameClass(stripped)) {
 					gameClasses.put(stripped, read(zip.getInputStream(entry)));
 				} else {
+					byte[] data;
+					try(InputStream stream = zip.getInputStream(entry)) {
+						data = read(stream);
+					}
+					// OptiFine's own classes pass through here unchanged except for the one repair that has to be
+					// applied to them: 1.21.9's Shaders.loadShaderPack() is missing the jump over the else block of
+					// its antialiasing/fabulous check, so it clears shaderPackLoaded right after computing it and
+					// never loads a pack. See ShadersPackLoadedRepair - it reports what it did and leaves any class
+					// without that shape alone.
+					if(ShadersPackLoadedRepair.ENTRY.equals(stripped)) {
+						byte[] repaired = ShadersPackLoadedRepair.apply(data);
+						if(repaired != null) {
+							data = repaired;
+							System.out.println("  repaired " + stripped
+									+ ": inserted the jump its 1.21.9 build is missing after the shader-pack lookup");
+						} else {
+							System.out.println("  " + stripped + ": no shader-pack branch to repair in this build");
+						}
+					}
 					ZipEntry copy = new ZipEntry(stripped);
 					copy.setTime(entry.getTime());
 					out.putNextEntry(copy);
-					try(InputStream stream = zip.getInputStream(entry)) {
-						stream.transferTo(out);
-					}
+					out.write(data);
 					out.closeEntry();
 				}
 			}
