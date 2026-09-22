@@ -2574,3 +2574,18 @@ at `ModelBlockRenderer.tesselateWithAO:143`。这与 1.20.4 起 ml11 各线早�
 `[Shaders] Loaded shaderpack: MakeUp-UltraFast-9.5e.zip` 与 `[OptiFine] [Shaders] Worlds: -1, 0, 1`,
 `VERDICT: STARTED`、`Sound engine started`、**0 崩溃**、**stderr 0 字节**(无 VerifyError)。
 三条 FML 10 线的完整"建档 + 光影"闸门正在重跑,结果记在下一节。
+
+#### 修后闸门实测(2026-09-24,`run-save-shaders-all.ps1 -Only 1.21.9,1.21.10,1.21.11 -Pack MakeUp-UltraFast-9.5e.zip -Seconds 300`)
+
+| 线 | 四道验收 | 建档 | 光影包 | 崩溃 |
+|---|---|---|---|---|
+| 1.21.9 | STARTED / user yes / sound yes / stderr 0(记录 0) | 4 region + level.dat 重写 | `Loaded shaderpack: MakeUp-UltraFast-9.5e.zip` | 0 |
+| 1.21.10 | STARTED / yes / yes / 0(记录 0) | 6 region + 重写 | 同上 | 0 |
+| 1.21.11 | STARTED / yes / yes / 107(记录 107) | 9 region + 重写 | 同上 | 0 |
+
+**三条 FML 10 线(1.21.9 / 1.21.10 / 1.21.11)首次全部通过"启动验收 + 建档 + 光影包"**;1.21.9 是这一轮才通的。
+到此刻为止全线状态:**12 条线绿**(1.20.1、1.20.2、1.20.4、1.20.6、1.21、1.21.1、1.21.3、1.21.4、1.21.8、
+1.21.9、1.21.10、1.21.11);1.21.6 / 1.21.7 仍是"世界可以、光影包不加载"(后处理链 schema,用户已同意暂缓);
+26.1.2 仍是 sound NO + 世界未启动。三条线的光影日志都带
+`Resource not found: minecraft:shaders/post/fxaa_of_{2,4}x.json` —— 后处理链告警未解,与 FXAA 量测一起列在待办。
+release 仍未发布。
