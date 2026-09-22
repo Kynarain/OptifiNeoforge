@@ -2217,3 +2217,28 @@ OptiFine 预览构建仍按 1.21.5 的写法。**因此这不是我们加载器�
 * 另有一条相关事实:1.21.8 起的构建**不再带老式链文件**,只带新形式的 `post_effect/fxaa_of_*.json`。
 
 按用户指示,这两条的收尾**暂缓**,等其它版本(尤其 FXAA 量测与 FML 10 的建档光影)做完再回来照上面两步做。
+
+#### FML 10 四条线的**建档 + 光影包**:全部没通过(实测),而且症状指向同一族 post chain 问题
+
+紧接着上面的四项验收(它们都通过),对这四条线跑了同一个"建档 + MakeUp 光影包"测试
+(`logs\save-shaders-fml10-round156.txt`):
+
+| 线 | 判定 | sound | 世界 | 崩溃 | 光影包 | 备注 |
+|---|---|---|---|---|---|---|
+| 1.21.9 | **FAILED** | yes | yes(0 region) | **1** | **没加载** | `Resource not found: minecraft:shaders/post/fxaa_of_{2,4}x.json` |
+| 1.21.10 | **FAILED** | yes | yes(0 region) | **1** | loaded | 同上那两条 resource not found |
+| 1.21.11 | **FAILED** | yes | yes(0 region) | **1** | loaded | 同上 |
+| 26.1.2 | STARTED | **NO** | **NO**(level.dat 未重写) | 0 | loaded | 同上 |
+
+也就是说:**这四条线的四项验收是绿的(标题界面/声音/无崩溃),但"建档 + 光影"这一关一条都没过**
+—— 世界能打开(1.21.9/10/11 都写了 level.dat、都到了 world),随后各崩一次,而且四条线都报
+`[OptiFine] Resource not found: minecraft:shaders/post/fxaa_of_{2,4}x.json`:
+**这与 1.21.6/1.21.7 那条 post chain 家族是同一件事**(OptiFabric 的 `DEVELOPMENT.md` 里写的
+"1.21.8 起的构建不再带老式链文件、1.21.9 起顶点阶段改用 `core/screenquad`"正好对上),
+所以**修法可以直接复用同一套**:补写 `assets/minecraft/shaders/post/fxaa_of_{2,4}x.json`(引用用户 OptiFine 里
+已存在的 `post/fxaa_of_*.vsh/.fsh`)+ 移除 `assets/minecraft/post_effect/fxaa_of_{2,4}x.json`。
+四条线各自的**那一次崩溃**还需要单独看崩溃报告定性(本轮只拿到"崩溃 1"这个计数与日志里的资源告警,
+没有逐条读报告),下一轮第一件事就是读它们并归因。
+
+**结论(如实)**:按发布口径,现在真正"绿"的是**十一条 ModLauncher 线**(四项验收 + 建档光影),
+FML 10 四条线**只过了四项验收**;1.21.6 / 1.21.7 的光影包按用户指示暂缓。
