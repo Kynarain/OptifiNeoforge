@@ -2128,3 +2128,19 @@ OptiFine 预览构建仍按 1.21.5 的写法。**因此这不是我们加载器�
 `minecraft:post/fxaa_of_2x`、`minecraft:post/blit` 都已在 OptiFine 的旧格式文件里被引用,说明它们存在)。
 判定标准很简单:重建后在 1.21.6/1.21.7 上重跑建档光影,看 `[Shaders] Loaded shaderpack:` 是否出现、
 `Failed to parse post chain` 是否消失。
+
+#### 试了"由我们的资源覆盖那条 post chain",**没生效**(如实记,并给出下一个更硬的候选)
+
+按上一节的候选修法,把改写成新 schema 的 `assets/minecraft/post_effect/fxaa_of_{2,4}x.json`(每个 pass 带
+`vertex_shader`/`fragment_shader`)放进本分支的 `src/main/resources`,重建 1.21.6 / 1.21.7 并复跑:
+
+* 资源**确实进了交付 jar**(`javap`/zip 检查:`assets/minecraft/post_effect/fxaa_of_2x.json`,724 字节);
+* 但真机日志**一字未变**,报错里仍是**旧内容**(`{"program":"minecraft:post/blit", ...}`),
+  也就是客户端**仍然读的是 OptiFine 那份**,我们的 mod 资源没有赢过它(载荷那份是以"被装进游戏 jar 的资源"身份存在的,
+  优先级高于 mod 资源包)。**这条覆盖路线按现在的做法不成立**。
+
+**下一个候选人(按硬度排序,下一轮试)**:把改写**直接做进交付的 OptiFine jar**(即 `build-jars`/
+`OptifineJarFixer` 装配那一步,把 `assets/minecraft/post_effect/fxaa_of_{2,4}x.json` 替换成新 schema),
+这样"谁在读"和"读哪份"就是同一个文件,不存在优先级问题;判定标准仍是 1.21.6 / 1.21.7 上
+`[Shaders] Loaded shaderpack:` 是否出现、`Failed to parse post chain` 是否消失。
+另:这两条线**世界始终是好的**(world yes、崩溃 0、4 个 region 文件),所以缺的只有这一处。
