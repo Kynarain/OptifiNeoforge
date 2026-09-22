@@ -1,191 +1,191 @@
-# �������̱�(1.21.x ��)
+# 设计与里程碑(1.21.x 线)
 
-## Ŀ��
+## 目标
 
-�� OptiFine �� **NeoForge** �Ϲ���,������ OptiFabric �� Fabric Loader ��һ��:��ȥ����ʵ�� OptiFine,����
+让 OptiFine 在 **NeoForge** 上工作,做法与 OptiFabric 在 Fabric Loader 上一样:不去重新实现 OptiFine,而是
 
-1. �� OptiFine �Դ��Ĳ����������Լ��Ĳ������ԭ��ͻ���;
-2. �ؽ��������ﱻ���ߵ� lambda;
-3. ��Ŀ��汾�������ռ�ѽ������;
-4. �Ѵ�������� Minecraft �ཻ�� NeoForge ����ת������,�����Ƕ���ԭ���ࡣ
+1. 用 OptiFine 自带的补丁器把它自己的补丁打进原版客户端;
+2. 重建补丁类里被搬走的 lambda;
+3. 按目标版本的命名空间把结果对齐;
+4. 把打过补丁的 Minecraft 类交给 NeoForge 的类转换流程,让它们顶替原版类。
 
-OptiFabric �� Fabric ���ߵ��� `GameTransformer.patchedClasses`��NeoForge ���Ӧ��λ�û�û������ȷ��,���Ǳ��ߵ�һ��Ҫ���������(����)��
+OptiFabric 在 Fabric 侧走的是 `GameTransformer.patchedClasses`。NeoForge 侧对应的位置还没有最终确定,这是本线第一个要解决的问题(见下)。
 
-����Ҫ���� **1.21��1.21.1��1.21.3��1.21.4��1.21.6��1.21.7��1.21.8��1.21.9��1.21.10��1.21.11** ʮ�� MC �汾��ʮ���汾����ʮ�� NeoForge ��,������̱���ÿһ����Ҫ��汾�о�,������һ���汾�Ľ�����ơ�
+本线要覆盖 **1.21、1.21.1、1.21.3、1.21.4、1.21.6、1.21.7、1.21.8、1.21.9、1.21.10、1.21.11** 十个 MC 版本。十个版本分属十条 NeoForge 线,所以里程碑的每一条都要逐版本判据,不能由一个版本的结果外推。
 
-## ���ߵĶ������
+## 本线的额外差异
 
-| ���� | 1.21.x �ߵ���� |
+| 方面 | 1.21.x 线的情况 |
 |---|---|
-| NeoForge ���� | ʮ�����ʮ����(`21.0` �C `21.11`);���� **`21.6`��`21.7`��`21.9` ֻ�� beta ����**(���� `21.6.20-beta` / `21.7.25-beta` / `21.9.16-beta`),������ֻ���� beta �� NeoForge �ϲ� |
-| Java | ȫ�� **21**,CI һ�׼��� |
-| mod Ԫ�����ļ� | Ԥ��ȫ���� `META-INF/neoforge.mods.toml`;�����ֶ�Ҫ��Ҫ��汾�˶� |
-| �����������ռ� | Ԥ�����ǹٷ�(Mojang)��,������ SRG;**ȷ���л����ȷ��**(����Լ���� 1.20.5/1.21 ǰ��,������������ڸ���) |
-| OptiFine ���� | 1.21.2 �� 1.21.5 ��ȫû�� OptiFine;1.21��1.21.6��1.21.7��1.21.8��1.21.9��1.21.10 ����ֻ�� preview |
-| ����ȱ�� | **1.21.6 / 1.21.7 ���ù�Ӱ���ر�**,���� OptiFine Ԥ����������(ȱһ��ǰ�õ� `setParentTexture` ����),�߸�������Ϊһ�� |
-| OptiFine ϵ�к� | `J6` ��� 1.21.6 �C 1.21.8,`J7` ��� 1.21.9 �C 1.21.10,ͬ��ϵ�еĹ����ܷ������δ��֤ |
+| NeoForge 供给 | 十版分属十条线(`21.0` – `21.11`);其中 **`21.6`、`21.7`、`21.9` 只有 beta 构建**(最新 `21.6.20-beta` / `21.7.25-beta` / `21.9.16-beta`),这三版只能在 beta 版 NeoForge 上测 |
+| Java | 全线 **21**,CI 一套即可 |
+| mod 元数据文件 | 预期全线是 `META-INF/neoforge.mods.toml`;具体字段要求要逐版本核对 |
+| 运行期命名空间 | 预期已是官方(Mojang)名,不再是 SRG;**确切切换点待确认**(它大约落在 1.20.5/1.21 前后,而本线起点正在附近) |
+| OptiFine 供给 | 1.21.2 与 1.21.5 完全没有 OptiFine;1.21、1.21.6、1.21.7、1.21.8、1.21.9、1.21.10 六版只有 preview |
+| 上游缺陷 | **1.21.6 / 1.21.7 启用光影包必崩**,来自 OptiFine 预览构建自身(缺一个前置的 `setParentTexture` 关联),七个构建行为一致 |
+| OptiFine 系列号 | `J6` 横跨 1.21.6 – 1.21.8,`J7` 横跨 1.21.9 – 1.21.10,同号系列的构建能否互相替代未验证 |
 
-## �� Fabric �ߵĹؼ�����
+## 与 Fabric 线的关键差异
 
-| ���� | OptiFabric(Fabric) | ����Ŀ(NeoForge) |
+| 方面 | OptiFabric(Fabric) | 本项目(NeoForge) |
 |---|---|---|
-| ����ʱ�� | Fabric Loader �� `GameTransformer`,�� Mixin ֮ǰ | ModLauncher / NeoForge ��ת������,˳����Ҫ��ʵ |
-| OptiFine ���� | ���ֽ��벹�� + �Լ�����,û�� loader ���� | **�Դ� Forge ʱ���� loader ����**(`optifine.OptiFineTransformationService`) |
-| Ԫ���� | ���漰 | OptiFine �� jar ���� `META-INF/mods.toml`,NeoForge �����Լ��� `neoforge.mods.toml` |
-| �����ռ� | official �� intermediary | ������Ԥ���ǹٷ�(Mojang)��,����Ҫ��ӳ��;��ĳ���汾���� SRG һ��,��Ҫ���汾��֧ |
-| ���������� | ֻ�� Fabric API �� mixin | NeoForge �Լ�Ҳ���ԭ����,������Ҫ�ϲ� |
-| NeoForge ���� | ���漰 | 1.21.6 / 1.21.7 / 1.21.9 ֻ�� beta ����,�ɲ��Ա������� |
+| 补丁时机 | Fabric Loader 的 `GameTransformer`,在 Mixin 之前 | ModLauncher / NeoForge 的转换流程,顺序需要核实 |
+| OptiFine 自身 | 纯字节码补丁 + 自己的类,没有 loader 集成 | **自带 Forge 时代的 loader 集成**(`optifine.OptiFineTransformationService`) |
+| 元数据 | 不涉及 | OptiFine 的 jar 里是 `META-INF/mods.toml`,NeoForge 期望自己的 `neoforge.mods.toml` |
+| 命名空间 | official → intermediary | 这条线预期是官方(Mojang)名,不需要重映射;若某个版本仍在 SRG 一侧,则要按版本分支 |
+| 第三方补丁 | 只有 Fabric API 的 mixin | NeoForge 自己也会改原版类,补丁需要合并 |
+| NeoForge 供给 | 不涉及 | 1.21.6 / 1.21.7 / 1.21.9 只有 beta 构建,可测性本身受限 |
 
-## ������ѡ·��
+## 两条可选路线
 
-**·�� A ���� �� OptiFine �Լ��� ModLauncher ������������**
-OptiFine �� `optifine.OptiFineTransformationService` ֻ���� `cpw.mods.modlauncher.*`(`ITransformationService`��`ITransformer<ClassNode>`��`SecureJar`),������ `net.minecraftforge.*`��������ֻҪ�� NeoForge ���ֲ�����������񡢲�������Ԫ�����޺�,�������̾���ԭ��������������:˳��ͶƱ(`castVote`)���� NeoForge ��������ĺϲ��������������
+**路线 A —— 让 OptiFine 自己的 ModLauncher 服务跑起来。**
+OptiFine 的 `optifine.OptiFineTransformationService` 只依赖 `cpw.mods.modlauncher.*`(`ITransformationService`、`ITransformer<ClassNode>`、`SecureJar`),不引用 `net.minecraftforge.*`。理论上只要让 NeoForge 发现并加载这个服务、并把它的元数据修好,补丁流程就能原样工作。代价是:顺序、投票(`castVote`)、与 NeoForge 自身补丁的合并都不在我们手里。
 
-**·�� B ���� �Լ��ܲ�����,�Լ�����������(�� OptiFabric)��**
-�� `preLaunch` �׶ε��� `optifine.Patcher` �򲹶����ؽ� lambda�����������ռ�,Ȼ��ѽ������ NeoForge ��ת�� API���ɿ������,�����ǹ�������,����Ҫ��Ū�� NeoForge �ʲ��������ඥ�档**�����߱� 1.20.x ����һ��**:��������Ԥ�ھ��ǹٷ���,���� SRG ������һ�� ���� ǰ���������ռ�Ĵ�ȷ���Ԥ���䶨��
+**路线 B —— 自己跑补丁器,自己交出补丁类(像 OptiFabric)。**
+在 `preLaunch` 阶段调用 `optifine.Patcher` 打补丁、重建 lambda、对齐命名空间,然后把结果交给 NeoForge 的转换 API。可控性最高,代价是工作量大,而且要先弄清 NeoForge 允不允许整类顶替。**这条线比 1.20.x 轻松一点**:运行期名预期就是官方名,少了 SRG 对齐这一步 —— 前提是命名空间的待确认项按预期落定。
 
-�Ǽܽ׶�����������:**������С������֤·�� A �ܲ��ܳ���**(����"�ܲ�����"������),ͬʱ��·�� B ����̬��֯����(���������á����桢fixer ��ܶ����� `core` ��,������������ص�)��
+骨架阶段两条都留着:**先用最小代价验证路线 A 能不能成立**(它是"能不能跑"的问题),同时按路线 B 的形态组织代码(补丁器调用、缓存、fixer 框架都放在 `core` 里,不依赖具体挂载点)。
 
-## ��̱�
+## 里程碑
 
-| # | ���� | ����о� |
+| # | 内容 | 完成判据 |
 |---|---|---|
-| M0 | �Ǽ�:������֧���汾���󡢹������á��ĵ� | ���ύ(�ĵ�����)�����Ĺ��������ύ |
-| M1 | ·�� A ������:�޺� OptiFine jar ��Ԫ����,�� NeoForge ���� | **��汾**��������������,��־���ܿ��� OptiFine ��ת�����񱻼���;���� 1.21.1 �� 1.21.11 ����������ʽ�� OptiFine �İ汾 |
-| M2 | ��������:���� `optifine.Patcher`,��������(`<��ϷĿ¼>/.optifine/<OptiFine �汾>/`) | �״������ɲ���,��������߻��� |
-| M3 | ������ע�� + fixer ���:���ر����ߵķ����������� NeoForge ����������ص� | �����粻��,����/��Ʒ/������Ⱦ���� |
-| M4 | ��������:��Ӱ��������ݡ���������;������ģ��(�������� NeoForge ��Ⱦ���ӵ�) | �� OptiFabric �� Fabric �ϵ����տھ�����;**1.21.6 / 1.21.7 �����տھ�Ҫ�ֿ�д**:������ֻ�ܰ�"�����ù�Ӱ��"�о�,��Ӱȱ������ OptiFine ��,�ȹ��� |
-| M5 | ����:�汾�ű�������˵����CurseForge / Modrinth Ԫ���� | ��һ���������������,ʮ��������Դ��;ֻ�� beta NeoForge ������Ҫ�ڷ���˵����д�� |
+| M0 | 骨架:三条分支、版本矩阵、构建配置、文档 | 本提交(文档部分)与随后的构建配置提交 |
+| M1 | 路线 A 可行性:修好 OptiFine jar 的元数据,让 NeoForge 认它 | **逐版本**能启动到标题界面,日志里能看到 OptiFine 的转换服务被加载;先做 1.21.1 与 1.21.11 这两个有正式版 OptiFine 的版本 |
+| M2 | 补丁管线:调用 `optifine.Patcher`,建立缓存(`<游戏目录>/.optifine/<OptiFine 版本>/`) | 首次启动完成补丁,二次启动走缓存 |
+| M3 | 补丁类注入 + fixer 框架:补回被搬走的方法、处理与 NeoForge 自身补丁的重叠 | 进世界不崩,方块/物品/区块渲染正常 |
+| M4 | 完整兼容:光影包、抗锯齿、连接纹理;第三方模组(尤其依赖 NeoForge 渲染钩子的) | 与 OptiFabric 在 Fabric 上的验收口径对齐;**1.21.6 / 1.21.7 的验收口径要分开写**:这两版只能按"不启用光影包"判据,光影缺陷属于 OptiFine 侧,先挂起 |
+| M5 | 发布:版本脚本、发布说明、CurseForge / Modrinth 元数据 | 能一条命令出包并发布,十个产物各自打包;只有 beta NeoForge 的三版要在发布说明里写明 |
 
-ÿ���߰�ͬ������̱��ƽ�,�����Զ������ա����ߵ� M1 ����� 1.21.1 �� 1.21.11 ����:�������� OptiFine ����ʽ��,�Ȱѹ�����ͨ,����ֻ�� preview �İ汾���̡�
+每条线按同样的里程碑推进,但各自独立验收。本线的 M1 建议从 1.21.1 与 1.21.11 入手:这两版有 OptiFine 的正式版,先把管线跑通,再往只有 preview 的版本上铺。
 
-## ����ȱ�������Ĵ���߽�
+## 上游缺陷与它的处理边界
 
-1.21.6 �� 1.21.7 ���߸� OptiFine ���������ù�Ӱ��ʱ�ر�(��ָ��,`multiTex` Ϊ null,���� `net.optifine.shaders.ShadersTex.initDynamicTextureNS`),��������ЩԤ������ע��ĵ���**ȱ��ǰ�õ� `setParentTexture` ����**������ OptiFine �����������������,��������޹�,����:
+1.21.6 与 1.21.7 的七个 OptiFine 构建在启用光影包时必崩(空指针,`multiTex` 为 null,崩在 `net.optifine.shaders.ShadersTex.initDynamicTextureNS`),根因是这些预览构建注入的调用**缺少前置的 `setParentTexture` 关联**。这是 OptiFine 补丁负载自身的问题,与加载器无关,所以:
 
-- ����Ŀ**���������� NeoForge �����ʧ��**,M4 �������水"�����ù�Ӱ��"����;
-- ����ĿҲ**����ŵ**ȥ����:��Ҫ��,�����ڱ���Ŀ���д OptiFine �Ĳ������(���� fixer ��ְ��Χ),Ҫ������ֵ��ֵ��;
-- ��ʡ�µ�·���ǵ� OptiFine ���¹���;�¹�������ǰ,�������״̬���ĵ��ﱣ��"��֪ȱ��"������"��֧��"��
+- 本项目**不把它当成 NeoForge 适配的失败**,M4 上这两版按"不启用光影包"验收;
+- 本项目也**不承诺**去修它:若要修,等于在本项目里改写 OptiFine 的补丁结果(属于 fixer 的职责范围),要先评估值不值得;
+- 更省事的路线是等 OptiFine 出新构建;新构建出现前,这两版的状态在文档里保持"已知缺陷"而不是"不支持"。
 
-## �ύ����
+## 提交纪律
 
-- ��֧�������:`1.20.x`��`1.21.x`��`26.x` �������Լ��� `README`�����󡢹������ú��ĵ�,�������֧�ĺϲ�,Ҳ�����߸��ư汾�š�
-- ����ҲҪ���汾����:ʮ���汾�Ľ��۲��ܻ��ඥ��,д�ĵ�ʱҪ˵������һ���汾;`J6` / `J7` ����ͬ��ϵ���������׻졣
-- �ĵ���ʵ��ھ�Ҫһ��:û����ʵ��Ϸ����֤���Ķ���д�ɼƻ�,��д�ɽ��ۡ�
-- OptiFine �� jar �����ֿ�,Ҳ�������ַ���
+- 分支互相独立:`1.20.x`、`1.21.x`、`26.x` 各自有自己的 `README`、矩阵、构建配置和文档,不做跨分支的合并,也不跨线复制版本号。
+- 线内也要按版本立据:十个版本的结论不能互相顶替,写文档时要说清是哪一个版本;`J6` / `J7` 这种同号系列尤其容易混。
+- 文档与实测口径要一致:没在真实游戏里验证过的东西写成计划,不写成结论。
+- OptiFine 的 jar 不进仓库,也不随产物分发。
 
-## 2026-09-19/20:1.21.9 �����ߵ������(����ʵ��)
+## 2026-09-19/20:1.21.9 这条线的侦察结果(本轮实测)
 
-��**�����ؽ��� rig** �����������µ�ȷ��,������"��������һ���Ѿ�����,ȱ������������":
+在**本机重建的 rig** 上做了两件事的确认,结论是"加载器这一半已经能造,缺的是另外两半":
 
-1. **�������������Թ�**:�ڱ���֧��ִ��
+1. **加载器构建可以过**:在本分支上执行
 
    .\gradlew jar -Pmc=1.21.9 -Pneoforge=21.9.16-beta -Pmountpoint=fml10
 
-   �õ� uild/libs/OptifiNeoforge-1.0.0+mc1.21.9.jar(129 356 �ֽ�)���� Ҳ���Ǳ��ļ������Ƕ�ע��˵��
-   "loader-side tools and the mod skeleton alone",��Ԥ��һ�� ?��
-2. **ȱ������**:
-   a. **FML 10 �� ClassProcessor Ҫ������غ� jar**:26.x ��֧�� src/fml10 ֻ��������
-      (OptifinePayloadClassProcessor / OptifinePayloadLocator),��ע������Ҫ�� rig **������غ� jar**
-      (���� OptiFine ����),�����Ǳ���������� jar ���� rig Ŀǰû����һ����
-   b. **1.21.9+ û�� ModLauncher**,�� rig �� launch.ps1 ��Χ�� ModLauncher д��(module path��-p��
-      --launchTarget��ignoreList ��)���� Ҫ����������,�ø� rig ��һ�� FML 10 �����·����
+   得到 uild/libs/OptifiNeoforge-1.0.0+mc1.21.9.jar(129 356 字节)—— 也就是本文件上面那段注释说的
+   "loader-side tools and the mod skeleton alone",与预期一致 ✔。
+2. **缺的两半**:
+   a. **FML 10 的 ClassProcessor 要打包进载荷 jar**:26.x 分支的 src/fml10 只有两个类
+      (OptifinePayloadClassProcessor / OptifinePayloadLocator),按注释它们要由 rig **编译进载荷 jar**
+      (带着 OptiFine 的类),而不是编译进加载器 jar —— rig 目前没有这一步。
+   b. **1.21.9+ 没有 ModLauncher**,而 rig 的 launch.ps1 是围绕 ModLauncher 写的(module path、-p、
+      --launchTarget、ignoreList 等)—— 要跑这三条线,得给 rig 加一条 FML 10 的启动路径。
 
-�������¶�**û����**,���� 1.21.9 / 1.21.10 / 1.21.11 ��Ȼ��δʵ��ġ�
-### ����(ͬһ�ֵ���һ��):FML 10 �� ClassProcessor ȷʵ�ܱ����(ʵ��)
+这两件事都**没有做**,所以 1.21.9 / 1.21.10 / 1.21.11 仍然是未实测的。
+### 补充(同一轮的下一步):FML 10 的 ClassProcessor 确实能编出来(实测)
 
-- **SPI ������**:�� rig �� libraries ��ɨ 515 �� jar,**ֻ��һ��**����
+- **SPI 在哪里**:在 rig 的 libraries 里扫 515 个 jar,**只有一份**含有
   
-et/neoforged/neoforgespi/transformation/ClassProcessor.class ����
-  libraries\net\neoforged\fancymodloader\loader\10.0.14\loader-10.0.14.jar(�� NeoForge 21.9.16-beta װ������)��
-- **�����䷽(ʵ��ͨ��)**:26.x ������Դ�� + ������� loader jar + libraries\net\neoforged\neoforgespi\**
-  + log4j-api + rig �� ASM jar ? **2 �� class / 7470 �ֽڵ� jar** ?��Ҳ����˵"�� ClassProcessor �����"��һ��
-  û���κ�δ֪����
-- **��Ȼȱ��**:�� �����ļ������ע��,��������Ҫ�� OptiFine ����һ��**����غ� jar**(rig û����һ��);
-  �� **1.21.9+ �����·��**(û�� ModLauncher,launch.ps1 ���� module path / --launchTarget ��������)��
-  ������������Ψһ�Ĵ��,�������̸"ʵ��"��
-### �ٲ���:FML 10 �����·�����(ʵ�⵽����,��δ��ͨ)
+et/neoforged/neoforgespi/transformation/ClassProcessor.class ——
+  libraries\net\neoforged\fancymodloader\loader\10.0.14\loader-10.0.14.jar(随 NeoForge 21.9.16-beta 装进来的)。
+- **编译配方(实测通过)**:26.x 那两份源码 + 上面这个 loader jar + libraries\net\neoforged\neoforgespi\**
+  + log4j-api + rig 的 ASM jar ⇒ **2 个 class / 7470 字节的 jar** ✔。也就是说"把 ClassProcessor 编出来"这一步
+  没有任何未知数。
+- **仍然缺的**:① 按本文件上面的注释,这两个类要和 OptiFine 的类一起**打进载荷 jar**(rig 没有这一步);
+  ② **1.21.9+ 的启动路径**(没有 ModLauncher,launch.ps1 那套 module path / --launchTarget 都不适用)。
+  ②是这三条线唯一的大件,做完才能谈"实测"。
+### 再补充:FML 10 的启动路径侦察(实测到这里,尚未打通)
 
-װ�� NeoForge **21.9.16-beta** ֮�������Լ��� profile,����:
+装好 NeoForge **21.9.16-beta** 之后看了它自己的 profile,量到:
 
-- mainClass �� **
-et.neoforged.fml.startup.Client**(���� cpw.mods.bootstraplauncher.BootstrapLauncher),
-  **û�� ModLauncher**,Ҳ**û��** --launchTarget / module path ���� ֻ������ --fml.* ����
+- mainClass 是 **
+et.neoforged.fml.startup.Client**(不是 cpw.mods.bootstraplauncher.BootstrapLauncher),
+  **没有 ModLauncher**,也**没有** --launchTarget / module path —— 只有三个 --fml.* 参数
   (
 eoForgeVersion / mcVersion / 
-eoFormVersion),���ఴ�� profile(1.21.9.json)�ĳ�����Ϸ��������
-- ������·���ֹ�ƴ classpath ����һ��**�� mod �Ķ���**:
-  ����**�����������ų��� 90 ��**,Ҳд���� logs/latest.log ? ���� �� FML �Լ��ĺ�̨ɨ�豨
-  java.lang.IllegalStateException: zip file closed(BackgroundScanHandler �� CompositeJarContents.visitContent
-  �� Scanner.scan),��"ɨ��ĳ�� jar ʱ���Ѿ����ص�"��Ҳ����˵**�ֹ�ƴ�� classpath �������� FML 10 �ӹ���Щ jar**,
-  �ٷ��������Ȼ�ǰ���һ�ַ�ʽ�� jar �������ġ�
-- ˳������һ���پ���:�� profile ���� classpath ʱ�ῴ�� 30 ��"ȱʧ"�� jar,����**ȫ�Ǳ��ƽ̨�� natives**
-  (linux / macos ?),rig �� etch-libraries.ps1 �����Ͱ�������������,Windows �ϲ���Ҫ��
+eoFormVersion),其余按父 profile(1.21.9.json)的常规游戏参数给。
+- 按这条路径手工拼 classpath 起了一次**无 mod 的对照**:
+  进程**能起来并活着超过 90 秒**,也写出了 logs/latest.log ✔ —— 但 FML 自己的后台扫描报
+  java.lang.IllegalStateException: zip file closed(BackgroundScanHandler → CompositeJarContents.visitContent
+  → Scanner.scan),即"扫描某个 jar 时它已经被关掉"。也就是说**手工拼的 classpath 不足以让 FML 10 接管这些 jar**,
+  官方启动器显然是按另一种方式把 jar 交给它的。
+- 顺带澄清一个假警报:按 profile 解析 classpath 时会看到 30 个"缺失"的 jar,但那**全是别的平台的 natives**
+  (linux / macos ✗),rig 的 etch-libraries.ps1 本来就按规则跳过它们,Windows 上不需要。
 
-**����**:1.21.9+ ��������Ҫ��ʵ��,����"�� FML 10 �����ķ�ʽ׼�������"����� ���� ����û��ͨ,
-���� 1.21.9 / 1.21.10 / 1.21.11 ��Ȼ��**δʵ��**��
-### FML 10 ���ĵ�����ʵ��:����ʵ�ߵú�Զ,Ȼ���� 0.8 �����Լ��ص�
+**结论**:1.21.9+ 的三条线要能实测,还差"按 FML 10 期望的方式准备并启动"这件事 —— 本轮没打通,
+所以 1.21.9 / 1.21.10 / 1.21.11 仍然是**未实测**。
+### FML 10 侦察的第三批实测:它其实走得很远,然后在 0.8 秒内自己关掉
 
-�����������ȫ(--gameDir/--assetsDir/--assetIndex/--username ��,ֻ�� libraries �� classpath ��,���ٰ� client jar
-����ȥ)֮��,FML 10 ����־��ʾ:
+把启动参数补全(--gameDir/--assetsDir/--assetIndex/--username 等,只留 libraries 在 classpath 上,不再把 client jar
+塞进去)之后,FML 10 的日志显示:
 
-- Starting FancyModLoader version 10.0.14 (CLIENT in PROD) ?
+- Starting FancyModLoader version 10.0.14 (CLIENT in PROD) ✔
 - Loading ImmediateWindowProvider fmlearlywindow + **GL info: AMD Radeon RX 7800 XT GL version 3.3.0 Core**
-  ���� Ҳ����˵**����Ŀ������ڴ��ڲ��õ��� GL ��Ϣ** ?
-- Mod List: Minecraft 1.21.9 (minecraft) / NeoForge 21.9.16-beta (neoforge) ?
-- Building game content classloader: minecraft (composite(jar(client-1.21.9-...-srg.jar))) ... ?
-- **�����һ�о��� Closing FML Loader** ���� ��������ر�ֻ��Լ **0.8 ��**,����֮ǰ**û���κ� ERROR**;
-  ���� An error occurred scanning file ...client-1.21.9-...-srg.jar(zip file closed)��**�ر�֮��**�ų��ֵ�,
-  Ҳ����**���������ԭ��**��
+  —— 也就是说**它真的开了早期窗口并拿到了 GL 信息** ✔
+- Mod List: Minecraft 1.21.9 (minecraft) / NeoForge 21.9.16-beta (neoforge) ✔
+- Building game content classloader: minecraft (composite(jar(client-1.21.9-...-srg.jar))) ... ✔
+- **紧接着一行就是 Closing FML Loader** —— 从启动到关闭只有约 **0.8 秒**,而且之前**没有任何 ERROR**;
+  那条 An error occurred scanning file ...client-1.21.9-...-srg.jar(zip file closed)是**关闭之后**才出现的,
+  也就是**结果而不是原因**。
 
-˳�����һ������ǰ�Ĳ²�:"client jar Ҳ�� classpath ��"���³�ͻ ���� ȥ��֮��(ֻ�� libraries)**������ȫһ��** ?��
+顺带否掉一个我先前的猜测:"client jar 也在 classpath 上"导致冲突 —— 去掉之后(只留 libraries)**现象完全一样** ✗。
 
-**��һ��**(��¼������,���ڽ�����):�� -Xlog:exceptions=trace �����߳��Ǹ�"�����˳�"��ԭ��ץ����
-(����ַ��ڱ��Ự���Ѿ��óɹ���һ��:1.20.4 ��ԭʼ�쳣������ô�ڳ�����),���߶��� NeoForge �ٷ������
-�� profile ֮�⻹����ʲô��
-### �ش�һ��:FML 10 �����·��**��ͨ��**(�� mod �����ѽ����������·��)
+**下一步**(记录在这里,便于接着做):用 -Xlog:exceptions=trace 把主线程那个"安静退出"的原因抓出来
+(这个手法在本会话里已经用成功过一次:1.20.4 的原始异常就是这么挖出来的),或者对照 NeoForge 官方启动器
+在 profile 之外还做了什么。
+### 重大一步:FML 10 的启动路径**打通了**(无 mod 对照已进到标题界面路径)
 
-��һ�ڼǵ�"0.8 �밲���˳�"�ҵ�ԭ���� ���� ��**��©�� profile ��� JVM ����**,���� FML �� OptiFine ������:
+上一节记的"0.8 秒安静退出"找到原因了 —— 是**我漏了 profile 里的 JVM 参数**,不是 FML 或 OptiFine 的问题:
 
-- �� profile(1.21.9.json)�� rguments.jvm �����ĸ� **natives �������**:
-  -Djava.library.path��-Djna.tmpdir��-Dorg.lwjgl.system.SharedLibraryExtractPath��-Dio.netty.native.workdir
-  (��ָ�� rig �� 
-atives),���� -Xss1M �� -Dminecraft.launcher.brand/version;
-- �� profile(NeoForge)����� --add-opens java.base/java.lang.invoke=ALL-UNNAMED ��
-  --add-exports jdk.naming.dns/com.sun.jndi.dns=java.naming��
+- 父 profile(1.21.9.json)的 rguments.jvm 里有四个 **natives 相关属性**:
+  -Djava.library.path、-Djna.tmpdir、-Dorg.lwjgl.system.SharedLibraryExtractPath、-Dio.netty.native.workdir
+  (都指向 rig 的 
+atives),另有 -Xss1M 与 -Dminecraft.launcher.brand/version;
+- 子 profile(NeoForge)额外给 --add-opens java.base/java.lang.invoke=ALL-UNNAMED 与
+  --add-exports jdk.naming.dns/com.sun.jndi.dns=java.naming。
 
-����Щ**ȫ��**����֮��(����ͬǰһ��:ֻ�� profile �� libraries �Ž� -cp��-DlibraryDirectory ָ�� rig ��
-libraries��mainClass �� 
-et.neoforged.fml.startup.Client����Ϸ�����ø� profile ����),
-**�� mod ������������**:
+把这些**全部**给上之后(其余同前一节:只把 profile 的 libraries 放进 -cp、-DlibraryDirectory 指向 rig 的
+libraries、mainClass 用 
+et.neoforged.fml.startup.Client、游戏参数用父 profile 那套),
+**无 mod 对照跑起来了**:
 
 `
 [Render thread/INFO] [net.minecraft.client.Minecraft/]: Setting user: Dev
 [Render thread/INFO] [net.minecraft.client.sounds.SoundEngine/SOUNDS]: Sound engine started
 `
 
-���̻���(70 ���������������)����־ 12 010 �ֽ� ?��Ҳ����˵ **1.21.9 �����ߵ������ʽ������δ֪����** ?
-���� ���� 1.21.9 / 1.21.10 / 1.21.11 �����ߴ�ǰ������·ʯ��
+进程活着(70 秒后由我主动结束)、日志 12 010 字节 ✔。也就是说 **1.21.9 这条线的启动方式不再是未知数了** ✔
+—— 这是 1.21.9 / 1.21.10 / 1.21.11 三条线此前最大的拦路石。
 
-**ע��߽�**:����**�� mod ����**(û�� OptiFine��û�б���Ŀ���غ�),�������Ȳ�����"��������ͨ��",Ҳ���ı�
-��������"δʵ��"��״̬���������������:�� �� 26.x �� src/fml10(������,��ʵ��ɱ���)��ע��**����غ� jar**;
-�� �� rig ����������ײ����̻���һ�� **FML 10 �����·��**(launch.ps1 Ŀǰֻ�� ModLauncher)��
-### rig �������� FML 10 �����·��(ʵ��:�� mod ���� VERDICT: STARTED)
+**注意边界**:这是**无 mod 对照**(没有 OptiFine、没有本项目的载荷),所以它既不等于"这三条线通过",也不改变
+那三条线"未实测"的状态。还差的两件仍是:① 把 26.x 的 src/fml10(两个类,已实测可编译)按注释**打进载荷 jar**;
+② 在 rig 里把上面这套参数固化成一条 **FML 10 的启动路径**(launch.ps1 目前只懂 ModLauncher)。
+### rig 现在有了 FML 10 的启动路径(实测:无 mod 对照 VERDICT: STARTED)
 
-���� optifineoforge-test\launch-fml10.ps1(ModLauncher �������� launch.ps1)�������ļ���:
+新增 optifineoforge-test\launch-fml10.ps1(ModLauncher 那套留在 launch.ps1)。它做四件事:
 
-1. ˳�� inheritsFrom �� profile ��������(NeoForge profile �� ԭ�� profile),��"�����Ӻ󡢺��߸���"�ϲ� libraries,
-   ������ƴ -cp ����**���� client jar �Ž�ȥ**(ʵ��:�Ž�ȥ�������һ��,FML �Լ����� -DlibraryDirectory
-   �� --fml.neoFormVersion �ҵ���Ϸ jar);
-2. չ������ rguments.jvm �� rguments.game ���ռλ��,����**���� rule ��Ŀ**
-   (ʵ��:��һ���汾�հ��� -XstartOnFirstThread ���� macOS ר�ù���,JVM ֱ�Ӿܾ����:
+1. 顺着 inheritsFrom 把 profile 链读出来(NeoForge profile → 原版 profile),按"父先子后、后者覆盖"合并 libraries,
+   用它们拼 -cp ——**不把 client jar 放进去**(实测:放进去与否现象一样,FML 自己会用 -DlibraryDirectory
+   加 --fml.neoFormVersion 找到游戏 jar);
+2. 展开两边 rguments.jvm 与 rguments.game 里的占位符,并且**跳过 rule 条目**
+   (实测:第一个版本照搬了 -XstartOnFirstThread 这条 macOS 专用规则,JVM 直接拒绝启动:
    Unrecognized option: -XstartOnFirstThread);
-3. �� 
-et.neoforged.fml.startup.Client + ������Ϸ�������,֧�� -Mods(���� mods/)��-Fresh��-Seconds;
-4. ��ӡ�� launch.ps1 **ͬ����״**�� VERDICT ��(Setting user / �������� / �±������� / stderr �ֽ� /
-   [OptiFine] ����),��������·���Ľ��ֱ�Ӷ��ա�
+3. 用 
+et.neoforged.fml.startup.Client + 常规游戏参数启动,支持 -Mods(拷进 mods/)、-Fresh、-Seconds;
+4. 打印与 launch.ps1 **同样形状**的 VERDICT 块(Setting user / 声音引擎 / 新崩溃报告 / stderr 字节 /
+   [OptiFine] 行数),便于两条路径的结果直接对照。
 
-ʵ��(1.21.9 / NeoForge 21.9.16-beta,�� mod):
+实测(1.21.9 / NeoForge 21.9.16-beta,无 mod):
 
 `
 ===== VERDICT: STARTED =====
@@ -196,62 +196,62 @@ et.neoforged.fml.startup.Client + ������Ϸ�������,֧�
   [OptiFine] lines    : 0  (latest.log, not doubled)
 `
 
-Ҳ����˵ **1.21.9+ ��"���"��һ��������**�������߻�������һ�����ǰ� 26.x �� src/fml10(��ʵ��ɱ���)
-�� OptiFine ����һ��**���� FML 10 �ᷢ�ֵ��Ǹ��غ� jar**,Ȼ��������ű�ȥ�ܡ�
-### �غ� jar ����Ҫװʲô(�� src/fml10 �������˵�����������,������)
+也就是说 **1.21.9+ 的"启动"这一半做完了**。三条线还差的最后一件事是把 26.x 的 src/fml10(已实测可编译)
+与 OptiFine 的类一起**做成 FML 10 会发现的那个载荷 jar**,然后用这个脚本去跑。
+### 载荷 jar 到底要装什么(从 src/fml10 两个类的说明里读出来的,附出处)
 
-��һ��"��� fml10 �غ�"���䷽,���ڲ��ǲµ��� ���� �������Լ����ĵ�д���� FML 10 �ķ��ֻ���:
+下一步"打包 fml10 载荷"的配方,现在不是猜的了 —— 两个类自己的文档写清了 FML 10 的发现机制:
 
-- OptifinePayloadClassProcessor **ͨ�� META-INF/services/net.neoforged.neoforgespi.transformation.ClassProcessor
-  ע��**(FMLLoader.createClassProcessorSet �� ServiceLoaderUtil.loadServices),���������ǰ�**�Ѿ���ò�������Ϸ��
-  ���ǵ���Ϸ�Լ��Ƿ���**;����Щ��Ʒ�ఴԼ������**ͬһ�� jar �� srg/ ��**(rig ���Ȱ� patch/srg/** Ӧ�õ�ԭ��鵵
-  �Ľ��,Ҳ���Ǳ��ֿ����߹��� optifine-patched.jar �Ĳ���)��
-- OptifinePayloadLocator ֮���Դ���,����Ϊ
+- OptifinePayloadClassProcessor **通过 META-INF/services/net.neoforged.neoforgespi.transformation.ClassProcessor
+  注册**(FMLLoader.createClassProcessorSet → ServiceLoaderUtil.loadServices),它做的事是把**已经打好补丁的游戏类
+  覆盖到游戏自己那份上**;而那些成品类按约定放在**同一个 jar 的 srg/ 下**(rig 事先把 patch/srg/** 应用到原版归档
+  的结果,也就是本仓库离线管线 optifine-patched.jar 的布局)。
+- OptifinePayloadLocator 之所以存在,是因为
   
-et.neoforged.fml.loading.EarlyServiceDiscovery.SERVICES ����ֻ��
-  {IModFileCandidateLocator, IModFileReader, IDependencyLocator, GraphicsBootstrapper, ImmediateWindowProvider} ����
-  **ClassProcessor ��������**������"ֻ���� ClassProcessor �� mods/ jar"���ᱻԤ���ء���������Զ���ᱻ����;
-  �Ƕ�ע�ͻ�����ʵ������:���� jar �ܵ��˱������,ȴ**���� [OptiFine]����־������������û��**��
-  ������ jar **��Ҫ**����һ�� IModFileCandidateLocator(�����ļ�
-  META-INF/services/net.neoforged.neoforgespi.locating.IModFileCandidateLocator),����Ҫ���Լ���Ԫ����
-  ����ͨ�� mods/ ɨ�跢�֡�
+et.neoforged.fml.loading.EarlyServiceDiscovery.SERVICES 正好只有
+  {IModFileCandidateLocator, IModFileReader, IDependencyLocator, GraphicsBootstrapper, ImmediateWindowProvider} ——
+  **ClassProcessor 不在其中**。所以"只声明 ClassProcessor 的 mods/ jar"不会被预加载、处理器永远不会被看到;
+  那段注释还记了实测现象:那种 jar 跑到了标题界面,却**零条 [OptiFine]、日志里连处理器都没有**。
+  因此这个 jar **还要**声明一个 IModFileCandidateLocator(服务文件
+  META-INF/services/net.neoforged.neoforgespi.locating.IModFileCandidateLocator),并且要靠自己的元数据
+  被普通的 mods/ 扫描发现。
 
-**���� 1.21.9 ���غ� jar = ���߹��߲����� srg/** ��Ʒ�� + ������ fml10 �� + ���������ļ� + META-INF/neoforge.mods.toml��**
-(����ֻ������䷽������;**��װ�ű���ûд**��)
-### ��һ�������� 1.21.9 �غ�:����ȫ������ƹ���,��Ϸ��װ����֮�󰲾��˳�
+**所以 1.21.9 的载荷 jar = 离线管线产出的 srg/** 成品类 + 那两个 fml10 类 + 两个服务文件 + META-INF/neoforge.mods.toml。**
+(本轮只把这份配方记下来;**组装脚本还没写**。)
+### 第一次真正跑 1.21.9 载荷:机制全部按设计工作,游戏在装完类之后安静退出
 
-�������ɲ�ʵ����������:
+本轮做成并实测了三件事:
 
-1. **�غ� jar ��װ�ɹ�**(����һ���Ƿ��䷽,��ʱ�ű�����):work\1.21.9\optifine-patched.jar ���
-   **1233 �� srg/** ��Ʒ��** + ���� fml10 �� + ���������ļ� + META-INF/neoforge.mods.toml
-   ? jars-1.21.9\optifine-payload-fml10.jar(**2 999 556 �ֽ�**)��
-2. **FML 10 ȷʵ�������غɳ���ȥ��**(launch-fml10.ps1 ����־):
-   - mods/optifine-payload-fml10.jar ������ ?
-   - OptifiNeoforge: early service jar recognised; the payload jar itself is disco...(locator ������ ?)
-   - OptifiNeoforge: OptifinePayloadClassProcessor constructed (FML 10 mount point) ?
-   - OptiFine payload: 517 finished game classes ?,���һ����
-     OptiFine payload: installed net.minecraft.util.Mth (34 fields, 109 methods) [1 so far] ��(�� 16 ��ʱ��־�ж�)
-3. **Ȼ����Ȼ�ǰ����˳�**:Closing FML Loader �� Clearing ModLoader,**û�� ERROR��û���쳣��stderr 0 �ֽ�**,
-   Setting user û���֡�ע��:**�� mod �Ķ��������ܵ� Setting user ��**(�� 56 ��),�����������װ��ȥ������,
-   �����������ʽ��
+1. **载荷 jar 组装成功**(按上一节那份配方,临时脚本内联):work\1.21.9\optifine-patched.jar 里的
+   **1233 个 srg/** 成品类** + 两个 fml10 类 + 两个服务文件 + META-INF/neoforge.mods.toml
+   ⇒ jars-1.21.9\optifine-payload-fml10.jar(**2 999 556 字节**)。
+2. **FML 10 确实把它当载荷吃下去了**(launch-fml10.ps1 的日志):
+   - mods/optifine-payload-fml10.jar 被发现 ✔
+   - OptifiNeoforge: early service jar recognised; the payload jar itself is disco...(locator 起作用 ✔)
+   - OptifiNeoforge: OptifinePayloadClassProcessor constructed (FML 10 mount point) ✔
+   - OptiFine payload: 517 finished game classes ✔,随后一条条
+     OptiFine payload: installed net.minecraft.util.Mth (34 fields, 109 methods) [1 so far] …(到 16 条时日志中断)
+3. **然后仍然是安静退出**:Closing FML Loader → Clearing ModLoader,**没有 ERROR、没有异常、stderr 0 字节**,
+   Setting user 没出现。注意:**无 mod 的对照是能跑到 Setting user 的**(第 56 轮),所以问题出在装进去的类上,
+   而不是启动方式。
 
-**��һ��**(��ȷ):���������� -Xlog:exceptions=trace(���Ự�������������ڳ�"������"��ԭ��),�����߳���
-"װ��ʮ����ʮ����"֮�󵽵�����ʲô ���� ������ֻ��**����������**���غ������֡�
-### ���ֵĽ��:����"ĳ���໵",����"�غ�һ��װ�� FML �͹ص��Լ�"
+**下一步**(明确):给这次启动加 -Xlog:exceptions=trace(本会话已两次用这招挖出"看不见"的原因),看主线程在
+"装了十几二十个类"之后到底抛了什么 —— 或者先只放**少数几个类**的载荷做二分。
+### 二分的结果:不是"某个类坏",而是"载荷一被装上 FML 就关掉自己"
 
-- �� -Xlog:exceptions=trace ץ:�����غ��������־**���һ���쳣**�����޹ص� AWT/��������(2.8 �봦),
-  **û���κ��쳣�����Ǵιر�** ���� �� mod �Ķ���Ҳ��ͬ������β,�����ܼ����ߵ� Setting user��
-- ����������:���غ�����**ֻ��һ����**(srg/net/minecraft/util/Mth.class,jar �� 19 016 �ֽ�),
-  OptiFine payload: 1 finished game classes �� installed net.minecraft.util.Mth (34 fields, 109 methods) [1 so far]
-  �� **�������Ȼ�� Closing FML Loader**��
-- Ҳ����˵:**����ĳ�������ϷŪ��**,����"�غ�һ����װ��,FML �Ͱ��Լ��ص�"��
-  ��һ��Ҫ�����Ǵ������� FML 10 ��������һ��(�������ڰ�װʱ�Ƿ��� FML ����ɨ����Ǹ� jar ���� ֮ǰ���ֹ�
-  zip file closed �ı�Թ,���ܾ���������������һ��),�����Ǽ�����С��ķ�Χ��
-### ��λ��Ψһһ��:�� ClassProcessor �İ�װ����,���� jar / locator / Ԫ���� / �౾��
+- 用 -Xlog:exceptions=trace 抓:整份载荷跑完后日志**最后一条异常**仍是无关的 AWT/字体噪音(2.8 秒处),
+  **没有任何异常伴随那次关闭** —— 无 mod 的对照也是同样的收尾,但它能继续走到 Setting user。
+- 于是做二分:把载荷缩到**只含一个类**(srg/net/minecraft/util/Mth.class,jar 共 19 016 字节),
+  OptiFine payload: 1 finished game classes → installed net.minecraft.util.Mth (34 fields, 109 methods) [1 so far]
+  → **紧接着仍然是 Closing FML Loader**。
+- 也就是说:**不是某个类把游戏弄坏**,而是"载荷一旦被装上,FML 就把自己关掉"。
+  下一步要看的是处理器与 FML 10 交互的这一段(例如它在安装时是否动了 FML 正在扫描的那个 jar —— 之前出现过
+  zip file closed 的抱怨,可能就是这条线索的另一面),而不是继续缩小类的范围。
+### 定位到唯一一处:是 ClassProcessor 的安装动作,不是 jar / locator / 元数据 / 类本身
 
-ͬһ���غ� jar,**ֻȥ������ ClassProcessor �ķ����ļ�**(���ࡪ��locator ����
-eoforge.mods.toml���Ǹ���Ʒ�ࡪ��
-��ȫһ��),�������ͱ��:
+同一个载荷 jar,**只去掉那条 ClassProcessor 的服务文件**(其余——locator 服务、
+eoforge.mods.toml、那个成品类——
+完全一样),启动结果就变成:
 
 `
 ===== VERDICT: STARTED =====
@@ -261,56 +261,33 @@ eoforge.mods.toml���Ǹ���Ʒ�ࡪ��
   [OptiFine] lines    : 0
 `
 
-Ҳ����˵:jar ����û���⡢locator û���⡢Ԫ����û���⡢��Ҳû����,**Ψһ�� FML 10 �ر��Լ��ľ���"���������ȥװ��"��һ��**��
-ʣ��Ҫ��ľ�ֻ�� OptifinePayloadClassProcessor �İ�װʵ���� FML 10 ɨ��/���� jar �ķ�ʽ֮����໥����
-(���Լ�ȥ��ͬһ�� jar ���Ƕδ���������ɵĵط�,֮ǰ���� zip file closed Ҳָ������)��
-### 1.21.9 ��һ���տ�(��һ����ʵ���Ѿ�ָ��)
+也就是说:jar 本身没问题、locator 没问题、元数据没问题、类也没问题,**唯一让 FML 10 关闭自己的就是"处理器真的去装类"这一步**。
+剩下要查的就只有 OptifinePayloadClassProcessor 的安装实现与 FML 10 扫描/持有 jar 的方式之间的相互作用
+(它自己去读同一个 jar 的那段代码是最可疑的地方,之前那条 zip file closed 也指向这里)。
+### 1.21.9 这一轮收口(下一步的实验已经指名)
 
-�Ѿ�վס�Ĳ���:
+已经站住的部分:
 
-- **�����ʽ** ?:launch-fml10.ps1(rig),�� mod ���� VERDICT: STARTED;
-- **�غ�Ͷ��** ?:�غ� jar �� FML 10 ����,locator ����
-eoforge.mods.toml��srg/** ��Ʒ�඼����ƹ���
-  (OptiFine payload: 517 finished game classes �� ���� installed ...);
-- **Ψһ����** ?:ֻҪ���� ClassProcessor �����ļ���,������һ��ʼװ��,FML 10 �� Closing FML Loader
-  (���쳣��stderr 0;�ѷ����ļ�ȥ����һ�������� Setting user ���� ��һ���Ѿ��ѷ�Χ������)��
+- **启动方式** ✔:launch-fml10.ps1(rig),无 mod 对照 VERDICT: STARTED;
+- **载荷投递** ✔:载荷 jar 被 FML 10 发现,locator 服务、
+eoforge.mods.toml、srg/** 成品类都按设计工作
+  (OptiFine payload: 517 finished game classes → 逐条 installed ...);
+- **唯一卡点** ✗:只要那条 ClassProcessor 服务文件在,处理器一开始装类,FML 10 就 Closing FML Loader
+  (无异常、stderr 0;把服务文件去掉则一切正常跑 Setting user —— 这一步已经把范围钉死了)。
 
-��һ�ָ�����ʵ��(����������):
+下一轮该做的实验(按代价排序):
 
-1. **�ѷ����ļ�����,���� 	argets() ���ؿռ�**:����������"FML 10 ��ϲ��**�д�����ע��**"��
-   "FML 10 ��ϲ��**���������װ��**"�������� ���� ���ļ��� 	argets() ����״��ֱ��(���� payload().keySet()
-   �� Target),��һ�о�����;
-2. ����һ��֤����"װ��"����,RU ���ɴ��� 	ransform ��ѳ�Ʒ ClassNode ���ǵ� 
-ode �ϵ��Ƕ�
-   (FML 10 ��ɨ���߳̿������ڶ�ͬһ�� jar),�������С;
-3. ��һ�������ų��·:��ע�ᴦ����,����**���Ȱѳ�Ʒ�า�ǽ���Ϸ jar**(rig ��������),���������� 1.20.x/1.21.x
-   ����"������Ҳ����",������ʧȥ�������ڻ�װ��
-### һ��ʵ��Ľ���:FML 10 ����"ע�ᴦ����",��������"���װ��"
+1. **把服务文件留着,但让 	argets() 返回空集**:这样能区分"FML 10 不喜欢**有处理器注册**"和
+   "FML 10 不喜欢**处理器真的装类**"这两件事 —— 本文件里 	argets() 的形状很直白(遍历 payload().keySet()
+   造 Target),改一行就能试;
+2. 若上一步证明是"装类"本身,RU 可疑处是 	ransform 里把成品 ClassNode 覆盖到 
+ode 上的那段
+   (FML 10 的扫描线程可能正在读同一批 jar),再逐层缩小;
+3. 另一条互不排斥的路:不注册处理器,改用**事先把成品类覆盖进游戏 jar**(rig 层面做完),让这条线像 1.20.x/1.21.x
+   那样"不改类也能跑",代价是失去了运行期换装。
+### 一行实验的结论:FML 10 允许"注册处理器",不允许它"真的装类"
 
-�� 	argets() �ĳɷ��ؿռ�(**�������վ�ע��,�����ļ��վ���**,ֻ��һ���඼������),����ȫ������:
-
-`
-===== VERDICT: STARTED =====
-Setting user        : True
-Sound engine started: True
-new crash reports   : 0
-`
-
-��־�� OptifinePayloadClassProcessor constructed (FML 10 mount point) ���� ?,�� installed ... һ����û�� ?��
-Ҳ����˵:
-
-- **"�� ClassProcessor ע��"������ȫû����**;
-- ���⾫ȷ������**����������װ��**��һ�� ���� �� 	argets() �������� 517 ����,�Լ� 	ransform ��
-  copy(finished, node) �ѳ�Ʒ���ǻ�ȥ���ǶΡ�
-
-**��һ�ε�һ��ʵ��**(�������Χ����һ��):���� 	argets() �ճ�����,���� 	ransform ֻ����־��**ʲô������**
-(�� copy ��ִ��)����
-- ���Ի�ر� ? ������"��������Щ��"��һ��(FML 10 �Դ�����������Ĵ���);
-- ������������ ? ������� copy(���� ClassNode �ľ�������,FML 10 ��ɨ���߳̿����ڶ�ͬһ���ṹ)��
-### second bisect:���ⲻ��"������",����"��İѳ�Ʒ������ȥ"��һ��
-
-���� 	argets() �ճ������Ǹ���(FML ������ѯ����),���� 	ransform **ʲô������**(ȡ payload() �����иĳ�
-ֱ���ÿ�,���Ƿ������̷���):
+把 	argets() 改成返回空集(**处理器照旧注册,服务文件照旧在**,只是一个类都不声明),其余全部不变:
 
 `
 ===== VERDICT: STARTED =====
@@ -319,49 +296,72 @@ Sound engine started: True
 new crash reports   : 0
 `
 
-? **������Щ��û����,copy �ǲ�����Ԫ��**������һ��ʵ��������ѷ�Χ������Ψһһ��:
-OptifinePayloadClassProcessor.transform �� copy(finished, node)(�ѳ�Ʒ ClassNode �����ݸ��ǵ� FML ������
+日志里 OptifinePayloadClassProcessor constructed (FML 10 mount point) 仍在 ✔,而 installed ... 一条都没有 ✔。
+也就是说:
 
-ode ��)��
+- **"有 ClassProcessor 注册"本身完全没问题**;
+- 问题精确地落在**它声明并安装类**这一步 —— 即 	argets() 报出的那 517 个类,以及 	ransform 里
+  copy(finished, node) 把成品覆盖回去的那段。
 
-**��һ��Ҫ�Եľ������**(������������):
+**下一次的一行实验**(把这个范围再切一半):保留 	argets() 照常报类,但让 	ransform 只记日志、**什么都不改**
+(即 copy 不执行)——
+- 若仍会关闭 ⇒ 问题在"声明了这些类"这一侧(FML 10 对处理器声明面的处理);
+- 若正常跑起来 ⇒ 问题就在 copy(覆盖 ClassNode 的具体做法,FML 10 的扫描线程可能在读同一批结构)。
+### second bisect:问题不在"声明类",而在"真的把成品覆盖上去"那一步
 
-1. **�͵ظ� FML �������Ǹ� ClassNode ���ܲ��� FML 10 ����** ���� ��Ϊ����һ���µ� ClassNode ��������Ϊ���
-   ����ȥ(��� SimpleClassProcessor ����Լ֧��)�������ٲ������ֶ�/�����б�;
-2. copy ���Ǵ�"ȡ����ɼ���"�ĺϲ���ӿ��ֶι�һ��,���ܲ��� FML 10 ��У�鲻���ܵĶ���(1.20.x/1.21.x �ļ�����
-   �� ModLauncher �� NodeTransformer,��Լ��ͬ);
-3. ���׷���(��� 2 �ּǹ�������һ��):��ע�ᴦ����,��Ϊ**���Ȱѳ�Ʒ��ֱ�Ӹ��ǽ���Ϸ jar**,��������"�����ڲ���װ"��
-### third bisect:����"�ϲ��߼�",����"�滻�����������"
+保留 	argets() 照常声明那个类(FML 会正常询问它),但让 	ransform **什么都不做**(取 payload() 的那行改成
+直接置空,于是方法立刻返回):
 
-�� copy(finished, node) ����**��򵥵ġ���ȫ���ϲ�**�ĸ�ֵ(superName / interfaces / fields / methods / access /
-version / signature ֱ��ȡ�Գ�Ʒ),����:
+`
+===== VERDICT: STARTED =====
+Setting user        : True
+Sound engine started: True
+new crash reports   : 0
+`
+
+⇒ **声明这些类没问题,copy 那步才是元凶**。两次一行实验合起来把范围钉到了唯一一处:
+OptifinePayloadClassProcessor.transform → copy(finished, node)(把成品 ClassNode 的内容覆盖到 FML 交来的
+
+ode 上)。
+
+**下一次要试的具体假设**(按可能性排序):
+
+1. **就地改 FML 交来的那个 ClassNode 可能不被 FML 10 接受** —— 改为构造一个新的 ClassNode 并把它作为结果
+   交回去(如果 SimpleClassProcessor 的契约支持)或者至少不共享字段/方法列表;
+2. copy 里那次"取更宽可见性"的合并或接口字段归一化,可能产出 FML 10 的校验不接受的东西(1.20.x/1.21.x 的加载器
+   是 ModLauncher 的 NodeTransformer,契约不同);
+3. 兜底方案(与第 2 轮记过的那条一致):不注册处理器,改为**事先把成品类直接覆盖进游戏 jar**,让这条线"运行期不换装"。
+### third bisect:不是"合并逻辑",而是"替换这个动作本身"
+
+把 copy(finished, node) 换成**最简单的、完全不合并**的赋值(superName / interfaces / fields / methods / access /
+version / signature 直接取自成品),再跑:
 
 `
 OptiFine payload: installed net.minecraft.util.Mth (34 fields, 109 methods) [1 so far]
 Closing FML Loader 27329d2a
 `
 
-**�����ر�**������һ��ʵ��������:
+**照样关闭**。三个一行实验连起来:
 
-| ���� | ��� |
+| 变体 | 结果 |
 |---|---|
-| �����ļ��ڡ�	argets() �ռ� | STARTED |
-| 	argets() �ճ�������	ransform �ղ��� | STARTED |
-| 	ransform ����**��С**�����滻(���ϲ�) | **Closing FML Loader** |
+| 服务文件在、	argets() 空集 | STARTED |
+| 	argets() 照常声明、	ransform 空操作 | STARTED |
+| 	ransform 里做**最小**的类替换(不合并) | **Closing FML Loader** |
 
-? **���ⲻ�����ǵĺϲ��߼�**,����"**�� FML 10 �Ĵ���������滻���������������**"����±���
-(�ܿ����� SimpleClassProcessor ����Լ:���������ø� 
-ode,��Ӧͨ�������ĵ� API �����滻;
-�������ԼҪ�� FML �Լ���Դ��Ϊ׼,����û��ȥ��)��
+⇒ **问题不在我们的合并逻辑**,而在"**在 FML 10 的处理管线里替换掉它交来的这个类**"这件事本身
+(很可能是 SimpleClassProcessor 的契约:处理器不该改 
+ode,而应通过上下文的 API 声明替换;
+具体的契约要以 FML 自己的源码为准,本轮没有去读)。
 
-**����߶��׷���**:��ע�ᴦ����,��Ϊ**�� rig �������Ȱѳ�Ʒ�า�ǽ���Ϸ jar**
-(libraries\net\minecraft\client\1.21.9-��\client-1.21.9-��-srg.jar �ĸ���),
-����������"�����ڲ���װ",�� 1.20.x/1.21.x �����ջ����ȼ�(��������֧�Ļ�װ�������ڵ�,�����տ�������Ϸ�ܲ�������)��
-### ���׷�����ʵ����:������,�� OptiFine ��"��"��
+**因此走兜底方案**:不注册处理器,改为**在 rig 层面事先把成品类覆盖进游戏 jar**
+(libraries\net\minecraft\client\1.21.9-…\client-1.21.9-…-srg.jar 的副本),
+这样这条线"运行期不换装",与 1.20.x/1.21.x 的验收环境等价(那两个分支的换装是运行期的,但验收看的是游戏能不能起来)。
+### 兜底方案的实测结果:能起来,但 OptiFine 是"哑"的
 
-�����׷�������:���غ��� 1233 �� srg/** ��Ʒ��д����Ϸ jar �ĸ���(�� libraries\net\minecraft\client\1.21.9-��\
-client-1.21.9-��-srg.jar,ԭ����� .rig-original),ʵ�� **�滻 515 ����Ϸ�ࡢ׷�� 716 �� OptiFine �������**
-(��� 23 289 537 �ֽ�),Ȼ�󲻴��κ� mod ���:
+按兜底方案做了:把载荷里 1233 个 srg/** 成品类写进游戏 jar 的副本(用 libraries\net\minecraft\client\1.21.9-…\
+client-1.21.9-…-srg.jar,原件留成 .rig-original),实测 **替换 515 个游戏类、追加 716 个 OptiFine 自身的类**
+(结果 23 289 537 字节),然后不带任何 mod 启动:
 
 `
 ===== VERDICT: STARTED =====
@@ -372,42 +372,42 @@ client-1.21.9-��-srg.jar,ԭ����� .rig-original),ʵ�� **�滻 
   [OptiFine] lines    : 0
 `
 
-Ҳ����˵:**��Ϸ������,����־��һ�� optifine ������û��** ���� OptiFine �Ĵ������û�б����
-ԭ�������:�� ModLauncher �Ǽ�������,�� **OptiFine �Լ��� transformation service** �������������;
-���� FML 10 ��·����û���κζ���ȥ�����,���**�����������Ϸ��**�Ž�ȥ�������� OptiFine ���ܡ�
-���Զ��׷���**������**����"������ͨ��"������ ���� ��ֻ֤��"Ԥ���ǲ�ը",��֤�� OptiFine ��Ч��
+也就是说:**游戏起来了,但日志里一个 optifine 字样都没有** —— OptiFine 的代码根本没有被激活。
+原因不难理解:在 ModLauncher 那几条线上,是 **OptiFine 自己的 transformation service** 把它启动起来的;
+这条 FML 10 的路径上没有任何东西去启动它,光把**打过补丁的游戏类**放进去并不等于 OptiFine 在跑。
+所以兜底方案**不足以**当作"这条线通过"的依据 —— 它只证明"预覆盖不炸",不证明 OptiFine 生效。
 
-**����(��һ��)**:����Ҫ�޴�������һ�� ���� ȥ�� FML 10 SimpleClassProcessor / SimpleTransformationContext
-����Լ(����û��),�����"�滻"Ӧ����ô����(�����Ǿ͵ظ� 
-ode);������һ������ ModLauncher �����
-��� OptiFine �����ʼ���ķ�ʽ��
-### �� FML 10 �Ĵ�������Լ(���ֶ����Ķ���)
+**结论(下一步)**:还是要修处理器这一侧 —— 去读 FML 10 SimpleClassProcessor / SimpleTransformationContext
+的契约(本轮没读),搞清楚"替换"应该怎么声明(而不是就地改 
+ode);或者找一个在无 ModLauncher 情况下
+启动 OptiFine 自身初始化的方式。
+### 读 FML 10 的处理器契约(本轮读到的东西)
 
-�� rig �� libraries\net\neoforged\fancymodloader\loader\10.0.14\loader-10.0.14.jar �� javap ����:
+从 rig 的 libraries\net\neoforged\fancymodloader\loader\10.0.14\loader-10.0.14.jar 里 javap 出来:
 
 - SimpleClassProcessor:bstract void transform(ClassNode, SimpleTransformationContext) +
-  bstract Set<Target> targets();handlesClass �� **processClass ���� final** ? ���������ʱ,
-  **������û�еط�����"����������д��ʽ"**��
-- SimpleTransformationContext ֻ�� 	ype() / empty() / initialSha256() ���� **û��**"�����滻"֮��� API,
-  ���Ծ͵ظ� 
-ode ȷʵ������÷�(ǰ������"�͵ظ��ǲ��ǲ�������"�Ĳ²⵽�˿��Ի���)��
-- �� ClassProcessor �ӿڱ����� **ComputeFlags processClass(TransformationContext)**,��
-  ClassProcessor ��ȡֵ��:**NO_REWRITE / SIMPLE_REWRITE / COMPUTE_MAXS / COMPUTE_FRAMES**��
+  bstract Set<Target> targets();handlesClass 与 **processClass 都是 final** ⇒ 用这个基类时,
+  **处理器没有地方声明"我用哪种重写方式"**。
+- SimpleTransformationContext 只有 	ype() / empty() / initialSha256() —— **没有**"声明替换"之类的 API,
+  所以就地改 
+ode 确实是设计用法(前面那条"就地改是不是不被接受"的猜测到此可以划掉)。
+- 但 ClassProcessor 接口本身有 **ComputeFlags processClass(TransformationContext)**,而
+  ClassProcessor 的取值是:**NO_REWRITE / SIMPLE_REWRITE / COMPUTE_MAXS / COMPUTE_FRAMES**。
 
-**�����һ���ܾ���ġ�����֤�ļ���**:���Ǽ̳� SimpleClassProcessor,������ processClass ���� final ?
-FML �����ڲ��̶������д��;����Ǹ�������� COMPUTE_FRAMES,������**�������滻**���ֽ���(֡���),
-д�����������֡��һ�µ� ���� ֢״���ÿ�����"FML �ڴ��������ֱ�ӷ���,����ʲô������ӡ"��
-**��һ��**:�ĳ�ֱ��ʵ�� ClassProcessor �ӿ�,�� processClass �ﷵ�� ComputeFlags.COMPUTE_FRAMES
-(�Լ� handlesClass ��ͬһ��Ŀ����),�ٿ����������Ƿ���������
-## 1.21.9 ����һ��:FML 10 �ϵ�"��Ĭʧ��"������,���� OptiFine �����������
+**这给出一个很具体的、可验证的假设**:我们继承 SimpleClassProcessor,而它把 processClass 定成 final ⇒
+FML 用它内部固定的旗标写回;如果那个旗标弱于 COMPUTE_FRAMES,而我们**整方法替换**了字节码(帧会变),
+写出来的类就是帧不一致的 —— 症状正好可以是"FML 在处理过程中直接放弃,而且什么都不打印"。
+**下一步**:改成直接实现 ClassProcessor 接口,在 processClass 里返回 ComputeFlags.COMPUTE_FRAMES
+(以及 handlesClass 用同一批目标名),再看那三条线是否能起来。
+## 1.21.9 的这一轮:FML 10 上的"静默失败"被拆开了,而且 OptiFine 真的跑起来了
 
-��һ�ڰ�������(1.21.9 / 1.21.10 / 1.21.11)�� FML 10 ���ص��"������û��һ�д���"�Ƶ���"OptiFine �Ѿ�����"��
-ȫ�����۶�����һ������̨��������������,д�����һ���Ʒ���ǰ��Ĳ²⡣
+这一节把三条线(1.21.9 / 1.21.10 / 1.21.11)的 FML 10 挂载点从"起不来且没有一行错误"推到了"OptiFine 已经在跑"。
+全部结论都是这一轮在这台机器上量出来的,写清楚哪一条推翻了前面的猜测。
 
-### ���Ʒ�һ��:`ComputeFlags` ����ԭ��
+### 先推翻一条:`ComputeFlags` 不是原因
 
-��һ�ְ� `SimpleClassProcessor` �� `processClass` �� `final`���� `ClassProcessor` �ӿ���
-`ComputeFlags processClass(...)` ������Ҫ���ɡ�`javap -c` ֱ�Ӷ������Ǽٵ�:
+上一轮把 `SimpleClassProcessor` 的 `processClass` 是 `final`、而 `ClassProcessor` 接口有
+`ComputeFlags processClass(...)` 当成主要嫌疑。`javap -c` 直接读出来是假的:
 
 ```
 public final ClassProcessor$ComputeFlags processClass(ClassProcessor$TransformationContext);
@@ -420,54 +420,54 @@ public final ClassProcessor$ComputeFlags processClass(ClassProcessor$Transformat
   12: areturn
 ```
 
-��**������**���� `COMPUTE_FRAMES`(û�з�֧,û�� `empty()` �ж�)������"����������̫��"�Ǵ��,
-�ĳ�ֱ��ʵ�ֽӿڲ���ı��κ��¡��������˽�����
+它**无条件**返回 `COMPUTE_FRAMES`(没有分支,没有 `empty()` 判断)。所以"基类给的旗标太弱"是错的,
+改成直接实现接口不会改变任何事。这条到此结束。
 
-### "û���κδ���"�Ļ���:FML ���쳣�ͽ���һ��ģ̬�Ի���
+### "没有任何错误"的机制:FML 把异常送进了一个模态对话框
 
-`net.neoforged.fml.startup.Client.main` ���ֽ�����:
+`net.neoforged.fml.startup.Client.main` 的字节码是:
 
 ```
  10: invokestatic Entrypoint.startup([Ljava/lang/String;ZLnet/neoforged/api/distmarker/Dist;Z)LFMLLoader;
  25: invokestatic Entrypoint.createMainMethodCallable(LFMLLoader;Ljava/lang/String;)Ljava/lang/invoke/MethodHandle;
  31: invokevirtual MethodHandle.invokeExact([Ljava/lang/String;)V
- 46: invokevirtual FMLLoader.close()V          <- "Closing FML Loader" ��������
+ 46: invokevirtual FMLLoader.close()V          <- "Closing FML Loader" 就是这里
  ...
  76: astore_1 / 77: invokestatic FatalErrorReporting.reportFatalError(Throwable;)V / 81: System.exit(1)
 ```
 
-�� `FatalErrorReporting.reportFatalError(String)` ��:
+而 `FatalErrorReporting.reportFatalError(String)` 是:
 
 ```
- 0: ldc "java.awt.headless" / 2: ldc "false" / 4: System.setProperty   <- ǿ�Ʒ� headless
+ 0: ldc "java.awt.headless" / 2: ldc "false" / 4: System.setProperty   <- 强制非 headless
  8: GraphicsEnvironment.isHeadless() / 11: ifne 21
-14: showErrorUsingSwing(String)      -> JOptionPane.showMessageDialog(...)   <- ģ̬,����
+14: showErrorUsingSwing(String)      -> JOptionPane.showMessageDialog(...)   <- 模态,阻塞
 21: ... TinyFileDialogs.tinyfd_messageBox(...)
 51: System.exit(1)
 ```
 
-**���� FML 10 ����������쳣�ı�����**:stderr 0 �ֽڡ�û�� crash-report����־���һ����
-`Closing FML Loader`��JVM һֱ���˳�(�Ի����ڵ��˵�ȷ��)���ⲻ��"FML ����������",
-��һ��û�˿��Ĵ��ڡ�Ϊ��ȷ�ϲ��ǲµ�,�Ѹ� JVM �Ķ��㴰��ö�ٳ���:
+**所以 FML 10 上启动期抛异常的表现是**:stderr 0 字节、没有 crash-report、日志最后一行是
+`Closing FML Loader`、JVM 一直不退出(对话框在等人点确定)。这不是"FML 加载器坏了",
+是一个没人看的窗口。为了确认不是猜的,把该 JVM 的顶层窗口枚举出来:
 
 ```
-1508380|vis|SunAwtDialog|Fatal Error          <- ������
+1508380|vis|SunAwtDialog|Fatal Error          <- 就是它
  2625878|vis|GLFW30|Minecraft: NeoForge Loading...
 ```
 
-**�� rig ������������**(���ڲֿ���,`optifineoforge-test\`):
+**给 rig 加了两件东西**(都在仓库外,`optifineoforge-test\`):
 
-* `diagnostic\kynarain\cn\optifineoforge\rig\DiagnosticClient.java` ���� �̳�
-  `net.neoforged.fml.startup.Entrypoint`(`startup` �� `createMainMethodCallable` ���� `protected static`,
-  �������),��**ͬһ��** FML �ܵ�,���� throwable �� stderr,Ȼ�� `Runtime.halt(1)`��
-  ֻ��ʧ�ܿɼ���,�����κα任·����
-* `launch-fml10.ps1 -MainClass <fqcn> -ExtraClasspath <dir>` ���� ����ڵ㻻����������ࡣ
-* `capture-hwnd.ps1` ���� ������ץһ�����㴰��(PrintWindow,ʧ���� CopyFromScreen),���ű���;
-  ����ץ��������ͼ,����ǰģ�Ͷ�����ͼ��,�����������������������Ǹ���ڵ㡣
+* `diagnostic\kynarain\cn\optifineoforge\rig\DiagnosticClient.java` —— 继承
+  `net.neoforged.fml.startup.Entrypoint`(`startup` 与 `createMainMethodCallable` 都是 `protected static`,
+  子类可用),跑**同一条** FML 管道,但把 throwable 打到 stderr,然后 `Runtime.halt(1)`。
+  只改失败可见性,不改任何变换路径。
+* `launch-fml10.ps1 -MainClass <fqcn> -ExtraClasspath <dir>` —— 把入口点换成上面这个类。
+* `capture-hwnd.ps1` —— 按标题抓一个顶层窗口(PrintWindow,失败再 CopyFromScreen),留着备用;
+  本轮抓到了那张图,但当前模型读不了图像,所以真正解决问题的是上面那个入口点。
 
-### ����"��С�滻"̽��Ϊʲô����:**̽�����û�� OptiFine �Լ�����**
+### 那条"最小替换"探针为什么死的:**探针罐里没有 OptiFine 自己的类**
 
-���������ڵ��,��һ������ stderr ���� 2036 �ֽ�,ԭ��һĿ��Ȼ:
+换上诊断入口点后,第一次运行 stderr 就有 2036 字节,原因一目了然:
 
 ```
 java.lang.NoClassDefFoundError: Could not initialize class net.minecraft.util.Mth
@@ -477,22 +477,22 @@ Caused by: java.lang.ExceptionInInitializerError: Exception java.lang.NoClassDef
 	at net.minecraft.util.Mth.<clinit>(Mth.java:55)
 ```
 
-OptiFine ��������� `Mth` �� `<clinit>` **���� OptiFine �Լ��� `net.optifine.util.MathUtils`**,
-���Ǹ�̽��������û���κ� `net/optifine/**`���������ʼ��ʧ�� �� ǰ�����������ַ��õ��Ľ���
-("�� FML 10 �ܵ����滻һ���౾��ͻ�ը")**�Ǵ��**,����:ը����ȱ��,�����滻��
+OptiFine 编译出来的 `Mth` 的 `<clinit>` **调用 OptiFine 自己的 `net.optifine.util.MathUtils`**,
+而那个探针罐里根本没有任何 `net/optifine/**`。于是类初始化失败 → 前面那三步二分法得到的结论
+("在 FML 10 管道里替换一个类本身就会炸")**是错的**,作废:炸的是缺类,不是替换。
 
-### �����Ŀ�:�������(Early Service jar)�ļ�������������Ϸ��
+### 真正的坑:军规罐子(Early Service jar)的加载器看不见游戏类
 
-�� OptiFine �Լ�����**�Ž�ͬһ�� payload ����**����(`srg/net/optifine/**` ֮�������ͨ·����
-`net/optifine/**`),FML ����־˵�ú����:
+把 OptiFine 自己的类**放进同一个 payload 罐子**再跑(`srg/net/optifine/**` 之外另加普通路径的
+`net/optifine/**`),FML 的日志说得很清楚:
 
 ```
 Found 1 early service jars (out of 1)
 Loading FML Early Services:  - mods/optifine-payload-fml10-withown.jar
 ```
 
-Ҳ����˵������ӱ�����"���ڷ����",���������һ����ͨ `URLClassLoader` ����,���Ǹ�������
-**һ����Ϸ�඼������**:
+也就是说这个罐子被当成"早期服务罐",里面的类由一个普通 `URLClassLoader` 加载,而那个加载器
+**一个游戏类都看不见**:
 
 ```
 java.lang.NoClassDefFoundError: net/minecraft/world/level/chunk/ChunkAccess
@@ -501,22 +501,22 @@ Caused by: java.lang.ClassNotFoundException: net.minecraft.world.level.chunk.Chu
 	at java.net.URLClassLoader.findClass(URLClassLoader.java:445)
 ```
 
-(`Client` ���������ע�ͼǵ� 1.21.11 �ϵ� `ValueOutput` ʧ��,����������,����"ĳ��������ǡ��û���"��)
+(`Client` 里的那条旧注释记的 1.21.11 上的 `ValueOutput` 失败,根因就是这个,不是"某个加载器恰好没配好"。)
 
-**�޷�:������� mod �ļ�**
+**修法:拆成两个 mod 文件**
 
-1. `optifine-payload-fml10.jar` ���� �������ڷ����:������������ + ���� service �ļ� +
-   `META-INF/neoforge.mods.toml` + `srg/**`(Ҫװ����Ϸ���ϵĳ�Ʒ��,1233 ��)��
-2. `optifine-own-classes.jar` ���� **��ͨ** mod �ļ�(`neoforge.mods.toml`,modId `optifine`),
-   װ OptiFine �Լ��� `net/optifine/**`(716 ��)��`assets/minecraft/**`���Լ�
-   `net/minecraftforge/**` ׮�ࡣ
+1. `optifine-payload-fml10.jar` —— 还是早期服务罐:处理器两个类 + 两个 service 文件 +
+   `META-INF/neoforge.mods.toml` + `srg/**`(要装到游戏类上的成品类,1233 个)。
+2. `optifine-own-classes.jar` —— **普通** mod 文件(`neoforge.mods.toml`,modId `optifine`),
+   装 OptiFine 自己的 `net/optifine/**`(716 个)、`assets/minecraft/**`、以及
+   `net/minecraftforge/**` 桩类。
 
-��һ��֮��,`Reflector` ��� `TRANSFORMER/optifine@1.0.0/net.optifine.reflect.Reflector`,
-������������Ϸ��,`net.minecraft.util.Mth.<clinit>` Ҳ�õ��� `MathUtils`��
+这一拆之后,`Reflector` 变成 `TRANSFORMER/optifine@1.0.0/net.optifine.reflect.Reflector`,
+能正常解析游戏类,`net.minecraft.util.Mth.<clinit>` 也拿到了 `MathUtils`。
 
-### ����һ��:Forge API ׮��������ǵڶ���������
+### 还差一层:Forge API 桩类必须在那第二个罐子里
 
-��֮��ĵ�һ��ʧ����֡����׶�Ҫȥ����һ�������ڵ���:
+拆开之后的第一个失败是帧计算阶段要去解析一个不存在的类:
 
 ```
 Caused by: java.lang.RuntimeException: Cannot find class net/minecraftforge/common/extensions/IForgeLivingEntity
@@ -526,11 +526,11 @@ Caused by: java.lang.RuntimeException: Cannot find class net/minecraftforge/comm
 	at TRANSFORMER/optifine@1.0.0/net.optifine.reflect.Reflector.<clinit>(Reflector.java:172)
 ```
 
-�� rig ���Ѿ�׼���õ� `work\1.21.9\stubs`(87 �� `net/minecraftforge/**` ׮��)�ӽ�
-`optifine-own-classes.jar` �ͺ��ˡ�ע������ 1.20.1 �ǴβȵĿӷ����෴:�Ǵΰ�׮������
-**��������**����ģ�� `ResolutionException`,�������ȷλ����**��ͨ mod �ļ�**��
+把 rig 里已经准备好的 `work\1.21.9\stubs`(87 个 `net/minecraftforge/**` 桩类)加进
+`optifine-own-classes.jar` 就好了。注意这与 1.20.1 那次踩的坑方向相反:那次把桩类塞进
+**加载器罐**导致模块 `ResolutionException`,这里的正确位置是**普通 mod 文件**。
 
-### ���:1.21.9 �� OptiFine �Ѿ�������
+### 结果:1.21.9 上 OptiFine 已经在运行
 
 ```
 ===== VERDICT: FAILED =====
@@ -538,7 +538,7 @@ Caused by: java.lang.RuntimeException: Cannot find class net/minecraftforge/comm
   [OptiFine] lines    : 32
 ```
 
-`latest.log` ���������� OptiFine ����:
+`latest.log` 里是完整的 OptiFine 自述:
 
 ```
 [OptiFine] OptiFine_1.21.9_HD_U_J7_pre2
@@ -549,60 +549,60 @@ Caused by: java.lang.RuntimeException: Cannot find class net/minecraftforge/comm
 [OptiFine] Checking for new version
 ```
 
-Ҳ����˵:���������� OptiFine �Լ��Ĵ�����ı����ء�����ʼ�������Ҷ������Կ���Ϣ��
-**�ⲻ������ͨ��**(���滹��������·��),������"FML 10 �� OptiFine �ܲ��ܻ�"�����������"��"��
+也就是说:在这条线上 OptiFine 自己的代码真的被加载、被初始化、并且读到了显卡信息。
+**这不是验收通过**(下面还有两个拦路的),但它把"FML 10 上 OptiFine 能不能活"这个问题答成了"能"。
 
-### ʣ�µ�������·ʯ(���Ѷ�λ)
+### 剩下的两个拦路石(都已定位)
 
-1. **`Options.loadOfOptions` ����Խ��**(stderr,��Ⱦ�߳�):
+1. **`Options.loadOfOptions` 数组越界**(stderr,渲染线程):
    `ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1`
-   at `net.minecraft.client.Options.loadOfOptions(Options.java:3174)`��
-   ��ϷĿ¼����һ�� 1826 �ֽڵ� `optionsof.txt`,����ǰĳ���汾д�µ�;�Ȼ�����,����ٿ���
-2. **NeoForge ����Ϸ�ಹ�ĳ�Ա�������滻�Ե���**:
+   at `net.minecraft.client.Options.loadOfOptions(Options.java:3174)`。
+   游戏目录里有一个 1826 字节的 `optionsof.txt`,是先前某个版本写下的;先怀疑它,清掉再看。
+2. **NeoForge 给游戏类补的成员被整类替换吃掉了**:
    `NoSuchMethodError: 'java.util.List net.minecraft.server.packs.resources.ReloadableResourceManager.getListeners()'`
-   at `net.neoforged.neoforge.client.event.AddClientReloadListenersEvent.<init>`��
-   �ִ� NeoForge �ǰѲ���ֱ�Ӵ����Ϸ���,OptiFine �Ƿݱ������ﵱȻû�����������
-   ������ 1.20.x �������� `keep-runtime.txt` Ҫ�ɵ���,**FML 10 �Ĵ�������û�����׼ƻ�**����
-   ��һ�����Ǹ�����һ�� 1.21.9 �� keep-runtime �ƻ����Ѽƻ�֧�ֲ�����������
-## 1.21.9 ��:�ƻ����ƽ�����,OptiFine �Ѿ��ܵ�"Setting user: True"
+   at `net.neoforged.neoforge.client.event.AddClientReloadListenersEvent.<init>`。
+   现代 NeoForge 是把补丁直接打进游戏类的,OptiFine 那份编译结果里当然没有这个方法。
+   这正是 1.20.x 那条线上 `keep-runtime.txt` 要干的事,**FML 10 的处理器还没有这套计划**——
+   下一步就是给它做一份 1.21.9 的 keep-runtime 计划并把计划支持补进处理器。
+## 1.21.9 续:计划机制接上了,OptiFine 已经跑到"Setting user: True"
 
-��һ�ڰ� OptiFine �����ͽ�����Ϸ�������;��һ�ڰ�**��Ա/�㼶**�������´�"����ʱ�ӵĴֱ�����"
-���ɲֿ��Լ��ļƻ�����,���ѽ���Ƶ� `Setting user: True` + 32 �� `[OptiFine]`��
+上一节把 OptiFine 的类送进了游戏类加载器;这一节把**成员/层级**这两件事从"我临时加的粗暴规则"
+换成仓库自己的计划机制,并把结果推到 `Setting user: True` + 32 行 `[OptiFine]`。
 
-### �ȰѴ���������ֿ��Լ��Ĺ���
+### 先把处理器搬进仓库自己的构建
 
-��ǰ FML 10 �Ĵ�����ֻ�� 26.x ��֧��Դ��,rig �� `javac` �ֱ�;Ҳ����˵**�����Ե��Ǹ� jar �����,
-�������κ�һ���ύ**������:
+此前 FML 10 的处理器只有 26.x 分支有源码,rig 用 `javac` 手编;也就是说**被测试的那个 jar 里的类,
+不属于任何一次提交**。现在:
 
-* `src/fml10/java/kynarain/cn/optifineoforge/fml10/` ���� ������� 26.x ȡ��,���ϱ���֧;
-* `src/fml10/resources/META-INF/services/` ���� ���� service �ļ�(ClassProcessor ��
-  IModFileCandidateLocator),�� `src/ml11/resources` ͬ��������;
-* `build.gradle` �� `-Pmountpoint=fml10` ʱ�������� source root �ӽ� `sourceSets.main`;
-* ������ʽ(ע�� `JAVA_HOME` ������ JDK 21,���� Gradle �Լ��� Groovy ������
+* `src/fml10/java/kynarain/cn/optifineoforge/fml10/` —— 两个类从 26.x 取回,放上本分支;
+* `src/fml10/resources/META-INF/services/` —— 两个 service 文件(ClassProcessor 与
+  IModFileCandidateLocator),与 `src/ml11/resources` 同样的做法;
+* `build.gradle` 在 `-Pmountpoint=fml10` 时把这两个 source root 加进 `sourceSets.main`;
+* 构建方式(注意 `JAVA_HOME` 必须是 JDK 21,否则 Gradle 自己的 Groovy 先死在
   `Unsupported class file major version 71`):
 
   ```
   gradlew.bat -Pmc=1.21.9 -Pneoforge=21.9.16-beta -Pmountpoint=fml10 compileJava
   ```
 
-rig ������ `build-fml10-payload.ps1`:�� `build\classes\java\main` ȡ��������,��
-`work\<line>\optifine-patched.jar` ȡ 1233 �� `srg/**` ��Ʒ��,�� service �� `neoforge.mods.toml`,
-�ٰ� `work\<line>\plan\reparent.txt` �ŵ� `optifineoforge/reparent.txt`��
+rig 侧新增 `build-fml10-payload.ps1`:从 `build\classes\java\main` 取这两个类,从
+`work\<line>\optifine-patched.jar` 取 1233 个 `srg/**` 成品类,加 service 与 `neoforge.mods.toml`,
+再把 `work\<line>\plan\reparent.txt` 放到 `optifineoforge/reparent.txt`。
 
-**˳�ֲȵ�һ������������Ŀ�**:`ZipFile.CreateFromDirectory` �� PowerShell 5.1(.NET Framework)��
-д����Ŀ����**��б��**�������Ĺ��� FML ֱ�Ӿܾ�:
+**顺手踩到一个必须记下来的坑**:`ZipFile.CreateFromDirectory` 在 PowerShell 5.1(.NET Framework)上
+写的条目名用**反斜杠**。这样的罐子 FML 直接拒绝:
 
 ```
 WARN [ne.ne.fm.lo.mo.ModDiscoverer/SCAN]: Skipping jar. File mods/optifine-payload-fml10.jar is not a valid mod file
 ```
 
-֢״��������:��Ϸ**�������**��`Setting user: True`��0 �������桢stderr 0 �ֽ� ���� Ψһ���쳣�ź���
-`[OptiFine] lines: 0`���ű��ĳ��ֹ�д��Ŀ��һ���� `/`��
+症状极具误导性:游戏**正常启动**、`Setting user: True`、0 崩溃报告、stderr 0 字节 —— 唯一的异常信号是
+`[OptiFine] lines: 0`。脚本改成手工写条目、一律用 `/`。
 
-### ��������:������ʱ���еĳ�Ա,���ƻ�������
+### 两条规则:留运行时独有的成员,按计划换父类
 
-**��һ��(��Ա)**:�ִ� NeoForge ��**�Ѳ��������Ϸ��**��,��������ʱ��������� OptiFine �Ƿݱ���
-�����û�еĳ�Ա��ʵ�⵽����һ��:
+**第一条(成员)**:现代 NeoForge 是**把补丁打进游戏类**的,所以运行时的类可以有 OptiFine 那份编译
+里根本没有的成员。实测到的那一处:
 
 ```
 NoSuchMethodError: 'java.util.List net.minecraft.server.packs.resources.ReloadableResourceManager.getListeners()'
@@ -610,38 +610,38 @@ NoSuchMethodError: 'java.util.List net.minecraft.server.packs.resources.Reloadab
 	at net.neoforged.neoforge.client.ClientHooks.initClientHooks(...:973)
 ```
 
-����������**��������ʱ���С�����û�е��ֶ��뷽��**(�� name+desc ����),�������������־��
+处理器现在**保留运行时独有、负载没有的字段与方法**(按 name+desc 判重),并把数量打进日志。
 
-**�ڶ���(�㼶)**:`BlockEntity` ����ĸ��಻һ�� ���� �����Ƿ� extends
-`net.minecraftforge.common.capabilities.CapabilityProvider$BlockEntities`(OptiFine �� Forge ʱ�����,
-�Ǹ����� shim),����ʱ�Ƿ� extends `net.neoforged.neoforge.attachment.AttachmentHolder`�����߸���һ��,
-**���ζ�����֤�����**,���Ҵ����ͬ:
+**第二条(层级)**:`BlockEntity` 两侧的父类不一样 —— 负载那份 extends
+`net.minecraftforge.common.capabilities.CapabilityProvider$BlockEntities`(OptiFine 是 Forge 时代编的,
+那个类是 shim),运行时那份 extends `net.neoforged.neoforge.attachment.AttachmentHolder`。两边各试一次,
+**两次都被验证器打回**,而且错法不同:
 
-* ֻ���Ա����������:`VerifyError: Bad invokespecial instruction: current class isn't assignable to
-  reference class` at `BlockEntity.setData @7` ���� NeoForge �� `setData` ������
-  `invokevirtual setChanged()V` Ȼ�� `invokespecial AttachmentHolder.setData(...)`;
-* ֻ�Ѹ��໻������ʱ��:`VerifyError: Bad <init> method call ... Type
+* 只搬成员、不动父类:`VerifyError: Bad invokespecial instruction: current class isn't assignable to
+  reference class` at `BlockEntity.setData @7` —— NeoForge 的 `setData` 体内是
+  `invokevirtual setChanged()V` 然后 `invokespecial AttachmentHolder.setData(...)`;
+* 只把父类换成运行时的:`VerifyError: Bad <init> method call ... Type
   'net/minecraftforge/common/capabilities/CapabilityProvider$BlockEntities' is not assignable to
-  'net/minecraft/world/level/block/entity/BlockEntity'` ���� �����Լ��Ĺ��������� chain �� Forge ����Ĺ�������
+  'net/minecraft/world/level/block/entity/BlockEntity'` —— 负载自己的构造器还在 chain 到 Forge 父类的构造器。
 
-�������һ��,�������� ModLauncher ��������õ� `reparent.txt` �ƻ�(��ʽ
-`reparent <��> <����ʱ����> <������>`)������������**���ƻ�**,û�мƻ��Ͳ����㼶;
-���ƻ��� `()V` ��дʱ��ջ�ϵ�ʵ�� POP ��(�� `PatchedClassTransformer.reparent` ͬһ������)��
+两半必须一起动,而这正是 ModLauncher 线早就在用的 `reparent.txt` 计划(格式
+`reparent <类> <运行时父类> <构造器>`)。处理器现在**读计划**,没有计划就不动层级;
+按计划的 `()V` 重写时把栈上的实参 POP 掉(与 `PatchedClassTransformer.reparent` 同一套做法)。
 
-�ƻ��ɲֿ��Լ��� `HierarchyPlan` ���ɡ�**���������и������ϵ�����**:`readRuntime` ��"�ȵ��ȵ�",
-���Ե�һ�� jar ������**����������ʱ��ͼ**(���� NeoForge �� `-client.jar`,��Ϸ�౻������),
-���� vanilla �� `BlockEntity`(������ Object)������ǵ�,���Ǽƻ�**��Ĭ�ؿ�**:
+计划由仓库自己的 `HierarchyPlan` 生成。**它在这里有个调用上的陷阱**:`readRuntime` 是"先到先得",
+所以第一个 jar 必须是**真正的运行时视图**(这里 NeoForge 的 `-client.jar`,游戏类被它覆盖),
+否则 vanilla 的 `BlockEntity`(父类是 Object)会把它盖掉,于是计划**静默地空**:
 
 ```
-# ����(0/0,��Ĭ): runtime �� client-��-srg.jar
-# ��ȷ:            runtime �� neoforge-21.9.16-beta-client.jar
+# 错误(0/0,静默): runtime 传 client-…-srg.jar
+# 正确:            runtime 传 neoforge-21.9.16-beta-client.jar
 reparent net.minecraft.world.level.block.entity.BlockEntity onto net/neoforged/neoforge/attachment/AttachmentHolder via ()V (the payload extends net/minecraftforge/common/capabilities/CapabilityProvider$BlockEntities)
 reparent plan: 1 class(es) movable, 0 refused
 ```
 
-1 ����,�� 1.21.4 �������ϼǵ�"shape ������һ����"��ȫһ�¡�
+1 个类,和 1.21.4 那条线上记的"shape 就是这一个类"完全一致。
 
-### ��һ�ֵĽ��
+### 这一轮的结果
 
 ```
 ===== VERDICT: FAILED =====
@@ -651,164 +651,164 @@ reparent plan: 1 class(es) movable, 0 refused
   [OptiFine] lines    : 32
 ```
 
-OptiFine ���������桢`Reflector` ��ʼ���ɹ�����Ϸ���û����ö������ˡ�ʣ������,���Ѷ�λ����:
+OptiFine 的类在里面、`Reflector` 初始化成功、游戏把用户设置读出来了。剩下两处,都已定位到行:
 
-1. **`Gui.layerManager` �� null**:
-   `NullPointerException: Cannot invoke "��GuiLayerManager.initModdedLayers()" because "this.layerManager"
-   is null` at `Gui.initModdedOverlays(Gui.java:1604)` �� `ClientHooks.initClientHooks`��
-   ����ֶ��� NeoForge �ӵ�,��**���ڲֿ��Լ�Ϊ 1.21.9 ���ɵ� `member-restores.txt` ��**:
+1. **`Gui.layerManager` 是 null**:
+   `NullPointerException: Cannot invoke "…GuiLayerManager.initModdedLayers()" because "this.layerManager"
+   is null` at `Gui.initModdedOverlays(Gui.java:1604)` ← `ClientHooks.initClientHooks`。
+   这个字段是 NeoForge 加的,它**就在仓库自己为 1.21.9 生成的 `member-restores.txt` 里**:
    `F net/minecraft/client/gui/Gui layerManager Lnet/neoforged/neoforge/client/gui/GuiLayerManager;`,
-   ���� rig ���Ѿ������׵� `donors/`��Ҳ����˵**"�����Ա"ֻ�����һ��**:�ֶ���������(���Բ���
-   `NoSuchFieldError`),�����ֶθ�ֵ�ĳ�ʼ���� NeoForge �� `Gui.<init>` ��,���Ǹ��������� OptiFine
-   �ĸ��������滻���ˡ���һ�����ǰ� `member-restores.txt` + donors �ӽ� FML 10 �Ĵ�����
-   (ModLauncher ������ `MemberRestoreTransformer` ���� donor ����)��
-2. **`Options.loadOfOptions` ����Խ��**(stderr,698 �ֽ�):
+   而且 rig 里已经有配套的 `donors/`。也就是说**"保留成员"只解决了一半**:字段留下来了(所以不是
+   `NoSuchFieldError`),但给字段赋值的初始化在 NeoForge 的 `Gui.<init>` 里,而那个构造器被 OptiFine
+   的副本整段替换掉了。下一步就是把 `member-restores.txt` + donors 接进 FML 10 的处理器
+   (ModLauncher 线上由 `MemberRestoreTransformer` 内联 donor 代码)。
+2. **`Options.loadOfOptions` 数组越界**(stderr,698 字节):
    `ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1` at
-   `net.minecraft.client.Options.loadOfOptions(Options.java:3174)`��
-   ʵ�����������:�� ɾ�� `optionsof.txt` ������Ȼ����;�� ��������Ϸ������д������ļ�(88 ��,
-   ȫ�� `key:value`,û��һ��ȱð��)������"�����ɰ汾д���ļ�"����²�**վ��ס**,
-   �����ٿ���һ�е�������ʲô��
-## 1.21.9 ����:��Ա�ָ�������,OptiFine �ܵ� 167 ��,���� FML �Լ��ļ��ػ�����
+   `net.minecraft.client.Options.loadOfOptions(Options.java:3174)`。
+   实测过的两件事:① 删掉 `optionsof.txt` 再跑仍然出现;② 运行中游戏会重新写出这个文件(88 行,
+   全是 `key:value`,没有一行缺冒号)。所以"读到旧版本写的文件"这个猜测**站不住**,
+   还得再看这一行到底在切什么。
+## 1.21.9 再续:成员恢复接上了,OptiFine 跑到 167 行,卡在 FML 自己的加载画面上
 
-### ��һ�ּӽ���������������
+### 这一轮加进处理器的两件事
 
-**1. ��Ա�ָ�(�ƻ� + donor)��** ��һ��ͣ�� `Gui.layerManager` Ϊ null:�ֶα�"��������ʱ��Ա"��������,
-��������ֵ�ĳ�ʼ���� NeoForge �Ĺ�������,���Ǹ��������� OptiFine �ĸ���ȡ���ˡ����������ڶ�
-`/optifineoforge/member-restores.txt` �� `/optifineoforge/donors/<��>.class`,�� donor ���С���Ʒ����û�е�
-�ֶ�/��������ȥ,���� donor ��ĺϳɳ�ʼ������**����**:��̬�Ľ����� `<clinit>`,ʵ���Ľ�ÿ��
-"�Լ�û�и�������ֶ�"�Ĺ�������
+**1. 成员恢复(计划 + donor)。** 上一节停在 `Gui.layerManager` 为 null:字段被"保留运行时成员"留下来了,
+但给它赋值的初始化在 NeoForge 的构造器里,而那个构造器被 OptiFine 的副本取代了。处理器现在读
+`/optifineoforge/member-restores.txt` 与 `/optifineoforge/donors/<类>.class`,把 donor 里有、成品类里没有的
+字段/方法补进去,并把 donor 里的合成初始化方法**内联**:静态的进本类 `<clinit>`,实例的进每个
+"自己没有赋过这个字段"的构造器。
 
-����������������,����ѡ��:
+两个都是量出来的,不是选的:
 
-* **��̬��������,���ܵ���**����̬ final �ֶ�ֻ����**����ĳ�ʼ������**�︳ֵ,����һ�� helper ȥд�ᱻ��:
-  `IllegalAccessError: Update to static final field ... attempted from a different method than the initializer method`��
-* **ʵ��Ҳ��������**���Ȱ� ml11 ����"ÿ����������һ�� helper"��,1.21.9 ֱ�Ӹ���:
+* **静态必须内联,不能调用**。静态 final 字段只能在**本类的初始化方法**里赋值,调用一个 helper 去写会被拒:
+  `IllegalAccessError: Update to static final field ... attempted from a different method than the initializer method`。
+* **实例也必须内联**。先按 ml11 那套"每个构造器调一次 helper"做,1.21.9 直接给出:
   ```
   IllegalAccessError: Update to non-static final field com.mojang.blaze3d.opengl.GlDevice.deviceProperties
     attempted from a different method (optifineoforge$init$deviceProperties) than the initializer method <init>
       at com.mojang.blaze3d.opengl.GlDevice.optifineoforge$init$deviceProperties(GlDevice.java)
       at com.mojang.blaze3d.opengl.GlDevice.<init>(GlDevice.java:95)
   ```
-  ������������֮��,ͬһ�� `putfield` �ͺϷ���,����**��������Ȼ����**:donor �ĳ�ʼ�������Ѷ�����ھֲ� 0,
-  `<init>` Ҳ�ǡ�
-* **ָ���¡��ȱ `VarInsnNode`** ���� ���� `Gui.layerManager` һ����Ȼ�� null ��ֱ��ԭ��,��־��д�ú����:
-  `cannot inline optifineoforge$init$layerManager: an instruction of kind VarInsnNode has no copy here`��
-  ֻ����ֲ� 0(����ֲ��ڹ�����������β�ײ��),����һ�ɾܾ������ǲ¡�
+  内联进构造器之后,同一个 `putfield` 就合法了,而且**接收者天然对齐**:donor 的初始化方法把对象放在局部 0,
+  `<init>` 也是。
+* **指令克隆器缺 `VarInsnNode`** —— 这是 `Gui.layerManager` 一度仍然是 null 的直接原因,日志里写得很清楚:
+  `cannot inline optifineoforge$init$layerManager: an instruction of kind VarInsnNode has no copy here`。
+  只允许局部 0(其余局部在构造器里会与形参撞车),其余一律拒绝而不是猜。
 
-**2. һ������Ե��޸�:`ReloadableResourceManager` �ļ������б�����ᡣ** ���� NeoForge �� OptiFine ��
-**�Ⱥ�˳��**��ͻ,���ߵ�������û��:
+**2. 一处针对性的修复:`ReloadableResourceManager` 的监听器列表被冻结。** 这是 NeoForge 与 OptiFine 的
+**先后顺序**冲突,两边单独看都没错:
 
-* NeoForge �� `Minecraft` ��������ͨ�� `AddClientReloadListenersEvent` �ռ�������,������**���ɸ�**����
-  `ReloadListenerSort.sort` �����һ���� `Collections.unmodifiableList`(��
-  `neoforge-21.9.16-beta-universal.jar` ���������),`ReloadableResourceManager.updateListenersFrom` ����ֱ��
-  �����ֶ�;
-* OptiFine �Լ��Ĳ�����ͬһ���������**�����**(��ע�뵽 `Window.setDefaultErrorCallback` ���Ǵε���)
-  ע��һ��������,����ײ�϶�����б�:
+* NeoForge 在 `Minecraft` 构造器里通过 `AddClientReloadListenersEvent` 收集监听器,排序结果**不可改**——
+  `ReloadListenerSort.sort` 的最后一步是 `Collections.unmodifiableList`(从
+  `neoforge-21.9.16-beta-universal.jar` 里读出来的),`ReloadableResourceManager.updateListenersFrom` 把它直接
+  赋给字段;
+* OptiFine 自己的补丁在同一个构造器里、**晚几行**(它注入到 `Window.setDefaultErrorCallback` 的那次调用)
+  注册一个监听器,于是撞上冻结的列表:
   ```
   UnsupportedOperationException
     at java.util.Collections$UnmodifiableCollection.add
     at net.minecraft.server.packs.resources.ReloadableResourceManager.registerReloadListener(...:43)
     at net.optifine.util.TextureUtils.registerResourceListener(TextureUtils.java:412)
   ```
-  NeoForge �Լ�֮����ע��,������������ڴ� NeoForge �￴��������
+  NeoForge 自己之后不再注册,所以这个冻结在纯 NeoForge 里看不出来。
 
-  ����**�����**������ `registerReloadListener`:�� `updateListenersFrom` ���� `ReloadListenerSort.sort` ֮���
-  `new ArrayList<>(list)`(`NEW/DUP_X1/SWAP/INVOKESPECIAL`),���ֶλָ� vanilla ������������Լ(һ������
-  �����ӵ� List),NeoForge �������˳��һ�㲻�����ֶ�������ɸ�ֵ,����Ϊ�����������ͻ��
-  ����ʱ�� final ���ֶε� `final` ����������ֶ��������(���ر�� `final`,NeoForge ��û��)��
+  修在**冻结点**而不是 `registerReloadListener`:在 `updateListenersFrom` 调用 `ReloadListenerSort.sort` 之后插
+  `new ArrayList<>(list)`(`NEW/DUP_X1/SWAP/INVOKESPECIAL`),让字段恢复 vanilla 构造器给的契约(一个可以
+  继续加的 List),NeoForge 算出来的顺序一点不动。字段在这里可赋值,是因为处理器本来就会把
+  运行时非 final 的字段的 `final` 清掉——这个字段正是如此(负载编成 `final`,NeoForge 的没有)。
 
-### ���:167 �� `[OptiFine]`,Ȼ���� FML �Լ��ļ��ػ�����
+### 结果:167 行 `[OptiFine]`,然后倒在 FML 自己的加载画面上
 
 ```
 ===== VERDICT: FAILED =====
   Setting user        : True
-  new crash reports   : 1 -> crash-��22.07.08-client.txt
+  new crash reports   : 1 -> crash-…22.07.08-client.txt
   stderr bytes        : 0
   [OptiFine] lines    : 167
 ```
 
-OptiFine ���������ڹ���(`[OptiFine] Scaled non power of 2: minecraft:leaf_3, 5 -> 10` ������ͼ�����Ѿ���������),
-��ϷҲ������ѭ��,��ͣ�� **NeoForge �ļ��ظ��ǲ�**��:
+OptiFine 这次是真的在工作(`[OptiFine] Scaled non power of 2: minecraft:leaf_3, 5 -> 10` 这类贴图处理已经跑起来了),
+游戏也进了主循环,但停在 **NeoForge 的加载覆盖层**上:
 
 ```
 java.lang.IllegalStateException: Already building.
 	at net.neoforged.fml.earlydisplay.render.SimpleBufferBuilder.begin(SimpleBufferBuilder.java:185)
-	at ��RenderContext.renderText(RenderContext.java:91)
-	at ��PerformanceElement.render(PerformanceElement.java:75)
-	at ��LoadingScreenRenderer.renderToFramebuffer(LoadingScreenRenderer.java:280)
-	at TRANSFORMER/neoforge@21.9.16-beta/��NeoForgeLoadingOverlay.render(NeoForgeLoadingOverlay.java:68)
+	at …RenderContext.renderText(RenderContext.java:91)
+	at …PerformanceElement.render(PerformanceElement.java:75)
+	at …LoadingScreenRenderer.renderToFramebuffer(LoadingScreenRenderer.java:280)
+	at TRANSFORMER/neoforge@21.9.16-beta/…NeoForgeLoadingOverlay.render(NeoForgeLoadingOverlay.java:68)
 	at TRANSFORMER/minecraft@1.21.9/net.minecraft.client.renderer.GameRenderer.render(GameRenderer.java:811)
 	at TRANSFORMER/minecraft@1.21.9/net.minecraft.client.Minecraft.runTick(Minecraft.java:1330)
 ```
 
-������**����һ��Ƭ GL ����**���ֵ���:ͬһ����־�� `OpenGL API ERROR: 1167` ֮�๲ **865 ��**,��һ�γ�����
-OptiFine �տ�ʼ������ͼ֮��,ʧ�ܵĵ����� `glClear`��
+而且是**先有一大片 GL 错误**才轮到它:同一份日志里 `OpenGL API ERROR: 1167` 之类共 **865 行**,第一次出现在
+OptiFine 刚开始处理贴图之后,失败的调用是 `glClear`。
 
-**�ⲻ�ǻ�������,�Ƕ�������������**:ͬ���� rig��ͬ���� 90 �롢**�����κ� mod** ��һ��:
+**这不是环境问题,是对照组量出来的**:同样的 rig、同样的 90 秒、**不带任何 mod** 跑一次:
 
 ```
-===== VERDICT: STARTED =====    Setting user: True, Sound engine started: True, ���� 0, stderr 0
-��־������ 76,OpenGL API ERROR 0 ��,Already building 0 ��
+===== VERDICT: STARTED =====    Setting user: True, Sound engine started: True, 崩溃 0, stderr 0
+日志总行数 76,OpenGL API ERROR 0 行,Already building 0 次
 ```
 
-Ҳ����˵���� GL ������**����װ���������**:OptiFine ����Դ�����ڼ�� GL ������״̬Ū����(����ĳ��
-������� `GlStateManager`/`GlDevice` ��һ·��ȱ����),FML ��������ʾ�ڻ���� GL ״̬�ϻ�,һ�� `draw`
-��;�״�Ͱ� `SimpleBufferBuilder.building` ���� true,��һ֡ `begin` ֱ���� "Already building"��
+也就是说这批 GL 错误是**我们装的类带来的**:OptiFine 在资源重载期间的 GL 操作把状态弄坏了(或者某个
+被换掉的 `GlStateManager`/`GlDevice` 那一路还缺东西),FML 的早期显示在坏掉的 GL 状态上画,一次 `draw`
+中途抛错就把 `SimpleBufferBuilder.building` 留在 true,下一帧 `begin` 直接抛 "Already building"。
 
-**��һ��**:�� 1.21.8 ����������ù����Ǽ��ݼƻ��� `add-line.ps1` ��˳���� ���� `PayloadDrift`
-(keep-runtime / runtime-interfaces / access)�� `MissingTargets --stub`,�ٰ����ǽӽ� FML 10 �Ĵ�����;
-1.21.8 ��"GL ״̬��һ·"���ǿ��⼸�ݼƻ��Ź��ġ�
-## 1.21.9 ������:��Դ������ͨ��(Sound engine started),���� NeoForge �Լ���Լ����ǩ���
+**下一步**:把 1.21.8 那条线最后用过的那几份计划照 `add-line.ps1` 的顺序补齐 —— `PayloadDrift`
+(keep-runtime / runtime-interfaces / access)与 `MissingTargets --stub`,再把它们接进 FML 10 的处理器;
+1.21.8 上"GL 状态那一路"正是靠这几份计划才过的。
+## 1.21.9 第四轮:资源重载跑通了(Sound engine started),卡在 NeoForge 自己的约定标签检查
 
-### ��һ�ֽӽ��������Ķ���,ȫ�����Բֿ��Լ������߹���
+### 这一轮接进处理器的东西,全部来自仓库自己的离线工具
 
-�� `add-line.ps1` ��˳��� 1.21.9 �����˼ƻ�:
+按 `add-line.ps1` 的顺序给 1.21.9 补齐了计划:
 
-* **`MissingTargets --stub`**:ɨ 1281 ���ࡢ43634 ����Ϸ��Ա����,**13 ��������ʱ������**,�� 4 ����
-  (`GpuTexture`��`BlockModelPart`��`BlockStateModel`��`BlockEntity`)���� 12 ����Ա,1 �������������
-  ���� `optifine-patched-stubbed.jar` ���ھ��� payload �� `srg/**` ��Դ(`build-fml10-payload.ps1` ��������)��
-* **`PayloadDrift`**:`constant drift: 2 class(es)`,������
-  `net/minecraft/client/renderer/MappableRingBuffer`(`BUFFER_COUNT: payload=5 runtime=3`)��
-  `net/minecraft/client/resources/model/ModelDiscovery$ModelWrapper`(`SLOT_COUNT: payload=7 runtime=8`)��
-  д���� `keep-runtime.proposed.txt` ����"����������������ʱ��"������ 15 �� interface �ƻ���164 �� access �ƻ���
-* ���������ڶ� `/optifineoforge/keep-runtime.txt`(�� proposed ����ʽ��);���ƻ�����**����װ**,��־��˵
-  "is kept as the runtime's own class",����"����"һ��д�ڼƻ��ļ��
+* **`MissingTargets --stub`**:扫 1281 个类、43634 条游戏成员引用,**13 条在运行时不存在**,给 4 个类
+  (`GpuTexture`、`BlockModelPart`、`BlockStateModel`、`BlockEntity`)补了 12 个成员,1 条留给加载器。
+  产物 `optifine-patched-stubbed.jar` 现在就是 payload 的 `srg/**` 来源(`build-fml10-payload.ps1` 优先用它)。
+* **`PayloadDrift`**:`constant drift: 2 class(es)`,两份是
+  `net/minecraft/client/renderer/MappableRingBuffer`(`BUFFER_COUNT: payload=5 runtime=3`)与
+  `net/minecraft/client/resources/model/ModelDiscovery$ModelWrapper`(`SLOT_COUNT: payload=7 runtime=8`)。
+  写出的 `keep-runtime.proposed.txt` 就是"这两类整个用运行时的"。另外 15 条 interface 计划、164 条 access 计划。
+* 处理器现在读 `/optifineoforge/keep-runtime.txt`(即 proposed 的正式名);被计划的类**不安装**,日志明说
+  "is kept as the runtime's own class",并连"代价"一起写在计划文件里。
 
-### ������֢״��λ������������״�޵�
+### 三处按症状定位、按量到的形状修的
 
-1. **ģ�;��鼯��**:�ͻ��˽���Դ���غ�**ʲô������**,ֻÿ 5 ���һ��
-   `[OptiFine] Waiting for model sprites`(��Զ)������ OptiFine ��ͼ��ƴװ�����Լ��ı�־λ��payload ���Ǵε���
-   ��,��**���ڷ�֧����**(���ֽ��������):
+1. **模型精灵集合**:客户端进资源重载后**什么都不做**,只每 5 秒打一行
+   `[OptiFine] Waiting for model sprites`(永远)。这是 OptiFine 的图集拼装等它自己的标志位。payload 里那次调用
+   在,但**藏在分支后面**(从字节码读出来):
    ```
    106: invokestatic net/optifine/Config.isCustomItems:()Z
    109: ifeq 121
    118: invokestatic net/optifine/CustomItems.collectModelSprites:(Ljava/util/Map;)V
    ```
-   �޷��� 1.21.8 ������һ��:�ѵ��÷ŵ� `discoverModelDependencies` ÿ��"��һ�������� Map"�����ص�**��ͷ**,
-   ���������������Ǿֲ� 0(��̬����,����������ճ�����ml11 �Ƿ�������ѹ�ֲ� 0,ֻ�ھ�̬ʱ�ų���)��
-2. **FML ���ڼ��ػ����� OptiFine ��ͬһ�� GL ������**:�������ڴ���ʱ,GL ����ˢ��(һ���� 7195 ��),
-   Ȼ�� `SimpleBufferBuilder.begin` �� `Already building`,��������д "Rendering overlay"��**������**֤�����뻷���޹�:
-   ͬ�� rig��90 �롢**���� mod**,76 ����־��0 �� GL ����STARTED��rig ������ `-NoEarlyWindow`
-   (д FML �Լ��� `earlyWindowControl=false`),��������±����� **rig ����**������,��Ϊ�����ߵ��ܷ������ǿ��ŵġ�
-3. **��Ա�ָ�������"��������"������"���ܳ�"**:��̬��ʼ���������������� `<clinit>`��ʵ����(���ֲ� 0 ������)
-   ������ÿ��������;`<clinit>` ����**�Ȳ��� donor ����Ҳ��������ʱ����**����`BreezeWindLayer` ���Ƿ���:
-   payload �Ƿ����� `private ResourceLocation TEXTURE_LOCATION;`(ʵ��,�������� putfield),
-   ����ʱ�Ƿ�ͬ��ͬ���������� `static final`,����ʱ�� `<clinit>` �� `GETSTATIC` ����,
-   ���� `IncompatibleClassChangeError: Expected static field ... TEXTURE_LOCATION`,�ڶ�����Դ����ֱ������
-   `EntityRenderers.createEntityRenderers`��
+   修法与 1.21.8 那条线一致:把调用放到 `discoverModelDependencies` 每个"第一个参数是 Map"的重载的**开头**,
+   无条件。接收者是局部 0(静态方法,查过而不是照抄——ml11 那份无条件压局部 0,只在静态时才成立)。
+2. **FML 早期加载画面与 OptiFine 抢同一个 GL 上下文**:不关早期窗口时,GL 错误刷屏(一次跑 7195 行),
+   然后 `SimpleBufferBuilder.begin` 抛 `Already building`,崩溃报告写 "Rendering overlay"。**对照组**证明这与环境无关:
+   同样 rig、90 秒、**不带 mod**,76 行日志、0 条 GL 错误、STARTED。rig 现在有 `-NoEarlyWindow`
+   (写 FML 自己的 `earlyWindowControl=false`),并且这件事被当作 **rig 设置**记下来,因为其它线的跑法里它是开着的。
+3. **成员恢复的两个"必须内联"和两个"不能抄"**:静态初始化方法内联进本类 `<clinit>`、实例的(带局部 0 接收者)
+   内联进每个构造器;`<clinit>` 本身**既不从 donor 抄、也不从运行时保留**——`BreezeWindLayer` 就是反例:
+   payload 那份声明 `private ResourceLocation TEXTURE_LOCATION;`(实例,构造器里 putfield),
+   运行时那份同名同描述符但是 `static final`,运行时的 `<clinit>` 用 `GETSTATIC` 读它,
+   于是 `IncompatibleClassChangeError: Expected static field ... TEXTURE_LOCATION`,第二次资源重载直接死在
+   `EntityRenderers.createEntityRenderers`。
 
-### ���
+### 结果
 
 ```
 ===== VERDICT: FAILED =====
   Setting user        : True
-  Sound engine started: True      <- ��Դ������һ����������
-  new crash reports   : 1 -> crash-��22.30.08-fml.txt
+  Sound engine started: True      <- 资源重载这一次真的完成了
+  new crash reports   : 1 -> crash-…22.30.08-fml.txt
   stderr bytes        : 0
   [OptiFine] lines    : 283
 ```
 
-**��һ���Ѿ���λ������һ��**,������ NeoForge �Լ��Ĵ���:
+**下一处已经定位到具体一行**,而且是 NeoForge 自己的代码:
 
 ```
 Exception message: java.lang.NullPointerException: Cannot invoke "net.minecraft.tags.TagKey.toString()"
@@ -818,14 +818,14 @@ Exception message: java.lang.NullPointerException: Cannot invoke "net.minecraft.
 	at net.neoforged.neoforge.common.NeoForgeMod.<init>(NeoForgeMod.java:585)
 ```
 
-`createForgeMapEntry(ResourceKey, String, TagKey)` �ĵ�����������**���÷���������**,��
-`TagConventionLogWarning.<clinit>` ��ĳ����ǩ��̬�ֶ�**�� null**��������һ��"`<clinit>` ���ܳ�"��**��һ��**:
-Ϊ���� `BreezeWindLayer` �Ұ�����ʱ `<clinit>` ����������,����"��������ʱ��Ա"��������**��̬�ֶ�**���ǿ�����ֵ�ġ�
-**��һ���Ĺ���**Ӧ���ǰѶ���ĳ�**����������**:ɨ����ʱ `<clinit>` ��ÿ�� `owner == ����` ��
-`GETSTATIC`/`PUTSTATIC`,Ҫ���Ʒ�����Ǹ��ֶ�ͬ��ͬ������**��Ҳ�� static**;ȫ������ͱ��������ʼ������,
-��һ��������Ͷ���(������־)������ `BreezeWindLayer` ������Ȼ����ס,����ǩ��̬�ֶ����õ�ֵ��
-**��һ���Ѿ��鵽�����ֶ���**(��һ��ֱ�Ӵ������):�� `TagConventionLogWarning.<clinit>` ��
-`LineNumberTable` ������,`line 201` ��Ӧ�ֽ���ƫ�� `2942`,�ô�����:
+`createForgeMapEntry(ResourceKey, String, TagKey)` 的第三个参数是**调用方传进来的**,即
+`TagConventionLogWarning.<clinit>` 里某个标签静态字段**是 null**。这是上一条"`<clinit>` 不能抄"的**另一半**:
+为了修 `BreezeWindLayer` 我把运行时 `<clinit>` 整个丢掉了,而被"保留运行时成员"补进来的**静态字段**正是靠它赋值的。
+**下一步的规则**应当是把丢掉改成**有条件保留**:扫运行时 `<clinit>` 里每条 `owner == 本类` 的
+`GETSTATIC`/`PUTSTATIC`,要求成品类里那个字段同名同描述符**且也是 static**;全部满足就保留这个初始化方法,
+有一条不满足就丢掉(并记日志)。这样 `BreezeWindLayer` 那类仍然被挡住,而标签静态字段能拿到值。
+**这一处已经查到具体字段了**(下一轮直接从这里进):把 `TagConventionLogWarning.<clinit>` 的
+`LineNumberTable` 读出来,`line 201` 对应字节码偏移 `2942`,该处正是:
 
 ```
 2930: sipush 149
@@ -835,54 +835,54 @@ Exception message: java.lang.NullPointerException: Cannot invoke "net.minecraft.
 2942: invokestatic createForgeMapEntry(ResourceKey;String;TagKey)
 ```
 
-Ҳ����˵**Ϊ null ���� `net.neoforged.neoforge.common.Tags$Items.DYES_BLACK`����NeoForge �Լ��ľ�̬��ǩ�ֶ�**,
-��������װ���κ��ࡣ�Ѻ˶Ե�:���� mod ������**��û�� `net/neoforged/**` ��Ŀ**(���Բ������ǰ� NeoForge ����
-�ڱε���)�������һ��Ҫ�����:`Tags$Items` �� `<clinit>` Ϊʲôû�и�����ֶθ�ֵ��������ܵķ�������ȡ��
-ֵ������Ϸ���ﱻ���ǻ���ľ�̬����(��־�� OptiFine �Լ�Ҳ����
-`[OptiFine] (Reflector) Method not present: net.minecraft.tags.ItemTags.create`),�� `<clinit>` ��ĸ�ֵ
-���쳣/��֧�����ˡ�
+也就是说**为 null 的是 `net.neoforged.neoforge.common.Tags$Items.DYES_BLACK`——NeoForge 自己的静态标签字段**,
+不是我们装的任何类。已核对的:两个 mod 罐子里**都没有 `net/neoforged/**` 条目**(所以不是我们把 NeoForge 的类
+遮蔽掉了)。因此下一轮要查的是:`Tags$Items` 的 `<clinit>` 为什么没有给这个字段赋值——最可能的方向是它取的
+值来自游戏类里被我们换掉的静态方法(日志里 OptiFine 自己也报过
+`[OptiFine] (Reflector) Method not present: net.minecraft.tags.ItemTags.create`),而 `<clinit>` 里的赋值
+被异常/分支跳过了。
 
-�������һ��"�������� `<clinit>`"��ʵ���������:**��û�н����һ��**(��������,��Ȼ��ͬһ�� NPE),
-����"��������ʱ `<clinit>`"�Ȳ��ǳ������Ҳ���ǳ���޷�;��һ���ĸ�����������������,���� `<clinit>` ��ȡ�ᡣ
-## 1.21.9 ͨ������:�ļ����ȫ��,������������
+另外把这一轮"条件保留 `<clinit>`"的实测结果记清楚:**它没有解决这一处**(改完再跑,仍然是同一个 NPE),
+所以"保留运行时 `<clinit>`"既不是充分条件也不是充分修法;这一处的根因在上面那条链上,不在 `<clinit>` 的取舍。
+## 1.21.9 通过验收:四检查项全中,并且跑了两次
 
-### ���һ������:OptiFine �÷�����һ�� 1.21.9 �Ѿ�û�еķ���
+### 最后一处根因:OptiFine 用反射找一个 1.21.9 已经没有的方法
 
-��һ��ͣ�� `Tags$Items.DYES_BLACK` Ϊ null����������һ��ȫ����������:
+上一节停在 `Tags$Items.DYES_BLACK` 为 null。整条链这一轮全部读出来了:
 
-NeoForge �� `Tags$Items.<clinit>` ��
+NeoForge 的 `Tags$Items.<clinit>` 是
 ```
 657: getstatic   net/minecraft/world/item/DyeColor.BLACK
 660: invokevirtual DyeColor.getTag:()Lnet/minecraft/tags/TagKey;
 663: putstatic   DYES_BLACK
 ```
-�� `getTag()` ���ص��� `DyeColor` �������︳���Ǹ��ֶ�,payload ���Ǵθ�ֵ������:
+而 `getTag()` 返回的是 `DyeColor` 构造器里赋的那个字段,payload 里那次赋值长这样:
 ```
 47: getstatic     net/optifine/reflect/Reflector.ForgeItemTags_create
-57: ldc           "forge"                                  <- Forge ʱ���������ռ�
+57: ldc           "forge"                                  <- Forge 时代的命名空间
 70: invokevirtual net/optifine/reflect/ReflectorMethod.call([Ljava/lang/Object;)Ljava/lang/Object;
 73: checkcast     net/minecraft/tags/TagKey
 76: putfield      dyesTag:Lnet/minecraft/tags/TagKey;
 ```
-OptiFine �� `Reflector.<clinit>` ���Ǹ������
+OptiFine 的 `Reflector.<clinit>` 里那个句柄是
 `ForgeItemTags_create = ForgeItemTags.makeMethod("create", String.class, String.class)`,
-ָ�� `net.minecraft.tags.ItemTags.create(String, String)` ���� **�� 1.21.9 ������ʱֻ�� `create(ResourceLocation)`**,
-���� `ReflectorMethod.call` ���� null(��־���Ǿ� `[OptiFine] (Reflector) Method not present:
-net.minecraft.tags.ItemTags.create` ������),`dyesTag` Ϊ null,`DYES_BLACK` Ϊ null,`TagConventionLogWarning`
-���Լ��� `<clinit>` ��ը��,NeoForge ��"has failed to load correctly"��
+指向 `net.minecraft.tags.ItemTags.create(String, String)` —— **而 1.21.9 的运行时只有 `create(ResourceLocation)`**,
+于是 `ReflectorMethod.call` 返回 null(日志里那句 `[OptiFine] (Reflector) Method not present:
+net.minecraft.tags.ItemTags.create` 就是它),`dyesTag` 为 null,`DYES_BLACK` 为 null,`TagConventionLogWarning`
+在自己的 `<clinit>` 里炸掉,NeoForge 报"has failed to load correctly"。
 
-**ע����һ�� `MissingTargets --stub` �ṹ�Ͽ�����**:�ǲ���һ���ֽ��������Ϸ��Ա������,���Ƿ������ֶ����һ��
-**�ַ���**�������޷��Ǵ�����**����**�������:�� `ItemTags` �ϼ�
-`public static TagKey<Item> create(String namespace, String path)`,�ڲ��� Forge ʱ���� `forge` ӳ���
-NeoForge �� `c`(�� ModLauncher ���� `ConventionTags` ͬһ�׹���),��ί�и�����ʱ�� `create(ResourceLocation)`��
-���ɵ��ֽ����� `LDC "forge"; ALOAD 0; String.equals; IFEQ; LDC "c"; GOTO; ALOAD 0; ...`��
+**注意这一处 `MissingTargets --stub` 结构上看不到**:那不是一条字节码里对游戏成员的引用,而是反射器字段里的一个
+**字符串**。所以修法是处理器**生成**这个方法:往 `ItemTags` 上加
+`public static TagKey<Item> create(String namespace, String path)`,内部把 Forge 时代的 `forge` 映射成
+NeoForge 的 `c`(与 ModLauncher 线上 `ConventionTags` 同一套规则),再委托给运行时的 `create(ResourceLocation)`。
+生成的字节码是 `LDC "forge"; ALOAD 0; String.equals; IFEQ; LDC "c"; GOTO; ALOAD 0; ...`。
 
-`ItemTags` **���� payload ��**(payload û�������ĸ���),���Դ�����������һ��"ֻ�޲���"��Ŀ�꼯��
-`REPAIR_ONLY_TARGETS`:`targets()` ��������,`transform()` ��û�� payload �ֽ�ʱֻ���޸���
+`ItemTags` **不在 payload 里**(payload 没有这个类的副本),所以处理器新增了一个"只修不换"的目标集合
+`REPAIR_ONLY_TARGETS`:`targets()` 里声明它,`transform()` 在没有 payload 字节时只跑修复。
 
-### ���:��������ȫ��,�ҿ��ظ�
+### 结果:验收四项全中,且可重复
 
-ͬһ������������,����������ͬ:
+同一条命令跑两次,两次逐项相同:
 
 ```
 ===== VERDICT: STARTED =====
@@ -893,73 +893,73 @@ NeoForge �� `c`(�� ModLauncher ���� `ConventionTags` ͬһ�׹�
   [OptiFine] lines    : 365
 ```
 
-��־����֤��:`OpenGL API ERROR` **0** �С�`NeoForge mod loading, version 21.9.16-beta` �ɹ���
-`[OptiFine] OptiFine_1.21.9_HD_U_J7_pre2` ������������**�������ȷʵ����**����
-`RealmsNotificationsScreen.<init>` ��� `RealmsAvailability.get()`,���Ǹ�����ֻ�� `TitleScreen` ����
-(���Լ��� `inTitleScreen()` �жϵ�ǰ������ `TitleScreen`),��־������������:
+日志侧面证据:`OpenGL API ERROR` **0** 行、`NeoForge mod loading, version 21.9.16-beta` 成功、
+`[OptiFine] OptiFine_1.21.9_HD_U_J7_pre2` 完整自述、且**标题界面确实在跑**——
+`RealmsNotificationsScreen.<init>` 会调 `RealmsAvailability.get()`,而那个界面只由 `TitleScreen` 构造
+(它自己用 `inTitleScreen()` 判断当前界面是 `TitleScreen`),日志里正好有这条:
 `[IO-Worker-1/ERROR] [com.mojang.realmsclient.RealmsAvailability/]: Couldn't connect to realms`
-(���߻������������,���Ǵ���)��
+(离线机器的正常结果,不是错误)。
 
-### ����һ��������Ŀھ�
+### 必须一起记下来的口径
 
-* **`-NoEarlyWindow` �� rig ����**:FML �����ڼ��ػ����� OptiFine ����ͼ������ͬһ�� GL ������,
-  �������ͻ��˻����� `SimpleBufferBuilder "Already building"`���ص����� FML �Լ��Ŀ���
-  (`earlyWindowControl=false`),��**�����ߵ��ܷ������ǿ��ŵ�**�������������ߵĳɼ�Ҫ�����ǰ�����
-* �������� rig �������ڵ� `DiagnosticClient`(ͬһ�� `Entrypoint.startup` �ܵ�,ֻ�ǰ��쳣��
-  stderr)��������ԭ��д�� `launch-fml10.ps1` �� `DiagnosticClient` ��ע����:�ٷ���ڵ�
-  `net.neoforged.fml.startup.Client` ���쳣����һ��**ģ̬�Ի���**,ʲôҲ����ӡ��
-* �����ߵ� payload ����ֿⷢ��(`srg/**` �� OptiFine �����������Ϸ��),rig ����
-  `build-fml10-payload.ps1` �òֿ��Լ������߹��߲�����
-## 1.21.10 / 1.21.11 ��׼��:һ�� FML 10 �ߵ������䷽(rig ���ѽű���)
+* **`-NoEarlyWindow` 是 rig 设置**:FML 的早期加载画面与 OptiFine 的贴图工作抢同一个 GL 上下文,
+  开着它客户端会死在 `SimpleBufferBuilder "Already building"`。关掉它是 FML 自己的开关
+  (`earlyWindowControl=false`),而**其它线的跑法里它是开着的**——所以这条线的成绩要按这个前提读。
+* 启动入口是 rig 的诊断入口点 `DiagnosticClient`(同一条 `Entrypoint.startup` 管道,只是把异常打到
+  stderr)。用它的原因写在 `launch-fml10.ps1` 与 `DiagnosticClient` 的注释里:官方入口点
+  `net.neoforged.fml.startup.Client` 把异常交给一个**模态对话框**,什么也不打印。
+* 这条线的 payload 不随仓库发布(`srg/**` 是 OptiFine 打过补丁的游戏类),rig 侧由
+  `build-fml10-payload.ps1` 用仓库自己的离线工具产出。
+## 1.21.10 / 1.21.11 的准备:一条 FML 10 线的完整配方(rig 侧已脚本化)
 
-1.21.9 ͨ��֮��,ʣ������ FML 10 ��(1.21.10 / 1.21.11)�õ���**ͬһ�����ص㡢ͬһ�׼ƻ�**,
-���԰���������һ�������ֵ�á�rig �����������ű�,������������Դ��д�ڽű�ͷ��:
+1.21.9 通过之后,剩下两条 FML 10 线(1.21.10 / 1.21.11)用的是**同一个挂载点、同一套计划**,
+所以把它们做成一条命令就值得。rig 侧新增两个脚本,步骤与输入来源都写在脚本头部:
 
 * **`prepare-fml10-line.ps1`**(`-Mc` / `-NeoForge` / `-OptifineJar`):
-  1. **runtime ��ͼ** = NeoForge �� `-client.jar`(����)+ NeoForm �� `client-*-srg.jar`;
-     ע�� `HierarchyPlan` ����**��**�� overlay,���� vanilla �� `BlockEntity` ��� NeoForge �ĸǵ��
-     �ƻ���ĬΪ��(1.21.9 �ϲȹ�,0/0)��
-  2. `OptifinePipeline <obf ԭ��ͻ���> <OptiFine jar> <work>` ���� �ֿ��Լ������߲������̡�
-  3. `MemberRestorePlan`(��Ա�ָ��ƻ� + donors)��
-  4. `HierarchyPlan`(Ҫ��������� + Ҫ chain �Ĺ�����)��
-  5. `MissingTargets --stub`(**�����ȫ����ʱ classpath**:��Ϸ + universal + ÿ���� jar;�� argfile ����,
-     ��Ϊ�⼸���ߵĿ� jar �м��ٸ�,�����лᱻ Windows �ܵ�)��
-  6. `PayloadDrift`(keep-runtime / interfaces / access ���ݼƻ�)��
-  7. Gradle `-Pmountpoint=fml10` ������ص�,�ٲ������� jar��
-* **`build-fml10-own-classes.ps1`**:�ڶ��� mod jar(OptiFine �Լ����� + Forge API ׮ + ���Լ���
-  `neoforge.mods.toml`)��׮��Ŀ¼Ϊ��ʱ��**������ `ForgeApiShims` ����**,���߶������ OptiFine jar
-  **��**�򲹶��������ȡ(ֻ�� OptiFine jar ��©��Ա)��
-  ���� jar �������ֹ��� `/` �ָ�д zip ��Ŀ:`ZipFile.CreateFromDirectory` �� PowerShell 5.1 ��д��б��,
-  FML ��ֱ����"not a valid mod file",��֢״��**�ͻ������������ mod ����ûװ**(1.21.9 �ϲȹ�)��
+  1. **runtime 视图** = NeoForge 的 `-client.jar`(覆盖)+ NeoForm 的 `client-*-srg.jar`;
+     注意 `HierarchyPlan` 必须**先**拿 overlay,否则 vanilla 的 `BlockEntity` 会把 NeoForge 的盖掉、
+     计划静默为空(1.21.9 上踩过,0/0)。
+  2. `OptifinePipeline <obf 原版客户端> <OptiFine jar> <work>` —— 仓库自己的离线补丁流程。
+  3. `MemberRestorePlan`(成员恢复计划 + donors)。
+  4. `HierarchyPlan`(要换父类的类 + 要 chain 的构造器)。
+  5. `MissingTargets --stub`(**必须给全运行时 classpath**:游戏 + universal + 每个库 jar;用 argfile 传参,
+     因为这几条线的库 jar 有几百个,命令行会被 Windows 拒掉)。
+  6. `PayloadDrift`(keep-runtime / interfaces / access 三份计划)。
+  7. Gradle `-Pmountpoint=fml10` 编译挂载点,再产出两个 jar。
+* **`build-fml10-own-classes.ps1`**:第二个 mod jar(OptiFine 自己的类 + Forge API 桩 + 它自己的
+  `neoforge.mods.toml`)。桩类目录为空时会**当场用 `ForgeApiShims` 生成**,两者都必须从 OptiFine jar
+  **和**打补丁后的类里取(只用 OptiFine jar 会漏成员)。
+  两个 jar 都必须手工按 `/` 分隔写 zip 条目:`ZipFile.CreateFromDirectory` 在 PowerShell 5.1 上写反斜杠,
+  FML 会直接判"not a valid mod file",而症状是**客户端正常启动但 mod 根本没装**(1.21.9 上踩过)。
 
-1.21.9 �� OptiFine ������ 1.21.10 �Ķ��ӵ��������� IPv4 ȡ��;1.21.11 ��**��ʽ��**�ھ�����·������
-(���� 9 �ֽ� "Not Found"),���� `get-optifine.ps1` �� optifine.net ���� token ����ȡ����
-(`OptiFine_1.21.11_HD_U_J9.jar`,8 045 116 �ֽ�)�������ߵ� jar ��ֻ���� rig �� `downloads\` ��,�����ֿ⡣
-### 1.21.10:��װȱ����������,�Ѷ�λ����������
+1.21.9 的 OptiFine 构建与 1.21.10 的都从第三方镜像按 IPv4 取到;1.21.11 的**正式版**在镜像上路径不对
+(返回 9 字节 "Not Found"),改走 `get-optifine.ps1` 的 optifine.net 两步 token 流程取到了
+(`OptiFine_1.21.11_HD_U_J9.jar`,8 045 116 字节)。两条线的 jar 都只放在 rig 的 `downloads\` 下,不进仓库。
+### 1.21.10:安装缺件卡在网络,已定位到具体两件
 
-Ϊ�˰� 1.21.10 Ҳ������,��һ��������Щ(������ rig ��,�����ֿ�):
+为了把 1.21.10 也跑起来,这一轮做了这些(都留在 rig 里,不进仓库):
 
-* **OptiFine jar ȡ����������**:1.21.10 �� `preview_OptiFine_1.21.10_HD_U_J7_pre11.jar`(7 805 444 �ֽ�,
-  ���������� IPv4);1.21.11 ��**��ʽ��** `OptiFine_1.21.11_HD_U_J9.jar`(8 045 116 �ֽ�)����
-  ����������·������(���� 9 �ֽ� "Not Found"),���� `get-optifine.ps1` �� optifine.net ���� token ����ȡ����
-* **NeoForge 21.10.64 װ����**(universal jar��1577 ���⡢126 �� native),`versions\1.21.10\1.21.10.jar`
-  (30 592 168 �ֽ�,����ԭ��ͻ���)Ҳ�ڡ�
-* **���� rig �ű�д�ò��﷨�Լ�ͨ��**:`prepare-fml10-line.ps1`(runtime ��ͼ �� OptifinePipeline ��
-  MemberRestorePlan �� HierarchyPlan �� MissingTargets --stub �� PayloadDrift �� ���� jar)��
-  `build-fml10-own-classes.ps1`(�ڶ��� mod jar,�� Forge API ׮�İ�������)��
-* **����**:`libraries\net\minecraft\client\1.21.10-��` �µ� slim/extra/srg ���� NeoForm �ͻ��˱���,
-  �Լ� `libraries\net\neoforged\neoforge\21.10.64\neoforge-21.10.64-client.jar`(NeoForge �򲹶���Ŀͻ��˸��ǲ�)
-  **��������**;��װÿ�ζ��� `libraries: fetched 1, already present 1577, failed 1`��
-  ֱ��ȡ������ʱ **`maven.neoforged.net:443` ������**(curl 72 �볬ʱ),���ǻ���/��������,�����������⡣
-  �Ѿ��� Gradle ģ�黺����� `neoform-1.21.10-20251010.172816.zip`(889 425 �ֽ�)**����**�� rig ��
-  `libraries\net\neoforged\neoform\1.21.10-20251010.172816\`,���˶��� `neoforge-21.10.64-userdev.jar`:
-  ������ `patches/**`��`ats/accesstransformer.cfg`��`config.json`,**���������Ŀͻ�����**,���Ը��ǲ������
-  NeoForm ����(neoform zip + ��Щ����)����,������ֱ�����صĳ�Ʒ��
+* **OptiFine jar 取到了两条线**:1.21.10 的 `preview_OptiFine_1.21.10_HD_U_J7_pre11.jar`(7 805 444 字节,
+  第三方镜像按 IPv4);1.21.11 的**正式版** `OptiFine_1.21.11_HD_U_J9.jar`(8 045 116 字节)——
+  镜像上那条路径不对(返回 9 字节 "Not Found"),改走 `get-optifine.ps1` 的 optifine.net 两步 token 流程取到。
+* **NeoForge 21.10.64 装上了**(universal jar、1577 个库、126 个 native),`versions\1.21.10\1.21.10.jar`
+  (30 592 168 字节,混淆原版客户端)也在。
+* **两个 rig 脚本写好并语法自检通过**:`prepare-fml10-line.ps1`(runtime 视图 → OptifinePipeline →
+  MemberRestorePlan → HierarchyPlan → MissingTargets --stub → PayloadDrift → 两个 jar)与
+  `build-fml10-own-classes.ps1`(第二个 mod jar,含 Forge API 桩的按需生成)。
+* **卡点**:`libraries\net\minecraft\client\1.21.10-…` 下的 slim/extra/srg 三个 NeoForm 客户端变体,
+  以及 `libraries\net\neoforged\neoforge\21.10.64\neoforge-21.10.64-client.jar`(NeoForge 打补丁后的客户端覆盖层)
+  **都不存在**;安装每次都报 `libraries: fetched 1, already present 1577, failed 1`。
+  直接取这两件时 **`maven.neoforged.net:443` 连不上**(curl 72 秒超时),这是环境/网络问题,不是配置问题。
+  已经把 Gradle 模块缓存里的 `neoform-1.21.10-20251010.172816.zip`(889 425 字节)**补种**到 rig 的
+  `libraries\net\neoforged\neoform\1.21.10-20251010.172816\`,并核对了 `neoforge-21.10.64-userdev.jar`:
+  里面是 `patches/**`、`ats/accesstransformer.cfg`、`config.json`,**不含编译后的客户端类**,所以覆盖层必须由
+  NeoForm 流程(neoform zip + 这些补丁)产出,不是能直接下载的成品。
 
-**��һ��**:����ָ������� `add-line.ps1 -InstallOnly`(neoform zip �Ѿ�λ,���ܾ��ܲ��������ͻ��˱���),
-���� `prepare-fml10-line.ps1 -Mc 1.21.10 -NeoForge 21.10.64 -OptifineJar <jar>`,��󰴽ű�ĩβ��ӡ�����������
-����ű����ÿһ������ 1.21.9 ��������ͬһ����,����ʣ�µķ��ռ�����"��װ�ܲ��ܲ���"��һ���ϡ�
-## 1.21.10 ͨ������:ͬһ�׼ƻ�,��Ķ�
+**下一步**:网络恢复后重跑 `add-line.ps1 -InstallOnly`(neoform zip 已就位,可能就能补齐三个客户端变体),
+再跑 `prepare-fml10-line.ps1 -Mc 1.21.10 -NeoForge 21.10.64 -OptifineJar <jar>`,最后按脚本末尾打印的命令启动。
+这个脚本里的每一步都是 1.21.9 上量过的同一条链,所以剩下的风险集中在"安装能不能补齐"这一件上。
+## 1.21.10 通过验收:同一套计划,零改动
 
 ```
 ===== VERDICT: STARTED =====
@@ -970,131 +970,131 @@ NeoForge �� `c`(�� ModLauncher ���� `ConventionTags` ͬһ�׹�
   [OptiFine] lines    : 356
 ```
 
-�����ܷ�����һ��(`[OptiFine] OptiFine_1.21.10_HD_U_J7_pre11`��`OpenGL API ERROR` 0 �С���������־
-`RealmsAvailability` ���ܡ��ޱ������桢stderr 0 �ֽ�)��**������û��Ϊ����һ�д���������**:
-��Ա�ָ���reparent �ƻ���keep-runtime��stub �ƻ������鼯���޸�������ʽ tag creator ȫ��ԭ����Ч,
-�����ǰ���Щ��������"�ƻ�����"�ļ�ֵ��
+两次跑法逐项一致(`[OptiFine] OptiFine_1.21.10_HD_U_J7_pre11`、`OpenGL API ERROR` 0 行、标题界面标志
+`RealmsAvailability` 在跑、无崩溃报告、stderr 0 字节)。**这条线没有为它改一行处理器代码**:
+成员恢复、reparent 计划、keep-runtime、stub 计划、精灵集合修复、反射式 tag creator 全部原样生效,
+这正是把这些东西做成"计划驱动"的价值。
 
-### ��һ��Ϊ 1.21.10 �����������
+### 这一轮为 1.21.10 解决的三件事
 
-1. **��װȱ������һ��·**��maven.neoforged.net ����̨������������,��װ��ʼ�ձ�
-   `libraries: fetched 1, already present 1577, failed 1`,`libraries\net\minecraft\client\1.21.10-��` ��
-   slim/extra/srg �� `neoforge-21.10.64-client.jar` ���ò�����**ModDevGradle �Լ��� NeoForm ����ʱ��Ͱ�
-   �ȼ����������**:
+1. **安装缺件换了一条路**。maven.neoforged.net 从这台机器上连不上,安装器始终报
+   `libraries: fetched 1, already present 1577, failed 1`,`libraries\net\minecraft\client\1.21.10-…` 的
+   slim/extra/srg 与 `neoforge-21.10.64-client.jar` 都拿不到。**ModDevGradle 自己的 NeoForm 运行时早就把
+   等价物算出来了**:
    `~/.gradle/caches/neoformruntime/intermediate_results/compiledWithNeoForge_<hash>_output.jar`
-   ���� һ�� jar ��ͬʱ�д򲹶������Ϸ��(`net/minecraft/**`)�� NeoForge �Լ�����
-   (`net/neoforged/neoforge/**`),13323 ����Ŀ,�� "overlay + srg client" �ĳ�����
-   `prepare-fml10-line.ps1` ��˼��� `-RuntimeJar`:������������װ����������Ʒ��ͬ����,
-   neoform zip Ҳ�� Gradle ģ�黺�油�ֽ� `libraries\net\neoforged\neoform\1.21.10-20251010.172816\`��
-   **�����û�����ĵȼ۲������ȱʧ����,����������Ϊ������"�ٷ���װ"����·��**
-2. **�����ڵ�Ҫ�� FML �汾**��FML 10.0.32(NeoForge 21.10.64)�� API ����:
-   `startup(...)` ���� `Entrypoint$StartupResult`(������ `FMLLoader`)��
-   `createMainMethodCallable(StartupResult, String)`���ر��� `StartupResult.close()`��
-   �� 10.0.14 �����������һ�о���:
-   `NoSuchMethodError: 'FMLLoader �� .startup(String[], boolean, Dist, boolean)'`��
-   �µ� `DiagnosticClientAny` **�������κ� FML API**,ȫ���÷����ҷ���,���������߹���һ���ࡣ
-3. **`-NoEarlyWindow` ͬ������**:�������ڼ��ػ���ʱ,1.21.10 ������ 1.21.9 һģһ����
-   `SimpleBufferBuilder "Already building"`(FML ���ڻ����� OptiFine ����ͼ������ GL ״̬)��
-   ���� `-NoEarlyWindow` ����Ҫ�� `config\fml.toml` �Ѵ��ڡ�����һ�������д��,��������Ҫ�Ȳ������������һ�Ρ�
+   —— 一个 jar 里同时有打补丁后的游戏类(`net/minecraft/**`)和 NeoForge 自己的类
+   (`net/neoforged/neoforge/**`),13323 个条目,是 "overlay + srg client" 的超集。
+   `prepare-fml10-line.ps1` 因此加了 `-RuntimeJar`:给它就跳过安装器那两个成品。同样地,
+   neoform zip 也从 Gradle 模块缓存补种进 `libraries\net\neoforged\neoform\1.21.10-20251010.172816\`。
+   **这是拿缓存里的等价产物替代缺失下载,记下来是因为它不是"官方安装"那条路。**
+2. **诊断入口点要跨 FML 版本**。FML 10.0.32(NeoForge 21.10.64)把 API 换了:
+   `startup(...)` 返回 `Entrypoint$StartupResult`(不再是 `FMLLoader`)、
+   `createMainMethodCallable(StartupResult, String)`、关闭走 `StartupResult.close()`。
+   按 10.0.14 编译的诊断类第一行就死:
+   `NoSuchMethodError: 'FMLLoader … .startup(String[], boolean, Dist, boolean)'`。
+   新的 `DiagnosticClientAny` **不引用任何 FML API**,全部用反射找方法,所以两条线共用一个类。
+3. **`-NoEarlyWindow` 同样适用**:开着早期加载画面时,1.21.10 死在与 1.21.9 一模一样的
+   `SimpleBufferBuilder "Already building"`(FML 早期画面与 OptiFine 的贴图工作抢 GL 状态)。
+   另外 `-NoEarlyWindow` 现在要求 `config\fml.toml` 已存在——第一次启动会写它,所以新线要先不带这个开关跑一次。
 
-### 1.21.11 ��״̬:ȱһ��װ���˼�
+### 1.21.11 的状态:缺一个装不了件
 
-OptiFine ��ʽ�� jar ���� rig ��(`OptiFine_1.21.11_HD_U_J9.jar`,8 045 116 �ֽ�),Gradle ģ�黺����Ҳ��
-`neoforge-21.11.45-universal.jar` / `-userdev.jar`,��**û�� `neoforge-21.11.45-installer.jar`**,
-�� `versions\neoforge-21.11.45\neoforge-21.11.45.json` ��� profile(���嵥�� JVM/��Ϸ����)ֻ�а�װ��������;
-`maven.neoforged.net:443` ��һ����Ȼ������(25 �볬ʱ)������ 1.21.11 ����**����**��,���Ǵ�����:
-����ָ����� `add-line.ps1 -InstallOnly -Mc 1.21.11 -NeoForge 21.11.45 -MountPoint fml10`,
-���� 1.21.10 ͬ���� `-RuntimeJar` ·��(�� NeoForm ����ȡ)�� `prepare-fml10-line.ps1`,���ɰ�ͬһ��������֤��
-## 1.21.11 ͨ������:FML 10 ������ȫ����ͨ
+OptiFine 正式版 jar 已在 rig 里(`OptiFine_1.21.11_HD_U_J9.jar`,8 045 116 字节),Gradle 模块缓存里也有
+`neoforge-21.11.45-universal.jar` / `-userdev.jar`,但**没有 `neoforge-21.11.45-installer.jar`**,
+而 `versions\neoforge-21.11.45\neoforge-21.11.45.json` 这个 profile(库清单与 JVM/游戏参数)只有安装器能生成;
+`maven.neoforged.net:443` 这一轮仍然连不上(25 秒超时)。所以 1.21.11 卡在**环境**上,不是代码上:
+网络恢复后跑 `add-line.ps1 -InstallOnly -Mc 1.21.11 -NeoForge 21.11.45 -MountPoint fml10`,
+再用 1.21.10 同样的 `-RuntimeJar` 路径(从 NeoForm 缓存取)跑 `prepare-fml10-line.ps1`,即可按同一套流程验证。
+## 1.21.11 通过验收:FML 10 三条线全部跑通
 
 ```
 ===== VERDICT: STARTED =====
   Setting user        : True
   Sound engine started: True
   new crash reports   : 0
-  stderr bytes        : 107      <- �������� mod ���������ֽ���ͬ(ͬһ�� log4j �����澯)
+  stderr bytes        : 107      <- 与它的无 mod 对照跑逐字节相同(同一行 log4j 环境告警)
   [OptiFine] lines    : 273
 ```
 
-### ����ֻ�� 1.21.11 �ű�¶�����Ķ���
+### 两处只有 1.21.11 才暴露出来的东西
 
-1. **`ResourceLocation` ����һ��� `Identifier`**������ʽ tag creator ��ί��Ŀ��ԭ��д����
-   `create(ResourceLocation)`,���Ǵ������Լ�����־��˵��ʵ��:
+1. **`ResourceLocation` 在这一版叫 `Identifier`**。反射式 tag creator 的委托目标原本写死成
+   `create(ResourceLocation)`,于是处理器自己在日志里说了实话:
    `net.minecraft.tags.ItemTags has no create(ResourceLocation) to delegate to; OptiFine's reflective tag
-   lookup stays unresolved and every DyeColor tag stays null`,�ͻ����漴������ 1.21.9 һģһ����
-   `TagConventionLogWarning` NPE �ϡ��ĳ�**��̬��ί��**:�� `ItemTags` �����Ǹ�"һ������������ `TagKey`
-   �ľ�̬ `create`",ȡ���Ĳ��������� `fromNamespaceAndPath`,���� 1.21.9 �ҵ� `ResourceLocation`��
-   1.21.11 �ҵ� `Identifier`,ͬһ���޸����������ߡ�
-2. **��װ������,��ȱһ������**:`maven.neoforged.net` �� **IPv4 ·���ǻ���**(curl 25 �볬ʱ),
-   **IPv6 ͨ**(`curl -6` �õ� 200)���� -6 ȡ�� 21.11.45 �İ�װ���� neoform zip ֮��,
-   ��װ����־����� `Successfully installed client into launcher`,����������
+   lookup stays unresolved and every DyeColor tag stays null`,客户端随即死在与 1.21.9 一模一样的
+   `TagConventionLogWarning` NPE 上。改成**动态找委托**:在 `ItemTags` 里找那个"一个参数、返回 `TagKey`
+   的静态 `create`",取它的参数类型做 `fromNamespaceAndPath`,所以 1.21.9 找到 `ResourceLocation`、
+   1.21.11 找到 `Identifier`,同一个修复覆盖两条线。
+2. **安装器能跑,但缺一个坐标**:`maven.neoforged.net` 的 **IPv4 路由是坏的**(curl 25 秒超时),
+   **IPv6 通**(`curl -6` 拿到 200)。用 -6 取到 21.11.45 的安装器与 neoform zip 之后,
+   安装器日志最后是 `Successfully installed client into launcher`,并且留下了
    `libraries\net\neoforged\minecraft-client-patched\21.11.45\minecraft-client-patched-21.11.45.jar`
-   ���� **FML 10 ����Ϸ jar ������**����ֻ����Ϸ��(29191 ����Ŀ,û�� `net/neoforged/**`),��������ʱ��ͼ��
-   NeoForge �Լ������ `-universal.jar` ������(`net/neoforged/neoforge/attachment/AttachmentHolder` ��������),
-   ��ݺϲ������Ϊ `-RuntimeJar` ���� `prepare-fml10-line.ps1`��
-   ˳��˵��:��֮ǰ��"ȱʡ��װ������"����������(`client-*-srg.jar`��`neoforge-<ver>-client.jar`)
-   �� FML 10 ��**���Ǳ����**�������������ص��� `minecraft-client-patched-<ver>.jar`��
+   —— **FML 10 的游戏 jar 就是它**。它只有游戏类(29191 个条目,没有 `net/neoforged/**`),所以运行时视图里
+   NeoForge 自己的类从 `-universal.jar` 补进来(`net/neoforged/neoforge/attachment/AttachmentHolder` 就在那里),
+   这份合并结果作为 `-RuntimeJar` 交给 `prepare-fml10-line.ps1`。
+   顺带说明:我之前按"缺省安装器产物"报的那两条(`client-*-srg.jar`、`neoforge-<ver>-client.jar`)
+   对 FML 10 线**不是必须的**——真正被加载的是 `minecraft-client-patched-<ver>.jar`。
 
-### FML 10 �����ߵ����ճɼ�(��ǰ�������޶�,ͬһ�׼ƻ�)
+### FML 10 三条线的最终成绩(当前处理器修订,同一套计划)
 
-| �� | NeoForge | �о� | `[OptiFine]` �� | stderr | ��ע |
+| 线 | NeoForge | 判据 | `[OptiFine]` 行 | stderr | 备注 |
 |---|---|---|---|---|---|
-| 1.21.9 | `21.9.16-beta` | ����ȫ�� | 365 | 0 �ֽ� | ����һ�� |
-| 1.21.10 | `21.10.64` | ����ȫ�� | 356 | 0 �ֽ� | δΪ���߸�һ�д��������� |
-| 1.21.11 | `21.11.45` | ����ȫ�� | 273 | 107 �ֽ� | ���� mod ������**���ֽ���ͬ** |
+| 1.21.9 | `21.9.16-beta` | 四项全中 | 365 | 0 字节 | 两次一致 |
+| 1.21.10 | `21.10.64` | 四项全中 | 356 | 0 字节 | 未为该线改一行处理器代码 |
+| 1.21.11 | `21.11.45` | 四项全中 | 273 | 107 字节 | 与无 mod 对照跑**逐字节相同** |
 
-�����߹�ͬ�� rig ǰ��:**�ص� FML �����ڼ��ػ���**(`earlyWindowControl=false`)���������������߶�������
-FML �Լ��� `SimpleBufferBuilder "Already building"`(�� OptiFine ����ͼ������ͬһ�� GL ������);
-�������� `DiagnosticClientAny`(�������κ� FML API��ȫ����,���ͬʱ���� loader 10.0.14 �� 10.0.32,
-���ߵ� `startup` ���� `Entrypoint$StartupResult` ������ `FMLLoader`)��
-## 26.1.2 ���ؽ���� rig �ϵĽ���(��һ�ڹ��� `26.x` ��,������������Ϊ���������ڱ��ֵ� rig ��)
+三条线共同的 rig 前提:**关掉 FML 的早期加载画面**(`earlyWindowControl=false`)——开着它三条线都会死在
+FML 自己的 `SimpleBufferBuilder "Already building"`(与 OptiFine 的贴图工作抢同一个 GL 上下文);
+启动入口用 `DiagnosticClientAny`(不引用任何 FML API、全反射,因此同时适配 loader 10.0.14 与 10.0.32,
+后者的 `startup` 返回 `Entrypoint$StartupResult` 而不是 `FMLLoader`)。
+## 26.1.2 在重建后的 rig 上的进度(这一节关于 `26.x` 线,记在这里是因为工作发生在本轮的 rig 上)
 
-GitHub �� `26.x` �� README ���д�� 26.1.2"ʵ����֤"(`[OptiFine]` 3478 �С�`processClass` 795 ��)��
-������**�ؽ���� rig** �ϵ�һ�����ȥ������,�õ�����һ����ʵ���м�״̬:
+GitHub 上 `26.x` 的 README 早就写着 26.1.2"实机验证"(`[OptiFine]` 3478 行、`processClass` 795 次)。
+本轮在**重建后的 rig** 上第一次真的去复现它,得到的是一个诚实的中间状态:
 
-**�Ѿ�������**
+**已经量到的**
 
-* rig װ���� Minecraft 26.1.2 �� NeoForge `26.1.2.109`(FML **11.0.15**��Java **25**),
-  ԭ��ͻ��� `versions\26.1.2\26.1.2.jar` 38,113,927 �ֽ�;
-  ���������� `net.neoforged.fml.startup.Client`,���� `launch-fml10.ps1` �õ���������
-  Ϊ������ `-JavaExe`(��һ��Ҫ JDK 25,1.21.x Ҫ 21)��
-* **����**(mods ��ֻ���޹�Ԫ���ݵ� OptiFine):`VERDICT: STARTED` + `Setting user` + `Sound engine started`
-  + �ޱ������� + stderr 107 �ֽڡ�Ҳ����˵��һ���**ʵ������û����**��
-* OptiFine �� `K1_pre2` �Դ� `OptiFineClassProcessor`(ͬʱ�� `IModFileCandidateLocator`),
-  ������ `META-INF/mods.toml` �� Forge ʱ����,���뻻�� `neoforge.mods.toml`;
-  **`optifine/Patcher`��`optifine/xdelta/**`��`optifine/json/**` ���Բ���ɾ**����
-  ��һ��ɾ������,`OptiFineBaseTransformer.<init>` ����
-  `NoClassDefFoundError: optifine/Patcher`,����������ʵ����������
-  (`ServiceConfigurationError: Provider optifine.OptiFineClassProcessor could not be instantiated`)��
-* ������Ҫ��"������"�� NeoForge ��������ʱ���ò���:���ѳ�Ʒ��Ž����� jar ʱ,����ÿ��Ŀ�궼��
-  `java.io.IOException: Base resource not found: net/minecraft/��`(һ���� 866,068 �ֽ� stderr),
-  ���� OptiFine ȫ�̲���Ч(0 �� `[OptiFine]`)���Ѳֿ�������ˮ�߲����� `srg/**` ��Ʒ��
-  (566 ��,���� net/minecraft 486)���� OptiFine �� jar ֮��,�������ſ�ʼ������װ���ǡ�
+* rig 装上了 Minecraft 26.1.2 与 NeoForge `26.1.2.109`(FML **11.0.15**、Java **25**),
+  原版客户端 `versions\26.1.2\26.1.2.jar` 38,113,927 字节;
+  启动入口仍是 `net.neoforged.fml.startup.Client`,所以 `launch-fml10.ps1` 用得起来——
+  为它加了 `-JavaExe`(这一线要 JDK 25,1.21.x 要 21)。
+* **基线**(mods 里只有修过元数据的 OptiFine):`VERDICT: STARTED` + `Setting user` + `Sound engine started`
+  + 无崩溃报告 + stderr 107 字节。也就是说这一版的**实例本身没问题**。
+* OptiFine 的 `K1_pre2` 自带 `OptiFineClassProcessor`(同时是 `IModFileCandidateLocator`),
+  但它的 `META-INF/mods.toml` 是 Forge 时代的,必须换成 `neoforge.mods.toml`;
+  **`optifine/Patcher`、`optifine/xdelta/**`、`optifine/json/**` 绝对不能删**——
+  第一次删了它们,`OptiFineBaseTransformer.<init>` 立刻
+  `NoClassDefFoundError: optifine/Patcher`,处理器整个实例化不出来
+  (`ServiceConfigurationError: Provider optifine.OptiFineClassProcessor could not be instantiated`)。
+* 处理器要的"基底类"在 NeoForge 生产运行时里拿不到:不把成品类放进它的 jar 时,它对每个目标都报
+  `java.io.IOException: Base resource not found: net/minecraft/…`(一次跑 866,068 字节 stderr),
+  于是 OptiFine 全程不生效(0 行 `[OptiFine]`)。把仓库离线流水线产出的 `srg/**` 成品类
+  (566 个,其中 net/minecraft 486)并进 OptiFine 的 jar 之后,处理器才开始真正安装它们。
 
-**һ���� 1.21.9 ����ͬԴ�ġ��µļ���������**
+**一条与 1.21.9 那轮同源的、新的加载器陷阱**
 
-`optifine-own-classes.jar`(OptiFine �Լ����� + Forge shim)һ��ʼ�� FML **�������ڷ����**:
+`optifine-own-classes.jar`(OptiFine 自己的类 + Forge shim)一开始被 FML **当成早期服务罐**:
 
 ```
 Found 4 early service jars (out of 103)
 Loading FML Early Services:
- - ��/loader-11.0.15.jar
- - ��/earlydisplay-11.0.15.jar
+ - …/loader-11.0.15.jar
+ - …/earlydisplay-11.0.15.jar
  - mods/optifine-26.1.2-neoforge.jar
- - mods/optifine-own-classes.jar          <- ������������
+ - mods/optifine-own-classes.jar          <- 它不该在这里
 ```
 
-ԭ������ˮ�߲���� classpath jar **ԭ�������� `META-INF/services/**`**,�� OptiFine ��
+原因是流水线拆出的 classpath jar **原样保留了 `META-INF/services/**`**,而 OptiFine 的
 `net.neoforged.neoforgespi.transformation.ClassProcessor` / `...locating.IModFileCandidateLocator`
-���������ļ��������档���ڷ��������һ��**��������Ϸ��**�ļ���������,����
-`net.optifine.reflect.Reflector.<clinit>` ��
+两个服务文件就在里面。早期服务的类由一个**看不见游戏类**的加载器加载,于是
+`net.optifine.reflect.Reflector.<clinit>` 抛
 `NoClassDefFoundError: net.minecraft.world.level.chunk.ChunkAccess`,
-�ձ���������� `net.minecraft.util.Mth.<clinit>` ���� `net/optifine/util/MathUtils` �Ҳ�����
-�ӵڶ���������ȥ�������������ļ�֮��,`[OptiFine]` ��ʼ��ӡ(5 ��),stderr �ص� 107 �ֽڡ�
+刚被打过补丁的 `net.minecraft.util.Mth.<clinit>` 又抛 `net/optifine/util/MathUtils` 找不到。
+从第二个罐子里去掉这两个服务文件之后,`[OptiFine]` 开始打印(5 行),stderr 回到 107 字节。
 
-**����ʲô(��һ�ִ������)**
+**还差什么(下一轮从这里进)**
 
-OptiFine �Ĵ�������ʼ��װ��֮��,�ͻ�������**������**��һ��,������ FML 10 ����һģһ��:
+OptiFine 的处理器开始安装类之后,客户端死在**换父类**这一处,错误与 FML 10 线上一模一样:
 
 ```
 VerifyError: Bad type on operand stack
@@ -1103,107 +1103,107 @@ VerifyError: Bad type on operand stack
           'net/neoforged/neoforge/attachment/AttachmentHolder'
 ```
 
-1.21.9 �������ɴ�����**�ڼ�����**�� `reparent.txt` �޵�;26.1.2 �Ĺ��ص��� OptiFine �Լ��Ĵ�����,
-�������������,������һ��(������ + ������ chain ��д����Ա���shim)**���������߽׶ξ�д��
-���� OptiFine jar �� `srg/**` ��Ʒ����**���������� `26.x` �ĵ���д��"����Ŀ���׵���������ˮ��"��
-���ֻ�û������һ��,��� 26.1.2 **û��ͨ������**,ֻ�Ǵ�"��ȫ����"�ƽ�����"OptiFine ���ܡ����ڻ�����"��
-### ����:��һ��˵ 26.1.2 ���ڻ�����,�Ǹ��Ѿ�������
+1.21.9 上这是由处理器**在加载期**读 `reparent.txt` 修的;26.1.2 的挂载点是 OptiFine 自己的处理器,
+它不会做这件事,所以那一套(换父类 + 构造器 chain 重写、成员回填、shim)**必须在离线阶段就写进
+并进 OptiFine jar 的 `srg/**` 成品类里**——这正是 `26.x` 文档里写的"本项目贡献的是离线流水线"。
+本轮还没有做这一步,因此 26.1.2 **没有通过验收**,只是从"完全不动"推进到了"OptiFine 在跑、卡在换父类"。
+### 更正:上一节说 26.1.2 卡在换父类,那个已经做完了
 
-����ǰ���"26.1.2 ����ʲô"д��ͬһ����һЩ��ʱ��֮��������һ��������,26.1.2 **�����о�ȫ��ͨ��**:
-`VERDICT: STARTED` + `Setting user` + `Sound engine started` + �ޱ������� + stderr 107 �ֽ�(= ��������һ��),
-`processClass` **795 ��**(�� `26.x` ����ļ�¼һ��),`[OptiFine]` ������һ���� 352(���Ƿݼ�¼�� 3478 ��ͬ,
-**û�н���**,��ʵд�� `26.x` �� `docs/DEVELOPMENT.md` �� README ��)��
+本节前面的"26.1.2 还差什么"写在同一天早一些的时候。之后离线那一步做完了,26.1.2 **四项判据全部通过**:
+`VERDICT: STARTED` + `Setting user` + `Sound engine started` + 无崩溃报告 + stderr 107 字节(= 对照跑那一行),
+`processClass` **795 次**(与 `26.x` 更早的记录一致),`[OptiFine]` 行数这一次是 352(与那份记录的 3478 不同,
+**没有解释**,如实写在 `26.x` 的 `docs/DEVELOPMENT.md` 和 README 里)。
 
-������һ�׵�����:�ֿ��Լ��� `OptifinePipeline` �� `HierarchyPlan` �� `ReparentPayload` ��
-`MemberRestorePlan` �� `RestoreMembers`,�ٰѳ�Ʒ **`srg/**` �� `assets/**` һ��**���� OptiFine �� jar
-(ֻ���಻����Դ��ˢ 13,367 �ֽڵ� `Base resource not found: assets/...`),��ӵڶ��� mod ����
-`optifine-own-classes.jar`(OptiFine �Լ����� + shim,�ұ����޳� `META-INF/services/net.neoforged.**`,
-�������ᱻ�������ڷ���ޡ�������һ����������Ϸ��ļ���������)�������䷽�� `26.x` ��
-`docs/DEVELOPMENT.md`��
+离线那一套的做法:仓库自己的 `OptifinePipeline` → `HierarchyPlan` → `ReparentPayload` →
+`MemberRestorePlan` → `RestoreMembers`,再把成品 **`srg/**` 与 `assets/**` 一起**并进 OptiFine 的 jar
+(只并类不并资源会刷 13,367 字节的 `Base resource not found: assets/...`),外加第二个 mod 罐子
+`optifine-own-classes.jar`(OptiFine 自己的类 + shim,且必须剔除 `META-INF/services/net.neoforged.**`,
+否则它会被当成早期服务罐、其类由一个看不见游戏类的加载器加载)。完整配方在 `26.x` 的
+`docs/DEVELOPMENT.md`。
 
-���� **15 ����ȫ���ڱ����ؽ���� rig ���ܹ������о�**(1.20.1 / 1.20.2 / 1.20.4 / 1.20.6��
-1.21 / 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8��1.21.9 / 1.21.10 / 1.21.11��26.1.2),
-�����������ڸ��Ե� README ���֧�ĵ���,���� FML 10 ���� 26.1.2 �� rig ǰ��(�ص� FML ���ڼ��ػ��桢
-�����ڵ㡢�Լ�"��װ���ò���ʱ�� NeoForm ����������"�����)Ҳ��д��ͬһ����
-## ��Ӱ��ʵ��(FML 10 ������):1.21.10 ͨ��,1.21.9 ��δ���͵Ĳ���
+至此 **15 条线全部在本机重建后的 rig 上跑过四项判据**(1.20.1 / 1.20.2 / 1.20.4 / 1.20.6、
+1.21 / 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8、1.21.9 / 1.21.10 / 1.21.11、26.1.2),
+逐条的数字在各自的 README 与分支文档里,三条 FML 10 线与 26.1.2 的 rig 前提(关掉 FML 早期加载画面、
+诊断入口点、以及"安装器拿不到时用 NeoForm 缓存产物替代"这件事)也都写在同一处。
+## 光影包实测(FML 10 三条线):1.21.10 通过,1.21.9 有未解释的差异
 
-�û�Ҫ�����ذ�װ�����Ӱ�����ԡ�������(Complementary Reimagined r5.9.3��BSL v10.1.5��Photon v1.3b��
-MakeUp UltraFast 9.5e��Rethinking Voxels r0.1-beta9��Solas V3.7b)�� Modrinth API ȡ�� rig ��
-`shaderpacks\`,�� rig ��ű� `test-shaderpack.ps1` ���"װ�� �� д `optionsshaders.txt` �� ��� �� ����־ȡ��"��
+用户要求下载安装多个光影包测试。六个包(Complementary Reimagined r5.9.3、BSL v10.1.5、Photon v1.3b、
+MakeUp UltraFast 9.5e、Rethinking Voxels r0.1-beta9、Solas V3.7b)从 Modrinth API 取到 rig 的
+`shaderpacks\`,由 rig 侧脚本 `test-shaderpack.ps1` 逐包"装包 → 写 `optionsshaders.txt` → 启动 → 从日志取数"。
 
-**��ôѡ��һ����**:`<��ϷĿ¼>\optionsshaders.txt`,�� `shaderPack`,ֵ�� `shaderpacks\` �����Ŀ��(�� `.zip`)��
-���Ǵ� OptiFine �Լ��������������(`Shaders` �� `optionsshaders.txt` + `new File(Minecraft.getInstance()
-.gameDirectory, ...)`,�������� `EnumShaderOption.SHADER_PACK.getPropertyKey()`),���ǲµġ�
+**怎么选中一个包**:`<游戏目录>\optionsshaders.txt`,键 `shaderPack`,值是 `shaderpacks\` 里的条目名(含 `.zip`)。
+这是从 OptiFine 自己的类里读出来的(`Shaders` 里 `optionsshaders.txt` + `new File(Minecraft.getInstance()
+.gameDirectory, ...)`,键名来自 `EnumShaderOption.SHADER_PACK.getPropertyKey()`),不是猜的。
 
-### ���
+### 结果
 
-| �� | ��Ӱ�� | �����о� | ���Ƿ���� | `[OptiFine]` �� | `[Shaders]` �� | GLSL ���� |
+| 线 | 光影包 | 四项判据 | 包是否加载 | `[OptiFine]` 行 | `[Shaders]` 行 | GLSL 错误 |
 |---|---|---|---|---|---|---|
-| **1.21.10** | MakeUp-UltraFast 9.5e | ȫ�� | **��** | 3441 | 76 | 0 |
-| **1.21.10** | Photon v1.3b | ȫ�� | **��** | 1199 | 180 | 0 |
-| 1.21.9 | MakeUp-UltraFast 9.5e | ȫ�� | **��** | 365 | 9 | 0 |
+| **1.21.10** | MakeUp-UltraFast 9.5e | 全中 | **是** | 3441 | 76 | 0 |
+| **1.21.10** | Photon v1.3b | 全中 | **是** | 1199 | 180 | 0 |
+| 1.21.9 | MakeUp-UltraFast 9.5e | 全中 | **否** | 365 | 9 | 0 |
 
-(1.21.10 �������ĸ����Ľ�����ڱ���ĩβ;26.1.2 ��������ȫ��ͨ��,��¼�� `26.x` ��
-`docs/DEVELOPMENT.md`��)
+(1.21.10 上其余四个包的结果补在本节末尾;26.1.2 上六个包全部通过,记录在 `26.x` 的
+`docs/DEVELOPMENT.md`。)
 
-### 1.21.9 �Ĳ���:��ʵ��Ϊ"δ����"
+### 1.21.9 的差异:如实记为"未解释"
 
-ͬһ�����ͬһ�� `optionsshaders.txt`(�������ֽ���ͬ:`shaderPack=<��>` + `antialiasingLevel=0`)��
-ͬһ̨����:
+同一条命令、同一份 `optionsshaders.txt`(内容逐字节相同:`shaderPack=<包>` + `antialiasingLevel=0`)、
+同一台机器:
 
-* 1.21.10 ����־:`[Shaders] Load shaders configuration.` �� 2 �����
+* 1.21.10 的日志:`[Shaders] Load shaders configuration.` → 2 毫秒后
   `[Shaders] Loaded shaderpack: photon_v1.3b.zip`;
-* 1.21.9 ����־:`[Shaders] Load shaders configuration.` ֮��**ʲô��û��**,ֱ�ӽ���Դ���ء�
+* 1.21.9 的日志:`[Shaders] Load shaders configuration.` 之后**什么都没有**,直接进资源重载。
 
-�Ѿ��ų���(������):
+已经排除的(都量过):
 
-* **�����ļ���ʽ/λ��**:���ļ����ڡ�����ͨ�ļ�(`Archive`,59 �ֽ�)��������ȷ;
-  �� OptiFine �Լ��� `net.optifine.util.PropertiesOrdered` ���߽���ͬһ���ļ�,�õ�
-  `shaderPack=[(debug)]`(��ֵҲ�õõ�),���� `key=value` �� `:value` ����д�����ܱ�������
-* **����·�����첻ͬ**:`javap` ���ֽڱȽ� 1.21.9(`J7_pre2`)�� 1.21.10(`J7_pre11`)����������
-  `Shaders` ��ʼ������,`new File(Minecraft.getInstance().gameDirectory, "optionsshaders.txt")` ��
-  `shaderpacks` ����**��ȫһ��**��
-* **��������װ�� `Minecraft`**:1.21.9 ���غ���**û��** `net/minecraft/client/Minecraft.class`
-  (����ʱ�Ƿݴ� `public final File gameDirectory`),���Զ���������ʱ���ֶΡ�
-* **���� antialiasing / Fabulous ����**:��������֧���Ի��һ�� `[Shaders]` ˵��,��־�ﶼû��;
-  ���� `antialiasingLevel=0` �� `=2` ����ȡֵ���Թ�,��Ϊ���䡣
-* **���ǰ��ļ��Ŵ�Ŀ¼**:��ͬ���������ֵ� 6 ����ѡλ��(��ϷĿ¼����ϷĿ¼�µ� `run\`��`game\`��
-  rig ����`.minecraft`���û�Ŀ¼)����,`[Shaders]` ����Ȼû���κ�һ���ᵽ����������
-* **`Config` ��Ĭ��ֵ**:���� `[Shaders]` ���ȡֵ������Ϊ"�����մ�",�� `loadConfig()` ��
-  `Properties.load()` ֮ǰ�� `setProperty("shaderPack","")` ���Ǹ�ֵ����Ҳ����˵�ļ���ȡ��һ��
-  �� 1.21.9 ��Ҫô���˱��̵���쳣��Ҫô���Ĳ����Ǹ��ļ���**��������һ��û�ж��ۡ�**
+* **不是文件格式/位置**:该文件存在、是普通文件(`Archive`,59 字节)、内容正确;
+  用 OptiFine 自己的 `net.optifine.util.PropertiesOrdered` 离线解析同一个文件,拿到
+  `shaderPack=[(debug)]`(换值也拿得到),所以 `key=value` 与 `:value` 两种写法都能被解析。
+* **不是路径构造不同**:`javap` 逐字节比较 1.21.9(`J7_pre2`)与 1.21.10(`J7_pre11`)两个构建的
+  `Shaders` 初始化代码,`new File(Minecraft.getInstance().gameDirectory, "optionsshaders.txt")` 与
+  `shaderpacks` 两处**完全一致**。
+* **不是我们装的 `Minecraft`**:1.21.9 的载荷里**没有** `net/minecraft/client/Minecraft.class`
+  (运行时那份带 `public final File gameDirectory`),所以读的是运行时的字段。
+* **不是 antialiasing / Fabulous 拦截**:那两个分支各自会打一行 `[Shaders]` 说明,日志里都没有;
+  而且 `antialiasingLevel=0` 与 `=2` 两种取值都试过,行为不变。
+* **不是把文件放错目录**:把同样的内容种到 6 个候选位置(游戏目录、游戏目录下的 `run\`、`game\`、
+  rig 根、`.minecraft`、用户目录)再跑,`[Shaders]` 里依然没有任何一行提到它被读到。
+* **`Config` 的默认值**:三个 `[Shaders]` 相关取值都表现为"读到空串",即 `loadConfig()` 在
+  `Properties.load()` 之前先 `setProperty("shaderPack","")` 的那个值——也就是说文件读取这一步
+  在 1.21.9 上要么抛了被吞掉的异常、要么读的不是那个文件。**具体是哪一种没有定论。**
 
-��һ�ֵ�����ֶ��Ѿ����:�� ASM �� **1.21.9 �Ƿ�** `net/optifine/shaders/Shaders.loadConfig()` ��ͷ��һ��
-̽��,��ӡ `configFile`��`configFile.exists()` ������ `shadersConfig.getProperty("shaderPack","(unset)")`,
-�ٰ�̽�� jar �Ž� `mods\` ��һ�Ρ�����"·��/������/������ֵ"������һ�����塣
-### 1.21.10 ����������ȫ�����(���ϱ�)
+下一轮的诊断手段已经想好:用 ASM 给 **1.21.9 那份** `net/optifine/shaders/Shaders.loadConfig()` 开头插一行
+探针,打印 `configFile`、`configFile.exists()` 与读完后 `shadersConfig.getProperty("shaderPack","(unset)")`,
+再把探针 jar 放进 `mods\` 跑一次。这样"路径/存在性/读到的值"三件事一次量清。
+### 1.21.10 上六个包的全部结果(补上表)
 
-| ��Ӱ�� | �����о� | ���Ƿ���� | `[OptiFine]` �� | `[Shaders]` �� | GLSL ���� | GL ���� | stderr |
+| 光影包 | 四项判据 | 包是否加载 | `[OptiFine]` 行 | `[Shaders]` 行 | GLSL 错误 | GL 错误 | stderr |
 |---|---|---|---|---|---|---|---|
-| MakeUp-UltraFast 9.5e | ȫ�� | �� | 3441 | 76 | 0 | 0 | 0 |
-| Complementary Reimagined r5.9.3 | ȫ�� | �� | 592 | 104 | 0 | 0 | 0 |
-| BSL v10.1.5 | ȫ�� | �� | 393 | 68 | 0 | 0 | 0 |
-| Photon v1.3b | ȫ�� | �� | 1199 | 180 | 0 | 0 | 0 |
-| Rethinking Voxels r0.1-beta9 | ȫ�� | �� | 570 | 94 | 0 | 0 | 0 |
-| Solas V3.7b | ȫ�� | �� | 3390 | 80 | 0 | 0 | 0 |
+| MakeUp-UltraFast 9.5e | 全中 | 是 | 3441 | 76 | 0 | 0 | 0 |
+| Complementary Reimagined r5.9.3 | 全中 | 是 | 592 | 104 | 0 | 0 | 0 |
+| BSL v10.1.5 | 全中 | 是 | 393 | 68 | 0 | 0 | 0 |
+| Photon v1.3b | 全中 | 是 | 1199 | 180 | 0 | 0 | 0 |
+| Rethinking Voxels r0.1-beta9 | 全中 | 是 | 570 | 94 | 0 | 0 | 0 |
+| Solas V3.7b | 全中 | 是 | 3390 | 80 | 0 | 0 | 0 |
 
-ÿ��������**һ��������**:`VERDICT: STARTED` + `Setting user` + `Sound engine started` + �ޱ�������,
-������־���� OptiFine �Լ��� `[Shaders] Loaded shaderpack: <����>`��"GLSL ����"ͳ�Ƶ���
-`Error compiling|Error linking|SMCLog.severe` �����ƥ����,���ζ��� 0;`GL ����`ͳ��
-`OpenGL API ERROR`,Ҳ���� 0��
-## ������Ϸ�� FXAA ʵ��(1.21.10,Java 21)
+每个包都是**一次真机启动**:`VERDICT: STARTED` + `Setting user` + `Sound engine started` + 无崩溃报告,
+并且日志里有 OptiFine 自己的 `[Shaders] Loaded shaderpack: <包名>`。"GLSL 错误"统计的是
+`Error compiling|Error linking|SMCLog.severe` 四类的匹配数,六次都是 0;`GL 错误`统计
+`OpenGL API ERROR`,也都是 0。
+## 多人游戏与 FXAA 实测(1.21.10,Java 21)
 
-�û����˷�������ַ���޶��˶�����Ϸ�����տھ�:**ֻ��"������ + ���ƶ�"**,�����������⡣
+用户给了服务器地址并限定了多人游戏的验收口径:**只验"能连上 + 能移动"**,其它交互不测。
 
-### ��ô��û�� GUI ���������������
+### 怎么在没有 GUI 的情况下连服务器
 
-1.21.10 �� `--server`/`--port` �Ѿ�������(`Main` ��ѡ�����û��),Ψһ������������� quick play��
-ʵ��һ���пӵ�ϸ��:`-GameArgs '--quickPlayMultiplayer','8.148.31.159:25565'` ����**�ո�ָ�**��ʽ�ᱻ
-`Main` ԭ����ӡ�� `Completely ignored arguments: [--quickPlayMultiplayer,8.148.31.159:25565]`,
-���Ӳ��ᷢ��;����**�� token �� `--quickPlayMultiplayer=8.148.31.159:25565`** �ű�������
-rig ��Ϊ�˸� `launch-fml10.ps1` ���� `-GameArgs` ͸��������
+1.21.10 里 `--server`/`--port` 已经不存在(`Main` 的选项表里没有),唯一的命令行入口是 quick play。
+实测一个有坑的细节:`-GameArgs '--quickPlayMultiplayer','8.148.31.159:25565'` 这种**空格分隔**形式会被
+`Main` 原样打印成 `Completely ignored arguments: [--quickPlayMultiplayer,8.148.31.159:25565]`,
+连接不会发生;换成**单 token 的 `--quickPlayMultiplayer=8.148.31.159:25565`** 才被解析。
+rig 侧为此给 `launch-fml10.ps1` 加了 `-GameArgs` 透传参数。
 
-### ���:������,�����ƶ��ɲ�
+### 结果:连上了,而且移动可测
 
 ```
 [Render thread/INFO] [net.minecraft.client.gui.screens.ConnectScreen/]: Connecting to 8.148.31.159, 25565
@@ -1211,28 +1211,28 @@ rig ��Ϊ�˸� `launch-fml10.ps1` ���� `-GameArgs` ͸�����
 [Render thread/WARN] [net.minecraft.client.multiplayer.ClientCommonPacketListenerImpl/]: Client disconnected with reason: Authentication time has expired
 ```
 
-* **���ӳɹ�**:`Connecting to 8.148.31.159, 25565` ֮���������,������ÿ 10 ����һ��
-  `Use /register ...`(AuthMe ������δ��¼��ʾ);
-* **Լ 70 ��󱻷�����������**,ԭ���� `Authentication time has expired`:���Ǹ����߿����ͻ���
-  (�û��� `Dev`��accessToken 0),����**û�����û��ķ�������ע���˺�**(����Ҫ `/register`,���ڶ��û�������
-  ��д����,��������������);
-* �� 70 �봰���ڿͻ��� **0 �������桢stderr 0 �ֽ�**;
-* **�ƶ�**:�� rig �½ű� `move-check.ps1` ��������֡�Աȷ�,����"������"ʱ�εı仯��������,
-  ����"��ס W"ʱ�εı仯��:
+* **连接成功**:`Connecting to 8.148.31.159, 25565` 之后进入世界,服务器每 10 秒推一次
+  `Use /register ...`(AuthMe 类插件的未登录提示);
+* **约 70 秒后被服务器踢下线**,原因是 `Authentication time has expired`:这是个离线开发客户端
+  (用户名 `Dev`、accessToken 0),而我**没有在用户的服务器上注册账号**(那需要 `/register`,属于对用户服务器
+  的写操作,不该由我擅自做);
+* 这 70 秒窗口内客户端 **0 崩溃报告、stderr 0 字节**;
+* **移动**:用 rig 新脚本 `move-check.ps1` 量——两帧对比法,先量"不按键"时段的变化率做基线,
+  再量"按住 W"时段的变化率:
 
-| ʱ��(�� 12 ��) | ƽ�������ز� | �仯���ر��� |
+| 时段(各 12 秒) | 平均逐像素差 | 变化像素比例 |
 |---|---|---|
-| ��ֹ(����) | 7.32 | 9.55% |
-| ��ס W | 19.67 | **19.68%** |
+| 静止(基线) | 7.32 | 9.55% |
+| 按住 W | 19.67 | **19.68%** |
 
-��ֵ **2.69x**,�ж� **MOVED**����ʵ˵�������߽�:�������о���**���**��(��·��ƽ����������,��ֹֻ��
-��/ˮ/����),��һ��ű��õ���������д�µ�"�仯���� ��25%"������ֵ,6 ���Ǵ����� 21.18% ���г� NOT SHOWN
-������ֵ�ĳ���Եĺ����ܲŵõ����������,��һ��д�ڽű�ע����;�����ط�֤������"�����ڴ���仯",
-����ֱ�Ӷ�������,��������**֤��**�������Ǳ������
+比值 **2.69x**,判定 **MOVED**。如实说明两条边界:①这条判据是**相对**的(走路会平移整个画面,静止只动
+云/水/粒子),第一版脚本用的是我事先写下的"变化像素 ≥25%"绝对阈值,6 秒那次量到 21.18% 被判成 NOT SHOWN
+——阈值改成相对的后重跑才得到上面的数字,这一点写在脚本注释里;②像素法证明的是"画面在大幅变化",
+不是直接读到坐标,所以它是**证据**而不是仪表读数。
 
-### ˳���޵�һ���� bug:������Ϸ������ͱ�
+### 顺手修掉一个真 bug:多人游戏里下雨就崩
 
-��һ�δ���Ӱ/���ӽ�������������,�ͻ��˼����ھ�д�˱�������:
+第一次带光影/粒子进入服务器世界后,客户端几秒内就写了崩溃报告:
 
 ```
 java.lang.NoSuchMethodError: 'it.unimi.dsi.fastutil.ints.Int2ObjectMap
@@ -1242,249 +1242,249 @@ java.lang.NoSuchMethodError: 'it.unimi.dsi.fastutil.ints.Int2ObjectMap
   at WeatherEffectRenderer.tickRainParticles(WeatherEffectRenderer.java:228)
 ```
 
-������**ͬһ���µ�������״��ͬ**:OptiFine �� `ParticleEngine` ����ʱ�õ���
-`ParticleResources.getProviders()` ���� **int ���� `Int2ObjectMap`**(���� `Registry.getId(type)` ��ȡֵ),
-�� NeoForge ������ʱ�����ĳ��� **`Map<ResourceLocation, ParticleProvider<?>>`**;
-OptiFine ��������һ����(ͨ������� Forge ʱ���� `ParticleResources.getProvider(ParticleType)`),
-����־�Լ�˵�� `(Reflector) Method not present: ...ParticleResources.getProvider`,���Ժ�Ҳ�ǿյġ�
+根因是**同一件事的两个形状不同**:OptiFine 的 `ParticleEngine` 编译时用的是
+`ParticleResources.getProviders()` 返回 **int 键的 `Int2ObjectMap`**(并在 `Registry.getId(type)` 上取值),
+而 NeoForge 的运行时把它改成了 **`Map<ResourceLocation, ParticleProvider<?>>`**;
+OptiFine 本来还有一个后备(通过反射调 Forge 时代的 `ParticleResources.getProvider(ParticleType)`),
+但日志自己说了 `(Reflector) Method not present: ...ParticleResources.getProvider`,所以后备也是空的。
 
-�޷�**����**�� `ParticleEngine` ��������ʱ�Ƿ�(��һ������ OptiFine ���Զ���������ɫ
-`updateTerrainParticleColor`/`CustomColors`,����Ͷ�����),�����ڴ�������**��д������õ����״**:
-`getProviders()` ���������ĳɷ��� `Map`��`Registry.getId(Object)I` �ĳ� `Registry.getKey(Object)ResourceLocation`��
-`Int2ObjectMap.get(I)` �ĳ� `Map.get(Object)` ���� ȡ���Ļ���ͬһ�� provider(ע��� id ����Դλ��ָ��ͬһ��Ŀ)��
-��������������:**ͬ�������硢ͬ�� 150 ��,0 ��������**��
+修法**不是**把 `ParticleEngine` 换成运行时那份(那一份里有 OptiFine 的自定义粒子颜色
+`updateTerrainParticleColor`/`CustomColors`,换掉就丢功能),而是在处理器里**改写这个调用点的形状**:
+`getProviders()` 的描述符改成返回 `Map`、`Registry.getId(Object)I` 改成 `Registry.getKey(Object)ResourceLocation`、
+`Int2ObjectMap.get(I)` 改成 `Map.get(Object)` —— 取到的还是同一个 provider(注册表 id 与资源位置指向同一条目)。
+修完再连服务器:**同样的世界、同样 150 秒,0 崩溃报告**。
 
-**�����޸��ĸ��Ƿ�Χ**:1.21.9 / 1.21.10 / 1.21.11 �����߶������ǵĴ������ڼ����ڸ�д,����ֻҪ�ؽ� payload
-����Ч(1.21.11 �� payload ���ؽ�);**26.1.2 �Ĺ��ص��� OptiFine �Դ��Ĵ�����**,�����ڲ���д,��Ҫ��
-���߽׶ζԲ��� OptiFine jar �� `srg/**` ��ͬ����������д(�Ѻ˶�:26.1.2 �� payload ��
-`ParticleEngine` ͬ������ `Int2ObjectMap`),����»�û������
+**这条修复的覆盖范围**:1.21.9 / 1.21.10 / 1.21.11 三条线都由我们的处理器在加载期改写,所以只要重建 payload
+即生效(1.21.11 的 payload 已重建);**26.1.2 的挂载点是 OptiFine 自带的处理器**,加载期不改写,需要在
+离线阶段对并进 OptiFine jar 的 `srg/**` 做同样的三处改写(已核对:26.1.2 的 payload 里
+`ParticleEngine` 同样引用 `Int2ObjectMap`),这件事还没有做。
 
 ### FXAA
 
-OptiFine �Ŀ����**����** `optionsshaders.txt`,���� `optionsof.txt` �� **`ofAaLevel`**(��һ������������:
-�� `optionsshaders.txt` ��� `antialiasingLevel=2` д��ȥ,��־����һ�� `Antialiasing` ��û��;
-�� `optionsof.txt` �� `ofAaLevel` �ż�Ч)��
+OptiFine 的抗锯齿**不在** `optionsshaders.txt`,而在 `optionsof.txt` 的 **`ofAaLevel`**(这一点是量出来的:
+把 `optionsshaders.txt` 里的 `antialiasingLevel=2` 写进去,日志里连一行 `Antialiasing` 都没有;
+改 `optionsof.txt` 的 `ofAaLevel` 才见效)。
 
-| ���� | ��־֤�� | �����о� | �������� | stderr |
+| 设置 | 日志证据 | 四项判据 | 崩溃报告 | stderr |
 |---|---|---|---|---|
-| `ofAaLevel:2` | `[Shaders] Shaders can not be loaded, Antialiasing is enabled: 2x` | ȫ�� | 0 | 0 |
-| `ofAaLevel:4` | `[Shaders] Shaders can not be loaded, Antialiasing is enabled: 4x` | ȫ�� | 0 | 0 |
+| `ofAaLevel:2` | `[Shaders] Shaders can not be loaded, Antialiasing is enabled: 2x` | 全中 | 0 | 0 |
+| `ofAaLevel:4` | `[Shaders] Shaders can not be loaded, Antialiasing is enabled: 4x` | 全中 | 0 | 0 |
 
-���ζ� `VERDICT: STARTED` + `Setting user` + `Sound engine started`,û�б�������,stderr 0 �ֽڡ�
-**��ʵд�ı߽�**:������֤������"FXAA 2x/4x ���ͻ��������Ҳ�����";`Shaders can not be loaded` ��һ����
-OptiFine �Լ��Ĺ���(��������Ӱ������),�� FXAA �۸��ϵı�Եƽ��û�������ؼ��Ա�(����Ҫ��ϸ��
-��Ե���,���ڱ��ַ�Χ)��
+两次都 `VERDICT: STARTED` + `Setting user` + `Sound engine started`,没有崩溃报告,stderr 0 字节。
+**如实写的边界**:这两次证明的是"FXAA 2x/4x 被客户端启用且不致命";`Shaders can not be loaded` 那一行是
+OptiFine 自己的规则(抗锯齿与光影包互斥),而 FXAA 观感上的边缘平滑没有做像素级对比(那需要更细的
+边缘检测,不在本轮范围)。
 
-### rig ����������������
+### rig 侧新增的三个工具
 
-* `launch-fml10.ps1 -GameArgs ...`:�Ѷ�����Ϸ����׷���� profile �Լ�����֮��(quick play ������ô����);
-* `slp-ping.ps1`:��С Server-List-Ping �ͻ���(���� + status),��������Ϸ֮���ʷ�����"����˭�����߼���";
-* `move-check.ps1`:��֡�Աȷ����ƶ�,��"��ֹ����"��"����ʱ��"��������һ���ӡ������
+* `launch-fml10.ps1 -GameArgs ...`:把额外游戏参数追加在 profile 自己那批之后(quick play 就是这么传的);
+* `slp-ping.ps1`:最小 Server-List-Ping 客户端(握手 + status),用来在游戏之外问服务器"你是谁、在线几人";
+* `move-check.ps1`:两帧对比法测移动,把"静止基线"和"按键时段"两个数字一起打印出来。
 
-## 2026-09-20:1.21 �ĳ�ʼ��Դ���ؿ��������غ����һ���Ե��ñ������� OptiFine �Լ��ķ���(����)
+## 2026-09-20:1.21 的初始资源重载卡死——载荷里的一次自调用被改名到 OptiFine 自己的方法(已修)
 
-**һ�仰**:1.21(`21.0.167`,ModLauncher ·��,JDK 21)����������о�һֱ�ǹ���,����ʼ��Դ���ش���
-û������������������������ڵȴ��̡�Ҳ�����̳߳ض���,����**������ OptiFine �Լ���һ���ȴ���־��**;
-���������ǵ� SRG ��д���غ�**�Լ�����**��һ�ε��ø�������ͬ�������һ������������ `1f24f23`��
+**一句话**:1.21(`21.0.167`,ModLauncher 路径,JDK 21)的四项启动判据一直是过的,但初始资源重载从来
+没有跑完过。今天量到它不是在等磁盘、也不是线程池饿死,而是**卡死在 OptiFine 自己的一个等待标志上**;
+根因是我们的 SRG 改写把载荷**自己类内**的一次调用改名成了同类里的另一个方法。修在 `1f24f23`。
 
-### ֢״:�������ܶ�ͣ��ͬһ���ط�(�ɸ���)
+### 症状:三次连跑都停在同一个地方(可复现)
 
-1.21 ������**���ߵ� tick loop**,����ʼ��Դ����**����û���**:
+1.21 这条线**能走到 tick loop**,但初始资源重载**从来没完成**:
 
-* �������� `VERDICT: STARTED` �� `Setting user` **��ͨ��**,����Ҳһֱ����;
-* ���ζ�**һ�� `Created: ...-atlas` ��û��**(������,����ȫû��),����**����û��** `Sound engine started`;
-* ���ζ�**û��д��������**,Ҳû���Լ��˳� ���� ����������,ֱ�� rig �ļ�ʱ��������ɱ��;
-* stderr ���ζ�ǡ���Ǽ�¼�� **14 141 �ֽ�**,���滹�Ǳ�����֪���� 4 �� `NoClassDefFoundError`(OptiFine
-  `J1_pre9` �� Reflector ȱ��,�쳣�� OptiFine �̵�)��
+* 三次连跑 `VERDICT: STARTED` 与 `Setting user` **都通过**,进程也一直活着;
+* 三次都**一行 `Created: ...-atlas` 都没有**(不是少,是完全没有),并且**从来没有** `Sound engine started`;
+* 三次都**没有写崩溃报告**,也没有自己退出 —— 就那样坐着,直到 rig 的计时器把它们杀掉;
+* stderr 三次都恰好是记录的 **14 141 字节**,里面还是本线已知的那 4 条 `NoClassDefFoundError`(OptiFine
+  `J1_pre9` 的 Reflector 缺陷,异常被 OptiFine 吞掉)。
 
-�����Ϊʲô"����о� + stderr ����"���׿ھ�**ץ������**:�о�ȫ����stderr ������ͬ,��������Զͣ�ڼ���
-���ֺ��档**��ѵ**:stderr ��ͬ��������Ϊ��ͬ,�о��������һ��"������������"��**����**֤�� ���� ���߾���
-`Sound engine started` �� `Created: ...-atlas`��
+这就是为什么"启动判据 + stderr 对照"这套口径**抓不到它**:判据全过、stderr 逐字相同,而画面永远停在加载
+遮罩后面。**教训**:stderr 相同不等于行为相同,判据里必须有一条"重载真的完成了"的**正向**证据 —— 本线就是
+`Sound engine started` 与 `Created: ...-atlas`。
 
-### �ֳ�:��ֹʱ�̵��߳�ת��
+### 现场:截止时刻的线程转储
 
-* `Render thread` �� `Minecraft.runTick` �� `RenderSystem.limitDisplayFPS`:�ͻ���**������**,����������֡;
-* ֻ��һ�������߳��ڸɻ�:`Worker-Main-3`,`TIMED_WAITING (sleeping)`,ջ��
-  `net.optifine.Config.sleep` �� `net.optifine.CustomItems.updateIcons` ��
-  `net.optifine.util.TextureUtils.registerCustomSprites` ��
+* `Render thread` 在 `Minecraft.runTick` → `RenderSystem.limitDisplayFPS`:客户端**还活着**,正在正常跑帧;
+* 只有一个工作线程在干活:`Worker-Main-3`,`TIMED_WAITING (sleeping)`,栈是
+  `net.optifine.Config.sleep` ← `net.optifine.CustomItems.updateIcons` ←
+  `net.optifine.util.TextureUtils.registerCustomSprites` ←
   `net.minecraft.client.renderer.texture.TextureAtlas.preStitch`;
-* **���๤���߳�ȫ������** ���� �����ⲻ���̳߳ر�ռ��,������һ���߳���**��һ����Զ���ᱻ���ϵı�־**��
+* **其余工作线程全部空闲** —— 所以这不是线程池被占满,而是那一个线程在**等一个永远不会被置上的标志**。
 
-### �ֽ���:���ڵ�˭,˭����ȥ���Ǹ���־
+### 字节码:它在等谁,谁本该去置那个标志
 
-��**�غ����Ƿ�**��**����ʱ�Ƿ�**���ֽ���:
+读**载荷里那份**与**运行时那份**的字节码:
 
-* `CustomItems.updateIcons` ����һ������:`while (!modelsLoaded.get()) Config.sleep(100);`
-* �Ǹ���־��**Ψһд����**�� `CustomItems.loadModels(ModelBakery)`;
-* �� `loadModels` �Ǵ� `TextureUtils.registerCustomModels` ��ȥ��,������**����װ���Ƿ�** `ModelBakery`
-  ��**���캯��ĩβ**���á�
+* `CustomItems.updateIcons` 就是一句自旋:`while (!modelsLoaded.get()) Config.sleep(100);`
+* 那个标志的**唯一写入者**是 `CustomItems.loadModels(ModelBakery)`;
+* 而 `loadModels` 是从 `TextureUtils.registerCustomModels` 进去的,后者由**被换装的那份** `ModelBakery`
+  在**构造函数末尾**调用。
 
-### ��λ�ֶ�:��׮���� + �ֶ��� `jdk.JavaExceptionThrow` �� JFR
+### 定位手段:插桩排序 + 手动打开 `jdk.JavaExceptionThrow` 的 JFR
 
-���β����ѷ�Χ����:
+两次测量把范围钉死:
 
-1. **��׮����**:�����캯���� `registerCustomModels` ����һ��̽��,������˳��˵�����캯��**ȷʵ����**,
-   Ȼ��**�����ڲ�������**;
-2. **JFR ¼��**:JDK �Դ��� `profile.jfc` �� `jdk.JavaExceptionThrow` **�ص���**,������һ����**�ֶ���**֮��
-   ��¼���ġ��쳣����:`NullPointerException` at `java.util.List.of` �� `BlockStateModelLoader.<init>` �� 77 ��
-   �� `ModelBakery.<init>` �� 107 �� �� `ModelManager.lambda$reload$0`��
+1. **插桩排序**:给构造函数与 `registerCustomModels` 各插一行探针,量到的顺序说明构造函数**确实跑了**,
+   然后**在它内部就死了**;
+2. **JFR 录制**:JDK 自带的 `profile.jfc` 把 `jdk.JavaExceptionThrow` **关掉了**,所以这一项是**手动打开**之后
+   才录到的。异常链是:`NullPointerException` at `java.util.List.of` ← `BlockStateModelLoader.<init>` 第 77 行
+   ← `ModelBakery.<init>` 第 107 行 ← `ModelManager.lambda$reload$0`。
 
-### ����:һ�θ�д�������غ��Լ�������
+### 根因:一次改写落在了载荷自己的类里
 
-`renameSrgMembers` ��д��һ��**�������غ��Լ�����**������:
+`renameSrgMembers` 改写了一处**解析在载荷自己类内**的引用:
 
-* �غɵ� `ModelBakery` **ͬʱ**��������������:`private m_119364_(ResourceLocation)`(**ԭ��**��һ��,��ʶ
-  `builtin/*` �� `BUILTIN_MODELS`)�� `public loadBlockModel(ResourceLocation)`(**OptiFine �Լ���**������,
-  ���Լ��̵�ʧ�ܲ����� **null**);
-* ӳ����� `m_119364_` �� `loadBlockModel`,���Ǹ�����**���캯�����Ǵ�"ȡȱʧģ��"�ĵ���**ָ������һ��������;
-* �����ص� null һ·�ߵ�����ʱ�� `BlockStateModelLoader`,����� `List.of(missingModel)` **�ܾ� null**;
-* ���캯��������**�� `modelsLoaded` ֮ǰ**�������� ? ���� `updateIcons` ����Ǹ��߳�**��Զ˯��ȥ**��
+* 载荷的 `ModelBakery` **同时**声明了两个方法:`private m_119364_(ResourceLocation)`(**原版**那一个,认识
+  `builtin/*` → `BUILTIN_MODELS`)与 `public loadBlockModel(ResourceLocation)`(**OptiFine 自己的**加载器,
+  它自己吞掉失败并返回 **null**);
+* 映射表里 `m_119364_` → `loadBlockModel`,于是改名把**构造函数里那次"取缺失模型"的调用**指到了另一个方法上;
+* 它返回的 null 一路走到运行时的 `BlockStateModelLoader`,那里的 `List.of(missingModel)` **拒绝 null**;
+* 构造函数于是在**置 `modelsLoaded` 之前**就抛死了 ⇒ 等在 `updateIcons` 里的那个线程**永远睡下去**。
 
-ͬһ���ﱻ**֤α**�����ֽ���:
+同一轮里被**证伪**的四种解释:
 
-* **"װ������һ�ݸ���"** ���� ����;
-* **"�ڶ������ذѱ�־������"** ���� ����;
-* **"Reflector ��һ������Ū����"** ���� ����:OptiFine �� `Reflector.call` �Լ����� null ��**�̵� `Throwable`**,
-  ��������쳣�׵����캯������;
-* **"����ƻ�(keep plan)������"** ���� ����:���������Ƿݼƻ���**�յ�**��
+* **"装错了那一份副本"** —— 不是;
+* **"第二次重载把标志重置了"** —— 不是;
+* **"Reflector 那一步把它弄死了"** —— 不是:OptiFine 的 `Reflector.call` 自己返回 null 并**吞掉 `Throwable`**,
+  它不会把异常抛到构造函数外面;
+* **"保留计划(keep plan)插手了"** —— 不是:这条线上那份计划是**空的**。
 
-### �޷�:��Ա��"�� jar ��װ���Ƿ�"����ʱ,����д
+### 修法:成员由"本 jar 安装的那份"声明时,不改写
 
-�ڴ���������� `declaredByInstalledPayload` / `declaredNames`:�������õĳ�Ա**���Ǳ� jar ��װ���Ƿ���
-�Լ�������**ʱ��,�������������,����һ�� `Kept N SRG name(s)` �����´γ�顣
+在处理器里加了 `declaredByInstalledPayload` / `declaredNames`:当被引用的成员**正是本 jar 安装的那份类
+自己声明的**时候,跳过这次重命名,并打一行 `Kept N SRG name(s)` 便于下次抽查。
 
-**��������һ���޷�**(������,�����һ������һ��):�� OptiFine �Ǹ��ȴ�**������**����ȷʵ�ܻ���"��������",
-��������**�Զ�����Ʒ��ͼ** ���� �Ǹ��ȴ����ڵ�������Ǳ�����Щ��ͼ;�ó�ʱ�����Ƕ���,������һ�����ܻ�һ���оݡ�
+**被否掉的另一种修法**(记下来,免得下一轮再想一遍):给 OptiFine 那个等待**加上限**。它确实能换来"重载跑完",
+但代价是**自定义物品贴图** —— 那个等待存在的意义就是保护那些贴图;用超时把它们丢掉,等于拿一个功能换一个判据。
 
-### �޺��ʵ��(�ɾ�����:�޲�׮���� JFR)
+### 修后的实测(干净条件:无插桩、无 JFR)
 
-| �о� | ��ǰ(��������) | �޺� |
+| 判据 | 修前(三次连跑) | 修后 |
 |---|---|---|
-| `VERDICT: STARTED` | ͨ�� | ͨ�� |
-| `Setting user` | ͨ�� | ͨ�� |
-| `Sound engine started` | **��ͨ��** | **true** |
-| �������������������� | 0 | **0** |
-| `Created: ...-atlas` ���� | **0** | **18** |
-| stderr �ֽ��� | 14 141 | **14 141**(ͬ���� 4 �� `NoClassDefFoundError`) |
-| `Error loading model: minecraft:builtin/missing` | �� | **û��** |
+| `VERDICT: STARTED` | 通过 | 通过 |
+| `Setting user` | 通过 | 通过 |
+| `Sound engine started` | **不通过** | **true** |
+| 本次运行新增崩溃报告 | 0 | **0** |
+| `Created: ...-atlas` 行数 | **0** | **18** |
+| stderr 字节数 | 14 141 | **14 141**(同样那 4 条 `NoClassDefFoundError`) |
+| `Error loading model: minecraft:builtin/missing` | 有 | **没了** |
 
-stderr һ���ֽڶ�û��,˵������޵���**��Ϊ**,���ǰ��쳣������ĵط�ȥ��
+stderr 一个字节都没变,说明这次修的是**行为**,不是把异常挤到别的地方去。
 
-### ������Ǵμ�¼�Ĳ���(�����ֲ�����)
+### 与更早那次记录的差异(旧数字不覆盖)
 
-�����Ǵμ�¼��д���� `[OptiFine]` **252 ��**��`Pre-stitch` **14**;����ĸɾ���ʵ���� **377 ��**��**28** �Ρ�
-ԭ����**����������������** ���� ������Щ OptiFine �׶�(ͼ��Ԥƴ����������ɼ���)��ǰ**����û�л���ִ��**,
-������������"�����",����**��ǰ������**���������ֶ������ĵ���:ԭ��¼ 252 / 14,����ʵ�� 377 / 28,
-���߰��ύʱ��Ժ�������
+更早那次记录里写的是 `[OptiFine]` **252 行**、`Pre-stitch` **14**;今天的干净跑实测是 **377 行**、**28** 次。
+原因是**重载这次真的跑完了** —— 后面那些 OptiFine 阶段(图集预拼、连接纹理采集等)以前**根本没有机会执行**,
+所以行数不是"变多了",而是**以前数不到**。两个数字都留在文档里:原记录 252 / 14,今日实测 377 / 28,
+读者按提交时间对号入座。
 
-## 2026-09-21:�� 1.20.x ��ֲ�� Forge shim �޸�,�Լ���**�������**����һ��(�������δ��)
+## 2026-09-21:从 1.20.x 移植的 Forge shim 修复,以及它**还不充分**的那一半(外壳种类未修)
 
-1.20.x �����߽��������������һ��ȱ��:������ `ParticleEngine` ֻ�� `destroy` ��
-`addBlockHitEffects` ������ Forge ��������չ�ӿ�,�� jar ��� shim ��
-`IClientBlockExtensions.of(BlockState)` д�� `aconst_null; areturn`,���õ����Ž������� ����
-**����һ�η���� `NullPointerException`**(1.20.6 ʵ��,07:02 ���һ�� FXAA ���ж���������)��
-�޷���ͨ�õ�,����ֲ������֧�� `optifine/ForgeApiShims.java`:**�����Լ�������͵ľ�̬�������ٷ���
-null**,�ӿ����Ա�����һ����ʵ�� `<interface>$Noop`,��������������ʵ��(������򷵻�������ʵ��)��
+1.20.x 那条线今天在真机上量到一个缺陷:交付的 `ParticleEngine` 只在 `destroy` 与
+`addBlockHitEffects` 两处用 Forge 包名的扩展接口,而 jar 里的 shim 把
+`IClientBlockExtensions.of(BlockState)` 写成 `aconst_null; areturn`,调用点紧接着解引用它 ——
+**攻击一次方块就 `NullPointerException`**(1.20.6 实测,07:02 与第一次 FXAA 运行都死在这里)。
+修法是通用的,已移植到本分支的 `optifine/ForgeApiShims.java`:**返回自己这个类型的静态工厂不再返回
+null**,接口在旁边生成一个空实现 `<interface>$Noop`,工厂返回它的新实例(类外壳则返回自身新实例)。
 
-����֧��**����֤��**(���� jar ����,���������е���Ϸ��):
+本分支的**量测证据**(都在 jar 上量,不是在运行的游戏上):
 
 ```
 3:  invokestatic  InterfaceMethod .../IClientBlockExtensions.of:(...)...IClientBlockExtensions;
 20: invokeinterface .../IClientBlockExtensions.addHitEffects:(...)Z
 ```
 
-`jars-1.21.8-payload\OptifiNeoforge-1.0.0+mc1.21.8-registered.jar` �� 1.20.2/1.20.4 �� jar ��,ͬһ��
-���ͽ�������**��**�����ǽӿ�:
+`jars-1.21.8-payload\OptifiNeoforge-1.0.0+mc1.21.8-registered.jar` 与 1.20.2/1.20.4 的 jar 里,同一个
+类型交付的是**类**而不是接口:
 
 ```
 public class net.minecraftforge.client.extensions.common.IClientBlockExtensions {
   public static net.minecraftforge.client.extensions.common.IClientBlockExtensions DUMMY;
 ```
 
-���������� `InterfaceMethodref`����������ȴ���� �� Ԥ��
-`IncompatibleClassChangeError: Found class ..., but interface was expected`��**�����������ֲֻ�����
-`of()` ���� null ��һ��**;ʣ�µ�һ������ǵ�**����**�ж�:������
-`shape.mustBeClass() || declaresItself(shape, name)` ����,������ֻ����Ϊ Forge �� API ����һ������
-���͵ľ�̬�ֶ�(`DUMMY`)�Ͱ��������������ࡣ��ȷ���о���**��¼�����ĵ��õ�** ���� ASM ��
-`visitMethodInsn` �����͸��� `isInterface` ���� һ���е��õ��ýӿڷ�ʽ������,������;�**����**�ǽӿ�;
-�ӿ��Լ��� `<clinit>` ��ȫ������ Noop ʵ��ȥ�����־�̬�ֶΡ�
+常量池里是 `InterfaceMethodref`、解析到的却是类 → 预期
+`IncompatibleClassChangeError: Found class ..., but interface was expected`。**所以上面的移植只解决了
+`of()` 返回 null 这一半**;剩下的一半是外壳的**种类**判断:现在由
+`shape.mustBeClass() || declaresItself(shape, name)` 决定,而后者只是因为 Forge 的 API 里有一个自身
+类型的静态字段(`DUMMY`)就把整个类型做成类。正确的判据是**记录下来的调用点** —— ASM 的
+`visitMethodInsn` 本来就给出 `isInterface` —— 一旦有调用点用接口方式引用它,这个类型就**必须**是接口;
+接口自己的 `<clinit>` 完全可以用 Noop 实例去填那种静态字段。
 
-**δ��,Ҳδ�� 1.21.x �κ�һ�������ܹ�**:������֧�����ڻ�û���κ�һ��"�ͻ�����Ľ�������",
-�������� ICCE ��**���ֽ����Ƴ�����Ԥ��**,����ʵ�⡣��������һ�ֵĵ�һλ,��
-`MemberRestorePlan` �� `stackEffect`/`callEffect` ��ֲ��`MemberRestoreTransformer` ��"ÿ�ε��ø�һ��
-������"һ��,���� 1.21.x ������֮ǰ��������ص������¡�
+**未修,也未在 1.21.x 任何一条线上跑过**:这条分支到现在还没有任何一次"客户端真的进了世界",
+所以上面 ICCE 是**从字节码推出来的预期**,不是实测。它排在下一轮的第一位,和
+`MemberRestorePlan` 的 `stackEffect`/`callEffect` 移植、`MemberRestoreTransformer` 的"每次调用各一个
+接收者"一起,都是 1.21.x 在入世之前必须先落地的三件事。
 
-### ��������Ѿ�����(��������,��δ���)
+### 外壳种类已经改了(离线量测,尚未真机)
 
-�ķ��� 1.20.x һ��:`MethodReference` ���� `interfaceRef`(���� `visitMethodInsn` �� `isInterface`),
-`Shape.callsThroughInterface()` ����,`generate()` ��Ϊ
+改法与 1.20.x 一致:`MethodReference` 增加 `interfaceRef`(来自 `visitMethodInsn` 的 `isInterface`),
+`Shape.callsThroughInterface()` 汇总,`generate()` 改为
 
 ```java
 asInterface = shape.mustBeClass() ? false
         : (shape.callsThroughInterface() || (!declaresItself(shape, name) && isInterface(zip, name)));
 ```
 
-**���õ�˵�ǽӿ�,�ͱ����ǽӿ�**;`declaresItself()`(Forge �� `DUMMY` ��������"�������͵ľ�̬�ֶ�")
-���ٰ�����ѹ���� ���� �ӿ����Լ��� `<clinit>` ���� Noop ʵ������,`needsNoop()` ���ͬʱ�������;�̬����
-�������;�̬�ֶΡ�
+**调用点说是接口,就必须是接口**;`declaresItself()`(Forge 的 `DUMMY` 就是这种"自身类型的静态字段")
+不再把类型压成类 —— 接口在自己的 `<clinit>` 里用 Noop 实例填它,`needsNoop()` 因此同时看自类型静态工厂
+与自类型静态字段。
 
-�ñ���֧ 1.21.8 ������������������,ͬһ�����͵�����Ա�:
+用本分支 1.21.8 的输入离线重新生成,同一个类型的量测对比:
 
-| | ��� | Noop |
+| | 外壳 | Noop |
 |---|---|---|
-| ��ǰ(`jars-1.21.8-payload\...registered.jar` ��) | `class`,914 �ֽ�,�� `DUMMY` + ���� `$1` | �� |
-| �޺�(ͬһ��������������) | **`interface`**,921 �ֽ�;`of()` ���� Noop,`<clinit>` �� `new ...$Noop` �� `putstatic DUMMY` | ��� Noop(block / fluid / item / mob-effect / item-font),ȫ�� 92 �������������� 0 findings |
+| 修前(`jars-1.21.8-payload\...registered.jar` 内) | `class`,914 字节,带 `DUMMY` + 匿名 `$1` | 无 |
+| 修后(同一对输入重新生成) | **`interface`**,921 字节;`of()` 返回 Noop,`<clinit>` 里 `new ...$Noop` → `putstatic DUMMY` | 五个 Noop(block / fluid / item / mob-effect / item-font),全套 92 个类过数据流审计 0 findings |
 
-**��δ���������֤**:������֧��û��һ�οͻ��˽�����,����"�ӿ���� + Noop �ǲ��Ǿ�ͨ��"��Ȼ�Ǵ��ֽ���
-�� 1.20.x �����ߵ�ʵ���Ƴ����ġ�1.21.x ����֮ǰ��Ҫ�����������������ֲ(`stackEffect`/`callEffect`��
-ÿ�ε��ø�һ��������),Ȼ���ؽ��������ܡ�
+**仍未在真机上验证**:这条分支还没有一次客户端进世界,所以"接口外壳 + Noop 是不是就通了"依然是从字节码
+与 1.20.x 那条线的实测推出来的。1.21.x 入世之前仍要先落地上面那两件移植(`stackEffect`/`callEffect`、
+每次调用各一个接收者),然后重建各线再跑。
 
-## 2026-09-22:�� 1.20.x ��ֲ���(ȫ����������),���������� A/B �ﱻ����"�ճ�������";����������֧������
+## 2026-09-22:从 1.20.x 移植五件(全部离线量测),其中两件在 A/B 里被发现"照抄抄错了";另两件本分支早已有
 
-1.20.x �����߽���������Ͻ���������ȱ��,����֧�������,�õ�����"������ȱ��һ������û�С�����������"��
-�����ÿ�����ֶ������������,����д��ÿ����;���һ��δ��(���ֲ�����κοͻ���)��
+1.20.x 那条线今天在真机上结清了六件缺陷,本分支逐件对照,得到的是"三件真缺、一件从来没有、两件早已有"。
+下面的每个数字都来自命令输出,量法写在每节里;真机一律未验(本轮不启动任何客户端)。
 
-�����õĻ��߹̶���һ��:**ͬһ������**(`work\<mc>\optifine-patched.jar` + `work\<mc>\runtime-<mc>.jar`),
-�ֱ���**��ֲǰ��������**(`git show HEAD~5:.../MemberRestorePlan.java` �����������һ��)��**���ڵ�Դ��**��
-һ��,����� donor �ࡢ��� `optifineoforge$init$` ����ǩ���Աȡ�����"��ֲ�ı���ʲô"����ӡ��
+对照用的基线固定成一份:**同一对输入**(`work\<mc>\optifine-patched.jar` + `work\<mc>\runtime-<mc>.jar`),
+分别用**移植前的生成器**(`git show HEAD~5:.../MemberRestorePlan.java` 编译出来的那一份)和**现在的源码**跑
+一遍,再逐个 donor 类、逐个 `optifineoforge$init$` 助手签名对比。这样"移植改变了什么"不靠印象。
 
-### һ���ƻ�������:ͬ������������ͬ�� synthetic ҲҪ�ָ�(1.20.x `da8b09d`)
+### 一、计划生成器:同名但描述符不同的 synthetic 也要恢复(1.20.x `da8b09d`)
 
-�����"�������غ�����ֹ�������"�ĳ�"����**��**�����������غ��������"�������ߵ�����(�ƻ���Ŀ / donor ��):
+规则从"名字在载荷里出现过就跳过"改成"名字**且**描述符都在载荷里才跳过"。六条线的量测(计划条目 / donor 类):
 
-| �� | �ƻ���Ŀ | donor �� | ���� synthetic(`lambda$`)�� |
+| 线 | 计划条目 | donor 类 | 其中 synthetic(`lambda$`)行 |
 |---|---|---|---|
-| 1.21 | 363 �� **381** | 97 �� 99 | 205 |
-| 1.21.1 | 293 �� **309** | 79 �� 81 | 185 |
-| 1.21.3 | 293 �� **314** | 78 �� 82 | 183 |
-| 1.21.6 | 345 �� **375** | 83 �� 87 | 188 |
-| 1.21.7 | 355 �� **385** | 87 �� 91 | 188 |
-| 1.21.8 | 353 �� **383** | 88 �� 92 | 192 |
+| 1.21 | 363 → **381** | 97 → 99 | 205 |
+| 1.21.1 | 293 → **309** | 79 → 81 | 185 |
+| 1.21.3 | 293 → **314** | 78 → 82 | 183 |
+| 1.21.6 | 345 → **375** | 83 → 87 | 188 |
+| 1.21.7 | 355 → **385** | 87 → 91 | 188 |
+| 1.21.8 | 353 → **383** | 88 → 92 | 192 |
 
-������ȫ�������� synthetic �ķ�����,��ÿ�����Լ���
-`lambda$jumpInFluid$N(Lnet/neoforged/neoforge/fluids/FluidType;)V`(1.21.8 �� `$5`,1.21 �� `$3`)����
-�� 1.20.6 �Ǹ�"������ˮ����"�İ���ͬ��ͬ��,ֻ���������ϻ�û����ˮ�������������һ����
-`TitleScreen.lambda$render$15`��`ModelManager.lambda$reload$0`��`BlockStateModel$Unbaked.lambda$static$N` �ȡ�
+新增的全是运行期 synthetic 的方法体,含每条线自己的
+`lambda$jumpInFluid$N(Lnet/neoforged/neoforge/fluids/FluidType;)V`(1.21.8 是 `$5`,1.21 是 `$3`)——
+与 1.20.6 那个"怪物入水即死"的案例同名同形,只是这条线上还没人在水里见过它。另外一批是
+`TitleScreen.lambda$render$15`、`ModelManager.lambda$reload$0`、`BlockStateModel$Unbaked.lambda$static$N` 等。
 
-### �����ƻ�������:ջЧ��ģ�� + װ��բ(1.20.x `f56dd5b`)�����Լ�**��ֲ���������ȱ��**
+### 二、计划生成器:栈效果模型 + 装配闸(1.20.x `f56dd5b`)——以及**移植自身的两处缺陷**
 
-��ֲ������:`stackEffect`/`callEffect`/`slots`(��������ʵ�ζ�����,long/double ռ����)����"�������ֵ"�ߵ�
-`valueRun`��`objectCreationRun`(�����һ�� `new` ������)��բ `assemblesOneValue`����̬·����
-`initialiserFrom`/`staticInitialiserFrom` ͳһ��բ��
+移植的内容:`stackEffect`/`callEffect`/`slots`(接收者与实参都计入,long/double 占两槽)、按"还差多少值"走的
+`valueRun`、`objectCreationRun`(从最后一个 `new` 正向走)、闸 `assemblesOneValue`、静态路径的
+`initialiserFrom`/`staticInitialiserFrom` 统一过闸。
 
-**�ճ�����������,��ͬһ������� A/B ��������,�����ƶ�:**
+**照抄抄错了两处,是同一对输入的 A/B 量出来的,不是推断:**
 
-1. **���ֻ�����������ָ����ߡ�** ASM �� `InsnList` ������ʽ����,`instructions.add(node)` ��ѽڵ��
-   ԭ�����б���**ժ����**,�����ֵ�ֵƬ�����Ǵ���������Ĺ�����/`<clinit>` ��ȡ�ġ�ժ��֮��,ͬһ����
-   ������ֶξ���һ�����Ĺ��Ĺ����������Լ��� store��1.21.8 ʵ��:`ClientLevel.dayTimeFraction` ������
-   ���������ʧ(����������),ͬ��Ļ��� `VideoSettingsScreen.TITLE`��`SingleVariant$Unbaked.MAP_CODEC`��
-   `SynchedEntityData.STACK_WALKER`��`RenderSystem.PIPELINE_MODIFIERS` �� ���� �����ߺϼƶ���
-   3/3/3/6/6/7 ����ʼ����,ÿһ������"�ֶα��ָ���������û��ֵ"��
-   �޷�:`copyOf(insn)` ���� Ƭ��һ��**����**������(����ʶ��ָ������ֱ�Ӿܾ�),�������಻�ٱ��ġ�
+1. **助手会把运行期类的指令搬走。** ASM 的 `InsnList` 是侵入式链表,`instructions.add(node)` 会把节点从
+   原来的列表里**摘下来**,而助手的值片段正是从运行期类的构造器/`<clinit>` 里取的。摘走之后,同一个类
+   后面的字段就在一个被改过的构造器里找自己的 store。1.21.8 实测:`ClientLevel.dayTimeFraction` 的助手
+   因此整条消失(旧生成器有),同类的还有 `VideoSettingsScreen.TITLE`、`SingleVariant$Unbaked.MAP_CODEC`、
+   `SynchedEntityData.STACK_WALKER`、`RenderSystem.PIPELINE_MODIFIERS` 等 —— 六条线合计丢掉
+   3/3/3/6/6/7 个初始化器,每一个都是"字段被恢复成声明但没有值"。
+   修法:`copyOf(insn)` —— 片段一律**拷贝**进助手(不认识的指令种类直接拒绝),运行期类不再被改。
 
-2. **�������о��ʴ������⡣** 1.20.x ��բ�ǽṹʽ��("һ������һ��ֵ��ָ��"��"new/dup/`<init>` һ��"),
-   �����Լ���ע��д����"ģ��ջ��Ҫ��Ч��ǡ��һ��ֵ"�����߲���ͬһ������:����ֵ�ĵ��������Ķ��ڲ���
-   ʱ**�����Ǹ���**,����
+2. **完整性判据问错了问题。** 1.20.x 的闸是结构式的("一条留下一个值的指令"或"new/dup/`<init>` 一组"),
+   而它自己的注释写的是"模拟栈、要求净效果恰好一个值"。两者不是同一个问题:返回值的调用在消耗多于产出
+   时**贡献是负的**,所以
 
    ```
    MAP_CODEC     = Variant.MAP_CODEC.xmap(f, f)     -> getstatic; invokedynamic; invokedynamic; invokevirtual
@@ -1492,50 +1492,50 @@ asInterface = shape.mustBeClass() ? false
    TITLE         = Component.translatable("...")    -> ldc; invokestatic
    ```
 
-   ȫ��"������������״"������ ���� �����ļ��� `invoke()` ��ע�����ü��� `MAP_CODEC` Ϊ�ջ��� 1.21.8 ��ÿ��
-   ����״̬ NPE��ͬʱ `valueRun` �� `hasValueAt`("���һ��ָ��Ҫ����ֵ")���Ѿ������� `new/dup/<init>` ��
-   Ҳ�߹�ȥ��(�������������),���� `RenderSystem.PIPELINE_MODIFIERS` �� 1.21.6/1.21.8 ��û��ֵ ����
-   ���Ǳ��ļ�ע��������"�ͻ�������֡����"���ֶΡ�
-   �޷�:`runProblem(Ƭ��)` �����ǵ�ģ��(ȡ�ó���ջ�߼��ܡ�����ʱ����ǡ��һ��ֵ������ͣ��δ�����������),
-   **���ܹ�����"��Ƭ��"���߷�������**;�ṹʽ������Ϊ��ʽ�����ĵ�һ�����α����`staticInitialiser` ����
-   ʵ��·���������е� `objectCreationRun` ���ˡ����һ��:��̬����û�оֲ�����,Ƭ��������κ�
-   `VarInsnNode` һ�ɾܾ� ���� 1.21.6/1.21.7 ʵ��,������ `RenderSystem.enableStencil` ��"���Լ����β�
-   ��ֵ"���Ƕΰ�� `aload_0; putstatic STENCIL_TEST`,��֤����
-   `Trying to get an inexistant local variable 0`��
+   全都"不是那两种形状"而被拒 —— 而本文件里 `invoke()` 的注释正好记着 `MAP_CODEC` 为空会让 1.21.8 的每个
+   方块状态 NPE。同时 `valueRun` 的 `hasValueAt`("最后一条指令要产出值")把已经完整的 `new/dup/<init>` 组
+   也走过去了(构造调用是消耗),于是 `RenderSystem.PIPELINE_MODIFIERS` 在 1.21.6/1.21.8 上没有值 ——
+   正是本文件注释里那条"客户端在首帧就死"的字段。
+   修法:`runProblem(片段)` 就是那道模拟(取用超过栈高即拒、结束时必须恰好一个值、不能停在未构造的引用上),
+   **接受规则与"找片段"的走法共用它**;结构式两例作为显式命名的第一种情形保留。`staticInitialiser` 补上
+   实例路径本来就有的 `objectCreationRun` 回退。另加一条:静态助手没有局部变量,片段里出现任何
+   `VarInsnNode` 一律拒绝 —— 1.21.6/1.21.7 实测,否则会把 `RenderSystem.enableStencil` 里"从自己的形参
+   赋值"的那段搬成 `aload_0; putstatic STENCIL_TEST`,验证器报
+   `Trying to get an inexistant local variable 0`。
 
-����֮���ͬһ�� A/B(��ֲǰ vs ����):
+修完之后的同一次 A/B(移植前 vs 现在):
 
-| �� | �ƻ���Ŀ | donor �� | ���� donor �� | �������� | �������� |
+| 线 | 计划条目 | donor 类 | 丢的 donor 类 | 丢的助手 | 新增助手 |
 |---|---|---|---|---|---|
-| 1.21 | 363 �� 381 | 97 �� 99 | 0 | 1 | 23 |
-| 1.21.1 | 293 �� 309 | 79 �� 81 | 0 | 1 | 6 |
-| 1.21.3 | 293 �� 314 | 78 �� 82 | 0 | 1 | 6 |
-| 1.21.6 | 345 �� 375 | 83 �� 87 | 0 | 0 | 8 |
-| 1.21.7 | 355 �� 385 | 87 �� 91 | 0 | 0 | 8 |
-| 1.21.8 | 353 �� 383 | 88 �� 92 | 0 | 0 | 8 |
+| 1.21 | 363 → 381 | 97 → 99 | 0 | 1 | 23 |
+| 1.21.1 | 293 → 309 | 79 → 81 | 0 | 1 | 6 |
+| 1.21.3 | 293 → 314 | 78 → 82 | 0 | 1 | 6 |
+| 1.21.6 | 345 → 375 | 83 → 87 | 0 | 0 | 8 |
+| 1.21.7 | 355 → 385 | 87 → 91 | 0 | 0 | 8 |
+| 1.21.8 | 353 → 383 | 88 → 92 | 0 | 0 | 8 |
 
-Ψһ"����"�������� `SectionRenderDispatcher$RenderSection.optifineoforge$init$buffers`(1.21/1.21.1/1.21.3),
-���������� 1.20.6 ʵ�����Ǹ�����֤���ܾ���Ƭ��:
+唯一"丢掉"的助手是 `SectionRenderDispatcher$RenderSection.optifineoforge$init$buffers`(1.21/1.21.1/1.21.3),
+它的体正是 1.20.6 实测里那个被验证器拒绝的片段:
 
 ```
 aload_0; invokestatic Collectors.toMap; invokeinterface Stream.collect; checkcast; putfield
 ```
 
-**�ܾ������ǶԵ�**����֤:������ donor ���ϸ���ѹ�� jar ���� `tools-src\StackAudit.java`(ASM ��
-`BasicVerifier`),��ֲǰ�� 1.21/1.21.1/1.21.3 �� 1 �� `INJECTED` ��ջ������ 0;������**������ȫ�� 0 findings**��
+**拒绝它才是对的**。旁证:把两套 donor 集合各自压成 jar 交给 `tools-src\StackAudit.java`(ASM 的
+`BasicVerifier`),移植前是 1.21/1.21.1/1.21.3 各 1 处 `INJECTED` 坏栈、其余 0;现在是**六条线全部 0 findings**。
 
-### ����ע�����:ÿ�ε��ø���һ�������� + ���н��ܹ��� + ���������(1.20.x `203da0e`)
+### 三、注入调用:每次调用各推一个接收者 + 序列接受规则 + 描述符检查(1.20.x `203da0e`)
 
-����֧**�Ѿ���һ��**:�����ֽ���ÿ�ε��ø���һ�� `aload_0`,ÿ�� `RETURN` ���µ� `InsnList`��ȱ���ǽ��ܹ���,
-��β���:`initialiserCalls(owner, names)` �����С�`sequenceProblem(InsnList)` ģ����(ÿ�����õ�ʵ�ζ�Ҫ��
-ջ�ϡ����ν���ʱջ�߻ص�ԭ��),������ͼ���־���������ע��;ʵ����ʼ�����ķ����"���� `()V` ����"�ĳ�
-ֻ�� `(L<owner>;)V`,�����״��һ�����档
+本分支**已经有一半**:交付字节里每次调用各有一个 `aload_0`,每次 `RETURN` 用新的 `InsnList`。缺的是接受规则,
+这次补上:`initialiserCalls(owner, names)` 建序列、`sequenceProblem(InsnList)` 模拟它(每条调用的实参都要在
+栈上、整段结束时栈高回到原样),不满足就记日志并跳过这次注入;实例初始化器的分类从"不是 `()V` 就算"改成
+只收 `(L<owner>;)V`,别的形状记一条警告。
 
-֤��(1.21.8 �� registered jar,�� jar ���**��ʵ** `PatchedClassTransformer` + `MemberRestoreTransformer`
-�ܼƻ����ȫ�� 92 ����,�� rig ������ `tools-src\TransformerAudit121.java`,�ٽ��� StackAudit):
+证据(1.21.8 的 registered jar,用 jar 里的**真实** `PatchedClassTransformer` + `MemberRestoreTransformer`
+跑计划里的全部 92 个类,见 rig 新增的 `tools-src\TransformerAudit121.java`,再交给 StackAudit):
 
-* 92 ����ȫ������֤,**0 findings**;
-* �����ֽ��ﹲ 20 ��ע��ĳ�ʼ������,**���������� 2 ��**,����һ�����Ǳ���֧�Ķ�Ӧ��:
+* 92 个类全部过验证,**0 findings**;
+* 交付字节里共 20 处注入的初始化调用,**两个方法带 2 处**,其中一个正是本分支的对应物:
 
 ```
 net.minecraft.client.renderer.chunk.RenderSectionRegion.<init>(Level,int,int,int,SectionCopy[])
@@ -1546,38 +1546,38 @@ net.minecraft.client.renderer.chunk.RenderSectionRegion.<init>(Level,int,int,int
    20: return
 ```
 
-���� �� 1.20.x �޵���Ƕ�(`@16` �ϵڶ��� `invokestatic` ����)���ֽڶ�Ӧ,������ÿ�����ö����Լ��Ľ����ߡ�
+—— 与 1.20.x 修掉的那段(`@16` 上第二次 `invokestatic` 下溢)逐字节对应,而这里每处调用都有自己的接收者。
 
-### �ġ����ౣ��������:�����غɶ��еĳ�Ա�����ǵľ�̬��ʼ��(1.20.x `8db6879`)
+### 四、整类保下来的类:补回载荷独有的成员与它们的静态初始化(1.20.x `8db6879`)
 
-����֧�� `addPayloadMembers` �Ѿ�����"���غɶ��еĳ�Ա������",ȱ���������ų�(�Ǿ�̬ final �ֶΡ�
-`optifineoforge$init$` �������֡��������� `<clinit>`)��һ������(��̬�ֶ����غ��Լ�������ʼ�����һ���,
-��Ƭ��ı�ǩ/�к�/ջ֡���������ǵ���"�޷�����")��֤��(1.21.8,��ʵ�任�� + �����Ǹ���ƹ���):
+本分支的 `addPayloadMembers` 已经在做"把载荷独有的成员带回来",缺的是三条排除(非静态 final 字段、
+`optifineoforge$init$` 生成助手、构造器与 `<clinit>`)与一条补充(静态字段连载荷自己那条初始化语句一起搬,
+切片里的标签/行号/栈帧跳过而不是当成"无法复制")。证据(1.21.8,真实变换器 + 上面那个审计工具):
 
-* `ModelDiscovery$ModelWrapper`(keep plan ������)���ڻ��
-  `Not carrying the payload's final field ...ModelWrapper.id/.wrapped/.fixedSlots/.modelBakeCache`,Ȼ��
-  `Gave ... the payload's 1 field(s) and 1 method(s)`;�����ֽ� 11745 �� **11847**,�������
+* `ModelDiscovery$ModelWrapper`(keep plan 保整类)现在会打
+  `Not carrying the payload's final field ...ModelWrapper.id/.wrapped/.fixedSlots/.modelBakeCache`,然后
+  `Gave ... the payload's 1 field(s) and 1 method(s)`;交付字节 11745 → **11847**,类里多了
 
   ```
   private net.minecraftforge.client.model.geometry.ModelContext context;
   public net.minecraftforge.client.model.geometry.IGeometryBakingContext getContext();
   ```
 
-  ���� jar ��ͬһ��ֻ�� 11520 �ֽڡ�������Ա��û��(`getContext` ���������������һ������� `context`)��
-* `ModelBlockRenderer$1` �� keep plan �����಻��(1249 �� 1249 �ֽ�),`build-jars` ���
-  `patch entries dropped for 1 class(es): [net/minecraft/client/renderer/block/ModelBlockRenderer$1]`��
+  而旧 jar 的同一步只有 11520 字节、两个成员都没有(`getContext` 的体读的正是随它一起搬来的 `context`)。
+* `ModelBlockRenderer$1` 在 keep plan 下整类不动(1249 → 1249 字节),`build-jars` 打出
+  `patch entries dropped for 1 class(es): [net/minecraft/client/renderer/block/ModelBlockRenderer$1]`。
 
-### �塢��Ļ׷��(1.20.x `ff0aefa` �ĺ��)��������֧**����û��**
+### 五、屏幕追踪(1.20.x `ff0aefa` 的后半)——本分支**从来没有**
 
-�� 1.21.x ����ʷ�� `OPF-SCREEN` / `traceScreen` һ�ζ�û���ֹ��������ֲ����,��������һ��**ʵ�����**�޷�:
-��ӡ�� `aload_1; String.valueOf(Object)`,������ `getClass().getName()`��`setScreen` �Ϸ��ػᱻ�� null
-(NeoForge �� `ClientHooks.popGuiLayer` �����һ�� GUI ������ʱ������ô����),��д���������ɹ���Լ 1 ����
-NPE �ѿͻ��˴��� ���� ������ 1.20.6 ��������"׷��ͣ�� ReceivingLevelScreen"��ԭ��ͬʱ��
-`net.minecraft.client.Minecraft` �����Դ�ʱ�Ǽǳɱ任Ŀ��(�������� payload ����������,�任���������ᱻ
-����,׷��������������)��
+在 1.21.x 的历史里 `OPF-SCREEN` / `traceScreen` 一次都没出现过。这次移植进来,并带上那一半**实测过的**修法:
+打印走 `aload_1; String.valueOf(Object)`,而不是 `getClass().getName()`。`setScreen` 合法地会被传 null
+(NeoForge 的 `ClientHooks.popGuiLayer` 在最后一层 GUI 被弹掉时就是这么调的),旧写法在入世成功后约 1 秒抛
+NPE 把客户端打死 —— 那正是 1.20.6 那条线上"追踪停在 ReceivingLevelScreen"的原因。同时把
+`net.minecraft.client.Minecraft` 在属性打开时登记成变换目标(否则该类的 payload 副本不存在,变换器根本不会被
+调用,追踪器看起来像坏了)。
 
-֤��(ͬһ������ + `-Doptifineoforge.traceScreen=true`):��־���� `Tracing every screen switch in
-Minecraft.setScreen`,������ `setScreen` ��ͷ��
+证据(同一对输入 + `-Doptifineoforge.traceScreen=true`):日志出现 `Tracing every screen switch in
+Minecraft.setScreen`,交付的 `setScreen` 开头是
 
 ```
  0: getstatic System.err ; 3: new StringBuilder ; 10: ldc "OPF-SCREEN "
@@ -1585,48 +1585,48 @@ Minecraft.setScreen`,������ `setScreen` ��ͷ��
 20: invokevirtual StringBuilder.append ; 26: invokevirtual PrintStream.println
 ```
 
-�������������֤�� 0 findings��**��δ���������**(������֧��û�пͻ�����Ľ�������,������׷��ֻ���ڽ�����
-����ʱ�ſ��ó���ֵ)��
+该类过数据流验证器 0 findings。**仍未在真机上验**(这条分支还没有客户端真的进过世界,而这条追踪只有在进世界
+换屏时才看得出价值)。
 
-### ������������֧������,����Ҫ��ֲ
+### 六、两件本分支早已有,不需要移植
 
-* **Forge ��ǵ������;�̬�������������**(`43f0d62` + `345ef82`):�� 1.21.8 ��ͬһ������������������,
-  `IClientBlockExtensions` ���� **`interface`**(�� `static final DUMMY`),`of(BlockState)` ������
-  `new IClientBlockExtensions$Noop; dup; invokespecial <init>; areturn`,�ĸ� Noop
-  (block / fluid / item / mob-effect)���÷�֧��ǰԴ�����±������ `tools-classpath.txt` ���Ƿ� jar,
-  ���**��ȫһ��**,˵����һ��ȷʵ�Ѿ������
-  ��**�������Ǿɵ�**:`work\<mc>\stubs` �� 9/19 ���ɵ�,�������ǻ���**��**(`public class
-  IClientBlockExtensions { public static ... DUMMY; ... }`,89 ���ļ�)�������ؽ�ǰ���÷�֧��ǰ����
-  �����������(ÿ�� +4 �� Noop,1.21.8 �� 89 �� 92 ���ļ�;����һ�� `IG.class`,���Ǿɹ��ߵ����ֽضϲ���)��
+* **Forge 外壳的自类型静态工厂与外壳种类**(`43f0d62` + `345ef82`):用 1.21.8 的同一对输入离线重新生成,
+  `IClientBlockExtensions` 出成 **`interface`**(带 `static final DUMMY`),`of(BlockState)` 的体是
+  `new IClientBlockExtensions$Noop; dup; invokespecial <init>; areturn`,四个 Noop
+  (block / fluid / item / mob-effect)。用分支当前源码重新编译和用 `tools-classpath.txt` 里那份 jar,
+  输出**完全一致**,说明这一半确实已经在树里。
+  但**交付侧是旧的**:`work\<mc>\stubs` 是 9/19 生成的,里面的外壳还是**类**(`public class
+  IClientBlockExtensions { public static ... DUMMY; ... }`,89 个文件)。本次重建前已用分支当前代码
+  逐个重新生成(每线 +4 个 Noop,1.21.8 从 89 → 92 个文件;丢掉一个 `IG.class`,那是旧工具的名字截断残留)。
 
-* **����ʱ�ӿ�ע��**(1.20.x `356c427`):�ȼ����� `injectPlannedInterfaces` + `loadTargets` ���
-  `addFirstField(targets, RUNTIME_INTERFACES)`,���õ��� `decide()` ��ǰ�桢����������ǰ return��
-  ʵ��:�� `ModelBaker` ��ʱ�ӽ� keep plan(�����õ���ʱ jar),��־��
+* **运行时接口注入**(1.20.x `356c427`):等价物是 `injectPlannedInterfaces` + `loadTargets` 里的
+  `addFirstField(targets, RUNTIME_INTERFACES)`,调用点在 `decide()` 最前面、早于所有提前 return。
+  实测:把 `ModelBaker` 临时加进 keep plan(测试用的临时 jar),日志打
   `Left net.minecraft.client.resources.model.ModelBaker alone: the keep plan keeps this runtime's copy whole`,
-  ����������**������** `net/neoforged/neoforge/client/extensions/ModelBakerExtension` ���� ��"�����ౣ��������
-  Ҳ���õ��ƻ�Ҫ�������ʱ�ӿ�"��1.21.8 �Լ��� keep plan �� interface �ƻ�û�н���,��������·���������
-  ��û����Ȼ��������
+  而交付的类**带上了** `net/neoforged/neoforge/client/extensions/ModelBakerExtension` —— 即"被整类保下来的类
+  也会拿到计划要求的运行时接口"。1.21.8 自己的 keep plan 与 interface 计划没有交集,所以这条路径在真机上
+  还没被自然触发过。
 
-### �ߡ�û����һ��(��ʵ��)
+### 七、没做的一件(如实记)
 
-1.20.x ������ `staticInitialiser` �Ѻ�ѡ������"���ÿһ������"��խ��"`<clinit>` ���������õ��ı��෽��"
-(`reachedFrom`),��Ϊ"�ȸ�ֵ�������"���ֶμ��� `isReadLater`/`populatedView`��**����û����ֲ**:
+1.20.x 后来的 `staticInitialiser` 把候选方法从"类的每一个方法"收窄成"`<clinit>` 加上它调用到的本类方法"
+(`reachedFrom`),并为"先赋值、后填充"的字段加了 `isReadLater`/`populatedView`。**本次没有移植**:
 
-* ��խ�������� 1.21.x ��**������**:���ļ�ע��˵ `RenderSystem.PIPELINE_MODIFIERS` ���� synthetic ������
-  ��ֵ�ġ����Ա�����ÿ������ ���� ʵ��(javap `runtime-1.21.6.jar` / `runtime-1.21.8.jar`)����
-  `putstatic PIPELINE_MODIFIERS` ���� `<clinit>` ��(���� `putstatic STENCIL_TEST`,����֮��û�б�ǩ),
-  �� `lambda$static$0` ֻ�Ǳ� `invokedynamic` �� bootstrap �������õ���һ������;
-* `isReadLater`/`populatedView` ���� 26.x,�������"�ȷſ���������"�������ֶ�(`PROFILES`),Ҫ��
-  26.1.2 ����,�����ڱ���;
-* ��һ��Ҫ����,�о���"��������û�������ֶ�",������"1.20.x ��û����δ���"��
+* 收窄的理由在 1.21.x 上**不成立**:本文件注释说 `RenderSystem.PIPELINE_MODIFIERS` 是在 synthetic 方法里
+  赋值的、所以必须搜每个方法 —— 实测(javap `runtime-1.21.6.jar` / `runtime-1.21.8.jar`)它的
+  `putstatic PIPELINE_MODIFIERS` 就在 `<clinit>` 里(紧随 `putstatic STENCIL_TEST`,两者之间没有标签),
+  而 `lambda$static$0` 只是被 `invokedynamic` 的 bootstrap 参数引用的另一个方法;
+* `isReadLater`/`populatedView` 来自 26.x,处理的是"先放空容器再填"的那类字段(`PROFILES`),要在
+  26.1.2 上量,不属于本轮;
+* 下一次要动它,判据是"这条线有没有那种字段",而不是"1.20.x 有没有这段代码"。
 
-### �ˡ��ؽ�(���� ModLauncher 1.21.x ��)
+### 八、重建(七条 ModLauncher 1.21.x 线)
 
-ÿ���߶���"**���õ�ǰԴ���������ɼƻ�** �� ���� `add-line.ps1` ����"��˳��,��Ϊ `add-line.ps1` ֻ��
-payload ������ʱ���� `prepare-line`,���� `plan\member-restores.txt` �� `plan\donors\` �ᱻ**��Ĭ����**
-(���Ự�� 1.20.4 ��������ͬһ������,�������һֻ����ǰ�ļƻ��������)��
+每条线都按"**先用当前源码重新生成计划** → 再用 `add-line.ps1` 构建"的顺序,因为 `add-line.ps1` 只在
+payload 不存在时才跑 `prepare-line`,否则 `plan\member-restores.txt` 与 `plan\donors\` 会被**静默复用**
+(父会话在 1.20.4 上量到过同一个陷阱,并因此让一只两天前的计划上了真机)。
 
-| �� | registered jar �ֽ� | SHA-256(ǰ 16) | donor �� | �ƻ���Ŀ | Ƕ��� payload �� | Forge ��� | `patch entries dropped` |
+| 线 | registered jar 字节 | SHA-256(前 16) | donor 类 | 计划条目 | 嵌入的 payload 类 | Forge 外壳 | `patch entries dropped` |
 |---|---|---|---|---|---|---|---|
 | 1.21 | 1916959 | 83D29414B1751233 | 99 | 381 | 440 | 90 | `[ModelBlockRenderer$1]` |
 | 1.21.1 | 1793475 | 96E830BEF4D4F423 | 81 | 309 | 425 | 100 | `[ModelBlockRenderer$1]` |
@@ -1636,47 +1636,47 @@ payload ������ʱ���� `prepare-line`,���� `plan\membe
 | 1.21.7 | 1959277 | EAE41B3C64B4AADF | 91 | 385 | 500 | 87 | `[ModelBlockRenderer$1]` |
 | 1.21.8 | 2004734 | 618362DC1C6B27CE | 92 | 383 | 516 | 92 | `[ModelBlockRenderer$1]` |
 
-��ֻ jar ȫ���� `StackAudit`(ASM ��������֤��)**0 findings**(�ؽ�ǰ�� 5/1/1/1/0/0/0);
-ÿֻ�� `net.minecraftforge.client.extensions.common.IClientBlockExtensions` ���� **interface**��
-`of(...)` ���嶼�� `new ...$Noop`,1.21.4 �� 5 �� Noop������ 6 ���� 4 ��;
-ÿֻ��Ӧ�� prepared OptiFine jar �� `ModelBlockRenderer$1.class.xdelta` / `.md5` ���� **0 ��**(keep plan ��Ч)��
+七只 jar 全部过 `StackAudit`(ASM 数据流验证器)**0 findings**(重建前是 5/1/1/1/0/0/0);
+每只里 `net.minecraftforge.client.extensions.common.IClientBlockExtensions` 都是 **interface**、
+`of(...)` 的体都是 `new ...$Noop`,1.21.4 是 5 个 Noop、其余 6 条各 4 个;
+每只对应的 prepared OptiFine jar 里 `ModelBlockRenderer$1.class.xdelta` / `.md5` 都是 **0 条**(keep plan 生效)。
 
-1.21.4 / 1.21.8 ��ֻ jar �Ѹ��Ƶ� rig ���������Ŀ¼(`jars-1.21.4-new` / `jars-1.21.8-payload`),
-���ļ���� `*.pre-port-20260922`��
+1.21.4 / 1.21.8 两只 jar 已复制到 rig 真正启动的目录(`jars-1.21.4-new` / `jars-1.21.8-payload`),
+旧文件留成 `*.pre-port-20260922`。
 
-### �š�rig �������뱾���޹ص������˵�����(�����һ��)
+### 九、rig 侧两处与本轮无关但会误导人的陷阱(留给下一轮)
 
-* **`work\1.21.4\optifine-patched.jar` �Ǹ� 239 �ֽڵĽض�д��**(ֻ�� manifest,9/19 0:52),
-  �� `add-line.ps1` �����ļ����ھ����� `prepare-line`,���ǰ������� payload ���� `PayloadDrift` ��
-  `MissingTargets`,����ֱ���� "the stub pass produced no ...-stubbed.jar"�����ΰ����ƿ�
-  (`*.aborted-239-bytes`)������׼�������� `prepare-line.ps1` �Լ��ĵ� 1 ����
-  `ZipFile.Open(path, 'Create')` д `runtime-<mc>.jar`,�ļ��Ѵ���ʱ��
-  "The file ... already exists" ���� ����׼��һ����֮ǰ�����ȰѾɵ� runtime jar Ų�ߡ�
-* **`tools-classpath.txt` ���Լ������ˡ�** ����ͷ������ `tools-patch-keepfix` �� `tools-patch-srgfix`,
-  �� `tools-patch-keepfix\kynarain\cn\optifineoforge\optifine\MemberRestorePlan.class` ��**��һ����֧
-  ��һ��**��������(ǩ�� `staticInitialiser(ClassNode, ClassNode, String, FieldNode)`,��
-  `reachedFrom` / `isReadLater` / `populatedView`)���� �����ڲֿ� jar ǰ��,����**�κ��� `$tools` ��
-  `MemberRestorePlan`(�� `prepare-line.ps1` �� 3 ��)�õĶ�����,�����Ǳ���֧�Ĵ���**��9/19 ���ɵ���Щ
-  �ƻ�������ô����(1.21.4 = 316 ��Ŀ / 83 donor,����һ��һ��)�����������ؽ�����ʽ��"�ӵ�ǰԴ������
-  ��һ��"���� `-cp` ��ǰ��,���Խ����ļƻ�ȷʵ���Ա���֧;�������屾��û�ж�(������Ȩ��Χ��)��
+* **`work\1.21.4\optifine-patched.jar` 是个 239 字节的截断写入**(只有 manifest,9/19 0:52),
+  而 `add-line.ps1` 见到文件存在就跳过 `prepare-line`,于是把它当成 payload 交给 `PayloadDrift` 与
+  `MissingTargets`,后者直接抛 "the stub pass produced no ...-stubbed.jar"。本次把它移开
+  (`*.aborted-239-bytes`)后重新准备。另外 `prepare-line.ps1` 自己的第 1 步用
+  `ZipFile.Open(path, 'Create')` 写 `runtime-<mc>.jar`,文件已存在时抛
+  "The file ... already exists" —— 重新准备一条线之前必须先把旧的 runtime jar 挪走。
+* **`tools-classpath.txt` 把自己屏蔽了。** 它的头两项是 `tools-patch-keepfix` 与 `tools-patch-srgfix`,
+  而 `tools-patch-keepfix\kynarain\cn\optifineoforge\optifine\MemberRestorePlan.class` 是**另一个分支
+  那一版**的生成器(签名 `staticInitialiser(ClassNode, ClassNode, String, FieldNode)`,带
+  `reachedFrom` / `isReadLater` / `populatedView`)—— 它排在仓库 jar 前面,于是**任何走 `$tools` 的
+  `MemberRestorePlan`(即 `prepare-line.ps1` 第 3 步)用的都是它,而不是本分支的代码**。9/19 生成的那些
+  计划就是这么来的(1.21.4 = 316 条目 / 83 donor,与那一版一致)。本轮所有重建都显式把"从当前源码编译的
+  那一份"放在 `-cp` 最前面,所以交付的计划确实来自本分支;这条陷阱本身没有动(不在授权范围内)。
 
-### ��ֲ���**�������**:�������� 4 �� 3 ����(��ʵ��¼,δ����)
+### 移植后的**真机验收**:七条线里 4 绿 3 红线(如实记录,未发布)
 
-�������ֲȫ������������(`javap` / `StackAudit` / ���������)�����������ϰ���Ŀ�Լ����������ձ�׼
-��������һ��(`retest-all.ps1 -Only 1.21,1.21.1,1.21.3,1.21.4,1.21.6,1.21.7,1.21.8`,
-��¼�� rig �� `logs\retest-121x-after-port.txt`),�����:
+上面的移植全部是离线量测(`javap` / `StackAudit` / 生成器输出)。随后在真机上按项目自己的四项验收标准
+逐条跑了一遍(`retest-all.ps1 -Only 1.21,1.21.1,1.21.3,1.21.4,1.21.6,1.21.7,1.21.8`,
+记录在 rig 的 `logs\retest-121x-after-port.txt`),结果是:
 
-| �� | �ж� | user | sound | �������� | stderr |
+| 线 | 判定 | user | sound | 崩溃报告 | stderr |
 |---|---|---|---|---|---|
-| 1.21 | **FAILED** | yes | **NO** | **1** | 0(��¼ֵ 14141) |
-| 1.21.1 | **FAILED** | yes | **NO** | **1** | 0 = ��¼ֵ |
-| 1.21.3 | **FAILED** | yes | **NO** | **1** | 0 = ��¼ֵ |
-| 1.21.4 | STARTED | yes | yes | 0 | 0 = ��¼ֵ |
-| 1.21.6 | STARTED | yes | yes | 0 | 0 = ��¼ֵ |
-| 1.21.7 | STARTED | yes | yes | 0 | 0 = ��¼ֵ |
-| 1.21.8 | STARTED | yes | yes | 0 | 0 = ��¼ֵ |
+| 1.21 | **FAILED** | yes | **NO** | **1** | 0(记录值 14141) |
+| 1.21.1 | **FAILED** | yes | **NO** | **1** | 0 = 记录值 |
+| 1.21.3 | **FAILED** | yes | **NO** | **1** | 0 = 记录值 |
+| 1.21.4 | STARTED | yes | yes | 0 | 0 = 记录值 |
+| 1.21.6 | STARTED | yes | yes | 0 | 0 = 记录值 |
+| 1.21.7 | STARTED | yes | yes | 0 | 0 = 记录值 |
+| 1.21.8 | STARTED | yes | yes | 0 | 0 = 记录值 |
 
-����ʧ���ߵı�������ȫһ��(1.21 / 1.21.1 / 1.21.3,`crash-2026-09-22_03.38/03.40/03.42-client.txt`):
+三条失败线的崩溃点完全一致(1.21 / 1.21.1 / 1.21.3,`crash-2026-09-22_03.38/03.40/03.42-client.txt`):
 
 ```
 Description: Initializing game
@@ -1688,185 +1688,185 @@ java.lang.NoSuchMethodError: 'void net.minecraft.world.level.block.entity.BlockE
   at net.minecraft.client.renderer.BlockEntityWithoutLevelRenderer.lambda$static$0(...)
 ```
 
-**�Ѿ������Ĳ���**:�غɵ� `BlockEntity` �� Forge ʱ���ı������
+**已经量到的部分**:载荷的 `BlockEntity` 是 Forge 时代的编译产物
 (`extends net.minecraftforge.common.capabilities.CapabilityProvider implements net.minecraftforge.common.extensions.IForgeBlockEntity`),
-���Ĺ��������**�Լ�**���� `gatherCapabilities()`(�÷����� Forge �Ǹ������ṩ��);��������ȥ��
-donor �� `BlockEntity` �Ѿ��� NeoForge ����״
-(`extends net.neoforged.neoforge.attachment.AttachmentHolder implements IBlockEntityExtension`)����
-Ҳ����˵��������������ڵļ̳�����û�������䡣Forge ��Ŀ���**����**ȱ��:���� jar ��
-`net/minecraftforge/common/capabilities/CapabilityProvider` ������**��** `gatherCapabilities()`
-(`javap` ���,`work\1.21\stubs` �� `stubs.pre-port` ����,86 �� 90 ����)��
+它的构造器里对**自己**调用 `gatherCapabilities()`(该方法是 Forge 那个父类提供的);而交付出去的
+donor 里 `BlockEntity` 已经是 NeoForge 的形状
+(`extends net.neoforged.neoforge.attachment.AttachmentHolder implements IBlockEntityExtension`)——
+也就是说这个调用在运行期的继承链里没有了着落。Forge 侧的壳类**不是**缺的:交付 jar 里
+`net/minecraftforge/common/capabilities/CapabilityProvider` 存在且**有** `gatherCapabilities()`
+(`javap` 验过,`work\1.21\stubs` 与 `stubs.pre-port` 都有,86 → 90 个类)。
 
-**��δ�����Ĳ���**:����"��ֲ�����"����"�ؽ�ʱ�������ɿ�/�ƻ���������",����û���� A/B ����
-(���е�����:�� `jars-1.21\OptifiNeoforge-1.0.0+mc1.21-registered.jar.pre-port-20260922` ���������
-�������,������ `BlockEntity` �ĳ�����/�ӿ��� `reparent` �ƻ�)���ڲ���֮ǰ,**������֧������**;
-�����ߵľ� jar ������ `*.pre-port-20260922`,������ʱ���ջ���ˡ�
+**尚未量到的部分**:这是"移植引入的"还是"重建时重新生成壳/计划带出来的",本轮没有做 A/B 对照
+(可行的做法:把 `jars-1.21\OptifiNeoforge-1.0.0+mc1.21-registered.jar.pre-port-20260922` 与现在这份
+逐类对照,尤其是 `BlockEntity` 的超级类/接口与 `reparent` 计划)。在查清之前,**这条分支不发布**;
+三条线的旧 jar 都留在 `*.pre-port-20260922`,可以随时对照或回退。
 
-#### ������ʧ���ߵĻ���(�����Ƶ�����Զ��)���ѡ�޷�
+#### 那三条失败线的机制(本轮推到的最远处)与候选修法
 
-`MissingTargets --stub` �ж�"ĳ����Ա�Ƿ�ȱʧ"ʱ,�õ���**�غ��Լ��ļ̳���**��1.21 / 1.21.1 / 1.21.3 ���غ���
-`BlockEntity extends net.minecraftforge.common.capabilities.CapabilityProvider`,���� `BlockEntity.<init>` ���Ǿ�
-`this.gatherCapabilities()` �����"�Ӹ���̳еõ�,��ȱʧ",ֻ�� **Forge ����** `CapabilityProvider` ������ʵ��
-(���� jar ��ȷʵ��,`javap` ���)����װ��ʱ�����߰������**�Ĺ�**���������ڵļ̳�����
+`MissingTargets --stub` 判断"某个成员是否缺失"时,用的是**载荷自己的继承链**。1.21 / 1.21.1 / 1.21.3 的载荷里
+`BlockEntity extends net.minecraftforge.common.capabilities.CapabilityProvider`,于是 `BlockEntity.<init>` 里那句
+`this.gatherCapabilities()` 被算成"从父类继承得到,不缺失",只在 **Forge 壳类** `CapabilityProvider` 上留了实现
+(交付 jar 里确实有,`javap` 验过)。但装载时这条线把这个类**改挂**到了运行期的继承链上
 (`extends net.neoforged.neoforge.attachment.AttachmentHolder implements IBlockEntityExtension`),
-�����Ǿ������**������**������û���κ����� ���� 1.21 �������� `BlockEntity` �Լ�**Ҳû��** `gatherCapabilities()`
-(`javap work\1.21\runtime-1.21.jar` ���Ѳ���),����� `NoSuchMethodError` ����Դ��
+于是那句调用在**运行期**的链上没有任何着落 —— 1.21 的运行期 `BlockEntity` 自己**也没有** `gatherCapabilities()`
+(`javap work\1.21\runtime-1.21.jar` 里搜不到),这就是 `NoSuchMethodError` 的来源。
 
-**һ�仰**:��(stub)�ǰ��غɵĸ������,�Ĺ�֮���໻�� ���� ����"�غɴ� Forge ����̳С����������¸���û��"�ĳ�Ա,
-�����벹��**���Լ�**����(�����Ǹ�������)��
+**一句话**:壳(stub)是按载荷的父类算的,改挂之后父类换了 —— 凡是"载荷从 Forge 父类继承、而运行期新父类没有"的成员,
+都必须补在**类自己**身上(而不是父类身上)。
 
-**��ѡ�޷�**(����δ��,�����һ��,˳������):
-1. �ô����һ����**�Ĺ�֮��**�ļ̳���������һ��ȱʧ(`HierarchyPlan`/`reparent.txt` �� `MissingTargets` ������
-   ��������ͬһ����ˮ����),�������Ա�䵽 `stubs-full.txt` ����װ����ע��;���������֤����
-   `BlockEntity.gatherCapabilities()V` ������ `work\<mc>\plan\stubs-full.txt` ���ؽ��������ʧ��
-2. ���߸� `reparent.txt` �������ಹһ����Ա������/��׮����ʽ��Ŀ(�� 1.20.x �� `keep-runtime` ͬ˼·)��
-3. �ٲ�Ȼ���������ߵ� `reparent` �ƻ��� `BlockEntity` ����һ��,����һ������(������ NeoForge ����չ�ӿڶ�ʧ)��
+**候选修法**(本轮未做,留给下一轮,顺序即优先):
+1. 让打壳这一步在**改挂之后**的继承链上再判一次缺失(`HierarchyPlan`/`reparent.txt` 与 `MissingTargets` 的输入
+   本来就在同一条流水线上),把这类成员落到 `stubs-full.txt` 里由装载器注入;立刻能验的证据是
+   `BlockEntity.gatherCapabilities()V` 出现在 `work\<mc>\plan\stubs-full.txt` 且重建后崩溃消失。
+2. 或者给 `reparent.txt` 里这类类补一条成员级保留/补桩的显式条目(与 1.20.x 的 `keep-runtime` 同思路)。
+3. 再不然回退这条线的 `reparent` 计划里 `BlockEntity` 的那一条,并量一次验收(代价是 NeoForge 的扩展接口丢失)。
 
-��������,**�������߻ص���������ȫ��֮ǰ������**;�� jar ���� `*.pre-port-20260922`��
+无论哪条,**在三条线回到四项验收全绿之前不发布**;旧 jar 都在 `*.pre-port-20260922`。
 
-### ��:�ƻ���������ڳ�Ա׮��**��װ����**�ϱ�����(�������ߵ�����ԭ��)
+### 修:计划里的运行期成员桩在**换装的类**上被丢掉(三条红线的真正原因)
 
-`decide()` ץȡ�غ�**֮ǰ**���������� `stubMissing()`,��Ϊ��Щ׮��������������װ���������� ���� �������
-`input.methods = methods` ��һ������غɵĳ�Ա��**�����滻**�������Ƿ�,�ռӽ�ȥ��׮����һ��û�ˡ�
-`stubMissing()` ֻ��ȱ��(�ݵ�),�������滻֮��**�ٵ�һ��**�����޷�(���ύ)��
+`decide()` 抓取载荷**之前**先无条件调 `stubMissing()`,因为有些桩的宿主是永不换装的运行期类 —— 但紧接着
+`input.methods = methods` 这一句会用载荷的成员表**整体替换**运行期那份,刚加进去的桩跟着一起没了。
+`stubMissing()` 只补缺的(幂等),所以在替换之后**再调一次**就是修法(已提交)。
 
-����(2026-09-22,�����߱�����ͬ):
+量测(2026-09-22,三条线崩点相同):
 
-* �޸��ƻ��� `net/minecraft/world/level/block/entity/BlockEntity` �Ĺҵ�
-  `net/neoforged/neoforge/attachment/AttachmentHolder`;�غɵ� `BlockEntity.<init>` ��
-  `this.gatherCapabilities()`,�÷���ԭ�����Ա��ĹҶ���� Forge ����(�����ڵ� `BlockEntity` �Լ�Ҳû��);
-* �ó�Ա**ȷʵ��**����װ������׮����(���� jar �� `optifineoforge/stubs.txt` ����һ��,`javap` ���),
-  ��һ�� `stubMissing()` Ҳȷʵ�����ӵ��������ڽڵ���,Ȼ���Ǿ丳ֵ�ӵ� ���� ����"׮�� jar ��ȴ��Ȼ
+* 修复计划把 `net/minecraft/world/level/block/entity/BlockEntity` 改挂到
+  `net/neoforged/neoforge/attachment/AttachmentHolder`;载荷的 `BlockEntity.<init>` 调
+  `this.gatherCapabilities()`,该方法原本来自被改挂丢掉的 Forge 父类(运行期的 `BlockEntity` 自己也没有);
+* 该成员**确实在**交给装载器的桩表里(交付 jar 内 `optifineoforge/stubs.txt` 有这一行,`javap` 验过),
+  第一次 `stubMissing()` 也确实把它加到了运行期节点上,然后被那句赋值扔掉 —— 所以"桩在 jar 里却仍然
   NoSuchMethodError" ;
-* ֢״:`Initializing game` �׶�
+* 症状:`Initializing game` 阶段
   `NoSuchMethodError: 'void net.minecraft.world.level.block.entity.BlockEntity.gatherCapabilities()'`
   at `BlockEntity.<init>(BlockEntity.java:59/60)`;
-* �޺������ߵ���������:**1.21** STARTED/user yes/sound yes/���� 0/stderr **14141 = ��¼ֵ**;
-  **1.21.1**��**1.21.3** ͬ��ȫ��(0 ������stderr 0 = ��¼ֵ)����ǰͬһ�� OptiFine ֻ�ߵ� 28/27/27 ��,
-  �޺� **377/232/225** �� ���� Ҳ����˵֮ǰ����������ʵ��"��� 1 ��ͱ�"��
-* 1.20.x ��֧��ͬһ����״(`stubMissing` �ڻ�װ��ֵ֮ǰ),���ڸ÷�֧�����޲����顣
+* 修后三条线的四项验收:**1.21** STARTED/user yes/sound yes/崩溃 0/stderr **14141 = 记录值**;
+  **1.21.1**、**1.21.3** 同样全绿(0 崩溃、stderr 0 = 记录值)。修前同一处 OptiFine 只走到 28/27/27 行,
+  修后 **377/232/225** 行 —— 也就是说之前那三条线其实是"启动 1 秒就崩"。
+* 1.20.x 分支有同一处形状(`stubMissing` 在换装赋值之前),已在该分支单独修并复验。
 
-### ���� + ��Ӱ�� ������ȫ��(2026-09-22):��ʵ�����������ȱ��
+### 建档 + 光影包 七条线全跑(2026-09-22):真实结果与两处新缺陷
 
-`run-save-shaders-all.ps1 -Pack MakeUp-UltraFast-9.5e.zip`(quick play ���浵,RigSession,1.20.4 ģ������):
+`run-save-shaders-all.ps1 -Pack MakeUp-UltraFast-9.5e.zip`(quick play 进存档,RigSession,1.20.4 模板世界):
 
-| �� | �ж� | sound | ���� | ���� | ��Ӱ�� | ֤�� |
+| 线 | 判定 | sound | 世界 | 崩溃 | 光影包 | 证据 |
 |---|---|---|---|---|---|---|
-| 1.21 | STARTED | yes | **NO** | 0 | loaded | 0 region �ļ�;tracer ֻ�� `GenericMessageScreen -> TitleScreen`,**quick play ʲô��û��** |
+| 1.21 | STARTED | yes | **NO** | 0 | loaded | 0 region 文件;tracer 只有 `GenericMessageScreen -> TitleScreen`,**quick play 什么都没做** |
 | 1.21.1 | STARTED | yes | **yes** | 0 | loaded | 4 region + level.dat |
 | 1.21.3 | STARTED | yes | **yes** | 0 | loaded | 4 region + level.dat |
 | 1.21.4 | STARTED | yes | **yes** | 0 | loaded | 4 region + level.dat |
-| 1.21.6 | STARTED | yes | **yes** | 0 | **not loaded** | OptiFine �Լ��� FXAA post chain JSON ����ʧ��(����) |
-| 1.21.7 | STARTED | yes | **yes** | 0 | **not loaded** | ͬ�� |
-| 1.21.8 | STARTED | yes | **yes** | **0(�޺�)** | loaded | 10 region + level.dat |
+| 1.21.6 | STARTED | yes | **yes** | 0 | **not loaded** | OptiFine 自己的 FXAA post chain JSON 解析失败(见下) |
+| 1.21.7 | STARTED | yes | **yes** | 0 | **not loaded** | 同上 |
+| 1.21.8 | STARTED | yes | **yes** | **0(修后)** | loaded | 10 region + level.dat |
 
-Ҳ����˵:**���������� 6 ����Ľ�������**,���� 4 ��ͬʱ�����˹�Ӱ�� ���� ����������֧��һ���пͻ��˽����硣
+也就是说:**这七条线里 6 条真的进了世界**,其中 4 条同时加载了光影包 —— 这是这条分支第一次有客户端进世界。
 
-#### ��:1.21.8 �� `Cannot get config value before config is loaded`(���޲�����)
+#### 修:1.21.8 的 `Cannot get config value before config is loaded`(已修并复验)
 
-��ǰ�ı���(`crash-2026-09-22_04.54.13-server.txt`,�����һ�� tick ʵ��ʱ):
+修前的崩溃(`crash-2026-09-22_04.54.13-server.txt`,世界第一次 tick 实体时):
 
 ```
 java.lang.IllegalStateException: Cannot get config value before config is loaded.
   at net.neoforged.neoforge.common.ModConfigSpec$ConfigValue.getRaw(ModConfigSpec.java:1235)
   at net.minecraft.world.level.Level.guardEntityTick(Level.java:593)
 ```
-������ 1.20.2/1.20.4/1.20.6 �ϵ���һ��ͬһ��:OptiFine ����� `IntegratedServer.initServer()` ��������������������
-���ö��������Լ��� reflector,�� reflector �� **Forge ������**(`net.minecraftforge.server.ServerLifecycleHooks`)
-ȥ����,����������ֻ�� `net/neoforged/neoforge/server/ServerLifecycleHooks` ? ���ӴӲ����� ? NeoForge �ķ�����
-���ôӲ����� ? ��һ�������ĵط����ס��޷����� 1.20.x �Ѿ����õ���һ�г�Ա������
-(`net/minecraft/client/server/IntegratedServer<TAB>initServer<TAB>()Z`,�������Լ���ͬ���������������ù���),
-�ؽ�ʱ�ܿ��� `patch entries dropped for 1 class(es): [net/minecraft/client/server/IntegratedServer]`��
-����:ͬһ�� quick play + MakeUp ��Ӱ�� ? ���� yes��**���� 0**��10 �� region �ļ� + level.dat����Ӱ�� loaded��
+根因与 1.20.2/1.20.4/1.20.6 上的那一件同一族:OptiFine 编译的 `IntegratedServer.initServer()` 把两个服务器生命周期
+调用都走了它自己的 reflector,而 reflector 按 **Forge 的名字**(`net.minecraftforge.server.ServerLifecycleHooks`)
+去找类,这条运行期只有 `net/neoforged/neoforge/server/ServerLifecycleHooks` ⇒ 钩子从不运行 ⇒ NeoForge 的服务器
+配置从不加载 ⇒ 第一个读它的地方就抛。修法就是 1.20.x 已经在用的那一行成员级保留
+(`net/minecraft/client/server/IntegratedServer<TAB>initServer<TAB>()Z`,运行期自己的同名方法无条件调用钩子),
+重建时能看到 `patch entries dropped for 1 class(es): [net/minecraft/client/server/IntegratedServer]`。
+复验:同一条 quick play + MakeUp 光影包 ⇒ 世界 yes、**崩溃 0**、10 个 region 文件 + level.dat、光影包 loaded。
 
-#### ��δ��(����,���Ѷ�λ��֢״����һ��)
+#### 仍未修(两件,都已定位到症状与下一步)
 
-1. **1.21 �� quick play ��������**(�� 1.21.1/1.21.3/1.21.4/1.21.6/1.21.7/1.21.8 ͬһ�� rig ������)��
-   tracer ��ʵ:�ͻ���ֻ�ߵ� `GenericMessageScreen -> TitleScreen` ��ͣס,resource reload ֮��**û���κ�**
-   ���������־(�� "Preparing spawn area"���� "Failed to load level"),region �ļ� 0��������������
-   `IntegratedServer` ����֮��**û�б仯**,������һ������ͬһ��������һ��(1.20.4 �Ѿ��ù����ɹ��İ취):
-   ������������**�˵�����**������(1.20.4 �� `world-test-1204.ps1` ����Ϊ��д��:��ʵ����� + ���ֽ��������
-   �����б����),�����Ǽ����� quick play��
-2. **1.21.6 / 1.21.7 �Ĺ�Ӱ�����ز���**(�����ܽ���sound yes������ 0),��־���� OptiFine �Լ��� post chain ��
-   �°������������:
+1. **1.21 的 quick play 不打开世界**(而 1.21.1/1.21.3/1.21.4/1.21.6/1.21.7/1.21.8 同一套 rig 都打开了)。
+   tracer 事实:客户端只走到 `GenericMessageScreen -> TitleScreen` 就停住,resource reload 之后**没有任何**
+   世界加载日志(无 "Preparing spawn area"、无 "Failed to load level"),region 文件 0。加入上面那条
+   `IntegratedServer` 保留之后**没有变化**,所以这一个不是同一处根因。下一步(1.20.4 已经用过并成功的办法):
+   在这条线上用**菜单驱动**进世界(1.20.4 的 `world-test-1204.ps1` 就是为此写的:真实光标点击 + 从字节码读出的
+   世界列表几何),而不是继续等 quick play。
+2. **1.21.6 / 1.21.7 的光影包加载不了**(世界能进、sound yes、崩溃 0),日志里是 OptiFine 自己的 post chain 与
+   新版解析器不兼容:
    `Failed to parse post chain at minecraft:post_effect/fxaa_of_2x.json | JsonSyntaxException: No key
-   fragment_shader / No key vertex_shader`,��� `[OptiFine] Resource not found: minecraft:shaders/post/fxaa_of_2x.json`��
-   1.21.5 ��������� `shaders/post/*.json`(`vertex`/`fragment` ��)�ĳ� `post_effect/*.json`
-   (`vertex_shader`/`fragment_shader`),�������ߵ� OptiFine �������Ǿɸ�ʽ ���� �⿴������ **OptiFine �汾�� MC
-   �汾֮��Ĳ�����**,�������Ǽ����������;Ҫ��ʵ���ۻ���һ�ζ���(��ͬһ�� OptiFine ֱ�ӷŽ�ͬ�汾 NeoForge
-   ��һ��,���Ƿ�ͬ������),����û����
+   fragment_shader / No key vertex_shader`,随后 `[OptiFine] Resource not found: minecraft:shaders/post/fxaa_of_2x.json`。
+   1.21.5 起后处理链从 `shaders/post/*.json`(`vertex`/`fragment` 键)改成 `post_effect/*.json`
+   (`vertex_shader`/`fragment_shader`),而这条线的 OptiFine 构建仍是旧格式 —— 这看起来是 **OptiFine 版本与 MC
+   版本之间的不兼容**,不是我们加载器制造的;要如实定论还需一次对照(把同一份 OptiFine 直接放进同版本 NeoForge
+   跑一次,看是否同样报错),本轮没做。
 
-#### 1.21 �� quick play ��Ĭ:һ����֤α�ļ���,��ʵ����
+#### 1.21 的 quick play 沉默:一个被证伪的假设,如实记下
 
-��������"1.21 �� quick play ʲô������"��������"�浵�Ǿɵ�/���µİ汾"����:�Ǹ� gameDir ��
-`saves\RigSession\level.dat` ��ʱ����� **2025-12-13 17:51:43**,����������һ���汾���µĴ浵��**�����Ⲣ֤α**:
-ɾ������ `saves\RigSession` ����һ��,harness ��־д����
-`save: created RigSession from ...\templates\level-1.20.4.dat`,���½������� `level.dat` �����Ǹ� 2025-12-13
-ʱ��� ���� ��ֻ��**ģ���ļ��Լ��� mtime**(`Copy-Item` ����ԭʱ���),�浵����ÿ�ζ��Ǵ�ģ���½��ġ�
-DataVersion ���� 1.20.4 ��,��������������ȫһ����������� `world NO`��0 region �ļ���
+上面那条"1.21 的 quick play 什么都不做"我试着用"存档是旧的/更新的版本"解释:那个 gameDir 里
+`saves\RigSession\level.dat` 的时间戳是 **2025-12-13 17:51:43**,看起来像上一个版本留下的存档。**已量测并证伪**:
+删掉整个 `saves\RigSession` 再跑一次,harness 日志写的是
+`save: created RigSession from ...\templates\level-1.20.4.dat`,而新建出来的 `level.dat` 仍是那个 2025-12-13
+时间戳 —— 那只是**模板文件自己的 mtime**(`Copy-Item` 保留原时间戳),存档本身每次都是从模板新建的、
+DataVersion 就是 1.20.4 的,和其他六条线完全一样。结果还是 `world NO`、0 region 文件。
 
-����:**�������Ͷ����ų�**(join ����ȱʧ���浵�汾),��һ�����������еġ�δ���͵� quick play ��Ĭ;
-��һ���� 1.20.4 �Ѿ��ɹ��İ취�������ò˵�����������(��ʵ����� + �ӿͻ����ֽ�������������б����),
-�����Ǽ����� quick play �ϻ�ʱ�䡣
+所以:**两条解释都已排除**(join 钩子缺失、存档版本),这一条仍是线特有的、未解释的 quick play 沉默;
+下一步按 1.20.4 已经成功的办法做——用菜单驱动进世界(真实光标点击 + 从客户端字节码读出的世界列表几何),
+而不是继续在 quick play 上花时间。
 
-### 1.21 ���������:�ĸ����ŵ�ȱ��,�޵�����;������һ��"����ϵͳ����ʵ�ʴ���"�ĸĶ�
+### 1.21 的世界入口:四个连着的缺陷,修掉三个;并记下一次"看似系统化、实际错误"的改动
 
-1.21(21.0.167)�����ߵ� quick play **ʲô������**(tracer ֻ�� `GenericMessageScreen -> TitleScreen`),
-���Ը���**�˵�����**(���� `world-test-121.ps1`,�� 1.20.4 �Ƿݸ�д;1.21 �� `SelectWorldScreen` ������
-`javap` ����� 1.20.4 ������ͬ:������ `52+36i+18`��Play ��ť `(w/2-154,h-52,150,20)`)���Ĳ˵�֮��,�������
-һ·�����ű�¶�ĸ�ȱ��,�޵�����(�������֤��):
+1.21(21.0.167)这条线的 quick play **什么都不做**(tracer 只有 `GenericMessageScreen -> TitleScreen`),
+所以改用**菜单驱动**(新增 `world-test-121.ps1`,由 1.20.4 那份改写;1.21 的 `SelectWorldScreen` 布局用
+`javap` 验过与 1.20.4 逐字相同:行中心 `52+36i+18`、Play 按钮 `(w/2-154,h-52,150,20)`)。改菜单之后,世界入口
+一路上连着暴露四个缺陷,修掉三个(都有真机证据):
 
-1. **`ModelPart.getChild`(�� 1.20.4 ͬһ��)** ���� �غɵ� `getChild` �� `child.getId()` ƥ��,�������ߵ��غ���Ȼ
-   ���� `PartDefinition`,���� `bake` ��ֻ `new ModelPart(List, Map)`��**�Ӳ� `setId`**,���� id ȫ null��
-    `Failed to create model for minecraft:skull` �� `Caught error loading resourcepacks, removing all selected
-   resourcepacks`���޷�:������֧�����߶����� `ModelPart getChild` �ĳ�Ա������(�����ڵ� `children.get(name)`),
-   ÿ���ؽ�ʱ����ӡ `patch entries dropped ... [ModelPart]`;**����������ȫ���ص���¼ֵ**(1.21 = 14141,���� 0)��
-2. **`IntegratedServer` ���������ౣ��,����ֻ�����Ա**��ֻ���� `initServer()Z` ʱ,�غ��Ƿ����Ա�װ��ȥ,
-   ��**���Ĺ�����**���� `this.m_236740_(GameProfile)` ���� �غɺ���������ͼ���������������,����
-   `Description: Starting integrated server` �׶�
+1. **`ModelPart.getChild`(与 1.20.4 同一件)** —— 载荷的 `getChild` 按 `child.getId()` 匹配,而这条线的载荷虽然
+   带了 `PartDefinition`,它的 `bake` 仍只 `new ModelPart(List, Map)`、**从不 `setId`**,于是 id 全 null、
+    `Failed to create model for minecraft:skull` → `Caught error loading resourcepacks, removing all selected
+   resourcepacks`。修法:整条分支七条线都加上 `ModelPart getChild` 的成员级保留(运行期的 `children.get(name)`),
+   每条重建时都打印 `patch entries dropped ... [ModelPart]`;**七条线验收全部回到记录值**(1.21 = 14141,其余 0)。
+2. **`IntegratedServer` 必须是整类保留,不能只保留成员**。只保留 `initServer()Z` 时,载荷那份类仍被装进去,
+   而**它的构造器**调用 `this.m_236740_(GameProfile)` —— 载荷和运行期视图都不声明这个方法,于是
+   `Description: Starting integrated server` 阶段
    `NoSuchMethodError: void net.minecraft.client.server.IntegratedServer.m_236740_(com.mojang.authlib.GameProfile)`
-   (`crash-2026-09-22_06.00.51-client.txt`)���ĳ� `IntegratedServer<TAB>*` ���ౣ���,�������Խ������һ����
-3. **���Ĺҵ� `BlockEntity` ����ȱ���� Forge �����Ա**:`gatherCapabilities()V`(����� `NoSuchMethodError`,
-   ������һ����)�������걩¶ `getCapabilities()Lnet/minecraftforge/common/capabilities/CapabilityDispatcher;`
-   (���ֵ�ʱ `[Worker-Main-12/ERROR] ... NoSuchMethodError`,spawn area ���� 0%);Forge �� `CapabilityProvider`
-   һ����������������Ա,��������һ�𲹽� `stub-additions-1.21.txt`(��ͬ����ͬ���Ĺҵ� 1.21.1/1.21.3)��
-4. **`MinecraftServer.m_195518_()Z`** ��� vanila getter ��������ͼ��ֻ���ֶ� `isSaving` û����,�غ� `Gui`
-   �� `tickAutosaveIndicator` ����� �� ����ռ������
+   (`crash-2026-09-22_06.00.51-client.txt`)。改成 `IntegratedServer<TAB>*` 整类保留后,世界加载越过了这一步。
+3. **被改挂的 `BlockEntity` 连着缺三个 Forge 父类成员**:`gatherCapabilities()V`(启动期 `NoSuchMethodError`,
+   已在上一轮修)——修完暴露 `getCapabilities()Lnet/minecraftforge/common/capabilities/CapabilityDispatcher;`
+   (生怪点时 `[Worker-Main-12/ERROR] ... NoSuchMethodError`,spawn area 卡在 0%);Forge 壳 `CapabilityProvider`
+   一共就声明这三个成员,所以三个一起补进 `stub-additions-1.21.txt`(并同步给同样改挂的 1.21.1/1.21.3)。
+4. **`MinecraftServer.m_195518_()Z`** 这个 vanila getter 运行期视图里只有字段 `isSaving` 没有它,载荷 `Gui`
+   在 `tickAutosaveIndicator` 里调用 → 世界刚加载完就
    `NoSuchMethodError: boolean net.minecraft.server.MinecraftServer.m_195518_()`(`crash-2026-09-22_06.14.06`);
-   ��׮���� false(= δ�ڱ���)����ȷ��Ĭ��ֵ,�Ѽǽ� `stub-additions-1.21.txt`��
+   补桩返回 false(= 未在保存)是正确的默认值,已记进 `stub-additions-1.21.txt`。
 
-#### һ�α��Լ�������"ϵͳ���޸�",������������´�����һ��
+#### 一次被自己量倒的"系统化修复",记在这里免得下次再走一遍
 
-������һ��"��һ����ðһ��"�ĸ�Դ�������Ǵ����һ���� classpath:����ǰ�õ��� rig ��**����** jar(583 ��),
-`MissingTargets` ������������Ա,��� MC �汾/��������ͬ����Ա����"ȱʧ"�������������ǰ�����խ��
-"�������Լ��� version json + profile json + universal + runtime ��ͼ"(114 �� jar,�������� 1.20.x ��
-`rebuild-120x-line.ps1`)�������**ȷʵ**�� 4 ��ȱʧ�ǵ� **46** ��,���������һ��**��������ͼ�Լ�ȱ�� vanilla
-SRG ��Ա**:`ServerLevel.m_7654_()`(`Level.getServer()`)��`MinecraftServer.m_195518_()`(`isSaving()`)��
-`m_7570_(Z)` �ȡ�����Щ������"Ĭ����"�����޸�����**����**:`getServer()` ���� null ��ȱʧ��������
-ʵ�����������������խ�Ǵ��ؽ�֮����������(`logs\world-121-run6.txt`)�������ж�û���С�һ�������Ƕ�û�С�
-���������խ**�ѻ���**(��������������˵��������),`add-line.ps1` �����ÿ� classpath + ����
-`stub-additions-<mc>.txt`��**������ȱ������������ͼ�� vanilla SRG ��Ա������**,����һ���������졣
+产生这一串"补一个又冒一个"的根源看起来是打壳那一步的 classpath:它以前拿的是 rig 里**所有** jar(583 个),
+`MissingTargets` 按类名解析成员,别的 MC 版本/别的线里的同名成员会让"缺失"看不出来。于是把它收窄成
+"这条线自己的 version json + profile json + universal + runtime 视图"(114 个 jar,做法抄自 1.20.x 的
+`rebuild-120x-line.ps1`)——结果**确实**从 4 个缺失涨到 **46** 个,但里面混着一批**运行期视图自己缺的 vanilla
+SRG 成员**:`ServerLevel.m_7654_()`(`Level.getServer()`)、`MinecraftServer.m_195518_()`(`isSaving()`)、
+`m_7570_(Z)` 等。给这些方法塞"默认体"不是修复而是**更糟**:`getServer()` 返回 null 比缺失更致命。
+实测就是这个后果——收窄那次重建之后的世界测试(`logs\world-121-run6.txt`)连世界行都没命中、一个世界标记都没有。
+所以这次收窄**已回退**(代码里留了完整说明与量测),`add-line.ps1` 继续用宽 classpath + 逐条
+`stub-additions-<mc>.txt`。**真正的缺陷是运行期视图对 vanilla SRG 成员不完整**,这是一个独立待办。
 
-#### ��״(��ʵ)
+#### 现状(如实)
 
-1.21 �������ߵ�"���������"(�˵�:���� �� Singleplayer �� ������ �� Play;run4/run5 �� `Preparing spawn area`��
-`Time elapsed`��`Loading recipes/advancements` �����ֹ�,`session.lock` �� region �ļ���д),�� run6/run7 ��
-û�������� ���� Ҳ����˵**�˵���������·����ڱ�������ȶ�**(�²���"���Ƿ�ѡ��"�й�:Play ��ť��ûѡ����ʱ
-�ǽ��õ�)��**��� 1.21 Ŀǰ�Ȳ��ܼǳ�"������",Ҳ���ܼǳ�"ȷ��ʧ��"**;��һ���ǰ�"��ȷ���б�ѡ��
-(�ü��� Down ѡ�к��ڽ�ͼ/tracer ��ȷ��)�ٵ� Play"����ȷ���Բ���,���� `Down+Enter` ����������·��Ϊ��·��
-������������ ModelPart/IntegratedServer �Ķ���û���ܽ�����Ӱ(1.21.8 Ҳ�������ౣ��)��
+1.21 现在能走到"世界加载中"(菜单:标题 → Singleplayer → 世界行 → Play;run4/run5 里 `Preparing spawn area`、
+`Time elapsed`、`Loading recipes/advancements` 都出现过,`session.lock` 与 region 文件被写),而 run6/run7 又
+没有起世界 —— 也就是说**菜单驱动这条路的入口本身还不稳定**(猜测与"行是否被选中"有关:Play 按钮在没选中行时
+是禁用的)。**因此 1.21 目前既不能记成"进世界",也不能记成"确认失败"**;下一步是把"先确认行被选中
+(用键盘 Down 选中后在截图/tracer 上确认)再点 Play"做成确定性步骤,并把 `Down+Enter` 这条纯键盘路作为主路。
+其余六条线在 ModelPart/IntegratedServer 改动后还没重跑建档光影(1.21.8 也换了整类保留)。
 
-### 1.21 �Ѿ�**����������**(joined the game),���漴����ͬһ��"ȱ vanilla SRG ��Ա"�ļ����� ���� ������岻���ò�׮����
+### 1.21 已经**进到世界里**(joined the game),但随即死在同一个"缺 vanilla SRG 成员"的家族上 —— 这个家族不再用补桩处理
 
-��������ȶ���:���˵���������"**û��ȷ�������б���������˾Ͳ���ʼ�ڶ���**"�ĵȴ�(`world-test-121.ps1` ��
-step 1b;1.20.4 �Ƿ�ͬһ������Ҳһ������),��Ϊ������"���б�ĵ���ڵ�һ������ѯ����֮��ű�����,
-���ǵڶ�����ȫ�����Զ����ڱ��������"�������������֮���һ������(`logs\world-121-run8.txt`):
+入口现在稳定了:给菜单驱动加了"**没有确认世界列表真的起来了就不开始第二步**"的等待(`world-test-121.ps1` 的
+step 1b;1.20.4 那份同一处假设也一并补上),因为量到过"打开列表的点击在第一步的轮询窗口之后才被处理,
+于是第二步的全部尝试都花在标题界面上"。加了这个守卫之后的一次运行(`logs\world-121-run8.txt`):
 
-* �����б��Ѿ��� �� �е�� + Play �� `GenericMessageScreen` x3 �� `ProgressScreen` �� `LevelLoadingScreen`;
-* ���:`Preparing spawn area` / `Preparing start region` / `Time elapsed` / `Loaded recipes+advancements` /
-  `Changing view distance to` / `Generating keypair`,���� **`joined the game` = True**;
-* ��Ӱ�� `MakeUp-UltraFast-9.5e.zip` **loaded**;NullPointerException 0;
-* ����� **2 �ݱ�������**,���Ҷ���ͬһ������:
+* 世界列表已就绪 → 行点击 + Play → `GenericMessageScreen` x3 → `ProgressScreen` → `LevelLoadingScreen`;
+* 标记:`Preparing spawn area` / `Preparing start region` / `Time elapsed` / `Loaded recipes+advancements` /
+  `Changing view distance to` / `Generating keypair`,并且 **`joined the game` = True**;
+* 光影包 `MakeUp-UltraFast-9.5e.zip` **loaded**;NullPointerException 0;
+* 但随后 **2 份崩溃报告**,而且都是同一个家族:
 
 ```
 [Server thread] Description: Exception in server tick loop
@@ -1880,178 +1880,178 @@ java.lang.NoSuchMethodError: 'boolean net.minecraft.client.server.IntegratedServ
   at ...GameRenderer.render
 ```
 
-������һ�ֵ� `MinecraftServer.m_195518_()`(`isSaving()`),���Ѿ���**����**ͬ���Ա:���� **vanilla �� SRG ����**��
-����**�������Լ�����**(`ChunkMap$TrackedEntity`��`GameRenderer`)����,�����ʱ�õ��Ƿ�����������**��û��**��
-���ǲ��ڿ� classpath ��׮����(��� MC �汾�� jar ��"ȱʧ"��������),������խ classpath ��һ����������**���г���
-��**(`m_7186_` �������� 46 �����嵥��)���� �����û���ӡ֤:**ȱ�ݲ����غ�,������������õ���������ͼ/������ͼ
-������**��
+加上上一轮的 `MinecraftServer.m_195518_()`(`isSaving()`),这已经是**三个**同类成员:都是 **vanilla 的 SRG 名字**、
+都被**运行期自己的类**(`ChunkMap$TrackedEntity`、`GameRenderer`)调用,而启动时用的那份运行期类里**都没有**。
+它们不在宽 classpath 的桩表里(别的 MC 版本的 jar 让"缺失"看不出来),而在收窄 classpath 那一次里它们是**被列出来
+的**(`m_7186_` 就在那张 46 条的清单里)—— 这正好互相印证:**缺陷不在载荷,而在我们启动用的运行期视图/命名视图
+不完整**。
 
-**�����һ�಻�������׮**,����������:��׮������"Ĭ����",��������������Ĭ��ֵ��ѹ�������Ū�� ����
-`m_7186_(I)I` ��ʵ��׷�پ��������(`scaledRange`),���� 0 ����ʵ��׷��ֱ��ʧЧ;`m_129918_()Z` ��
-`isPublished` һ���״̬��ѯ,���� false Ҳ������ʵ��**��ȷ�޷�������������Ĵ�����Щ��Ա**(�����غ�����������
-�����϶���),�����ڱ�"ÿ����һ�Ų�׮��"������޸�,����Ϊ���ֵĽ�������һ���������
+**因此这一类不再逐个补桩**,理由是语义:补桩给的是"默认体",而这两个方法的默认值会把功能悄悄弄坏 ——
+`m_7186_(I)I` 是实体追踪距离的缩放(`scaledRange`),返回 0 会让实体追踪直接失效;`m_129918_()Z` 是
+`isPublished` 一类的状态查询,返回 false 也不是事实。**正确修法是让运行期真的带上这些成员**(或让载荷与运行期在
+命名上对齐),这属于比"每条线一张补桩表"更深的修复,已作为本轮的结论与下一步留在这里。
 
-**��״С��(��ʵ)**:1.21 �����������硢�� join���ܼ��ع�Ӱ��,������ join ֮��� tick ѭ������ȱ��Ա����,
-����**���ܼǳ���**���������� 1.21.x ���� ModelPart / IntegratedServer �Ķ�֮��û���ܽ�����Ӱ��
+**现状小结(如实)**:1.21 现在能起世界、能 join、能加载光影包,但会在 join 之后的 tick 循环里因缺成员崩溃,
+所以**不能记成绿**。其余六条 1.21.x 线在 ModelPart / IntegratedServer 改动之后还没重跑建档光影。
 
-### ��λ����������Ҫ�Ľ���:**������֧���غ��� SRG ����,������õ��������಻��** ���� 1.20.2/1.20.4 ���꿿 `SrgRemap` �����ͬһ����,1.21.x ��û����
+### 定位到本轮最重要的结论:**这条分支的载荷是 SRG 命名,而启动用的运行期类不是** —— 1.20.2/1.20.4 当年靠 `SrgRemap` 解决过同一件事,1.21.x 从没做过
 
-��һ��������ȱʧ��Ա(`MinecraftServer.m_7186_(I)I`��`m_195518_()Z`��`IntegratedServer.m_129918_()Z`)
-һֱ������"���ǵ���������ͼ������"����һ�ְ����鵽�˵�,��������:
+上一节那三个缺失成员(`MinecraftServer.m_7186_(I)I`、`m_195518_()Z`、`IntegratedServer.m_129918_()Z`)
+一直被当作"我们的运行期视图不完整"。这一轮把它查到了底,量测如下:
 
-| ��� | ��� |
+| 检查 | 结果 |
 |---|---|
-| �����ߵĹ�����ͼ `work\<mc>\runtime-<mc>.jar`(`javap`) | 1.21 / 1.21.1 / 1.21.3 / 1.21.8 **��û��**��������Ա |
-| ����õĿͻ��� jar `libraries\net\minecraft\client\1.21-20240613.152323\client-1.21-...-srg.jar` | �� `MinecraftServer`��`IntegratedServer`,�� **ͬ��û��** `m_7186_` / `m_195518_` / `m_129918_` |
-| ͬһ������ֶ��� | `private volatile boolean isSaving` ���� **Mojang ��������**,���� SRG �� `f_..._` |
-| NeoForge universal jar | ������������(��ֻ�ǲ�����) |
-| ���� jar ����Щ�����Դ | `optifineoforge/patched/.../ChunkMap$TrackedEntity.class`��`GameRenderer.class`��`IntegratedServer.class` ���� **�غ��Լ��ı�����ﱻװ�˽�ȥ** |
+| 四条线的构建视图 `work\<mc>\runtime-<mc>.jar`(`javap`) | 1.21 / 1.21.1 / 1.21.3 / 1.21.8 **都没有**这三个成员 |
+| 启动用的客户端 jar `libraries\net\minecraft\client\1.21-20240613.152323\client-1.21-...-srg.jar` | 有 `MinecraftServer`、`IntegratedServer`,但 **同样没有** `m_7186_` / `m_195518_` / `m_129918_` |
+| 同一个类的字段名 | `private volatile boolean isSaving` —— **Mojang 风格的名字**,不是 SRG 的 `f_..._` |
+| NeoForge universal jar | 不含这两个类(它只是补丁集) |
+| 交付 jar 里这些类的来源 | `optifineoforge/patched/.../ChunkMap$TrackedEntity.class`、`GameRenderer.class`、`IntegratedServer.class` —— **载荷自己的编译产物被装了进去** |
 
-Ҳ����˵:��������������(`ChunkMap$TrackedEntity.scaledRange` �� `MinecraftServer.m_7186_(I)I`��
-`GameRenderer.tryTakeScreenshotIfNeeded` �� `IntegratedServer.m_129918_()Z`)**�����غ��Լ�����**,���غ��ǰ�
-**SRG ��Ա��**�����(OptiFine 1.21 �Ĺ��������),����õ�����������Щ��Աȴ�� **Mojang ��**���ⲻ��"��ͼȱ��Ա",
-����**��������û�ж���** ���� Ҳ���� 1.20.2 / 1.20.4 �������������һ��:`SrgRemap` ���غɵ� SRG ����д�������ڵ�
-official ��(`add-line.ps1` �� `-SrgMappings` + `-ObfOfficial`,���� `proguard-to-tsrg.ps1` ���� obf��official ��)��
-**1.21.x ����Щ��ȫ������û����һ��������½���**,����:
-* �����**�غ��Լ�����֮��**�ĵ�������(ͬһ���������,����һ��),�����Ϊʲô��Щ�������ܽ�����;
-* һ���غɵ�**������**ȥ��**������**�� vanilla ��Ա(�����ǰ� SRG ��д��),�ͻ� `NoSuchMethodError` ����
-  ������ȡ�����ܵ���������·��,���Ա���Ϊ"�е��߿���û�¡��е��� join ֮���"��
+也就是说:崩的那两处调用(`ChunkMap$TrackedEntity.scaledRange` 里 `MinecraftServer.m_7186_(I)I`、
+`GameRenderer.tryTakeScreenshotIfNeeded` 里 `IntegratedServer.m_129918_()Z`)**来自载荷自己的类**,而载荷是按
+**SRG 成员名**编译的(OptiFine 1.21 的构建即如此),启动用的运行期里那些成员却是 **Mojang 名**。这不是"视图缺成员",
+而是**两套命名没有对齐** —— 也就是 1.20.2 / 1.20.4 当年必须做的那一步:`SrgRemap` 把载荷的 SRG 名改写成运行期的
+official 名(`add-line.ps1` 的 `-SrgMappings` + `-ObfOfficial`,配套 `proguard-to-tsrg.ps1` 生成 obf→official 表)。
+**1.21.x 的这些线全部是在没有这一步的情况下建的**,所以:
+* 大多数**载荷自己的类之间**的调用能跑(同一个编译产物,名字一致),这就是为什么这些线能起、能进世界;
+* 一旦载荷的**补丁类**去调**运行期**的 vanilla 成员(而且是按 SRG 名写的),就会 `NoSuchMethodError` ——
+  触发点取决于跑到哪条代码路径,所以表现为"有的线看着没事、有的线 join 之后崩"。
 
-**��һ��(��һ�ֵĵ�һ����)**:�� 1.21.x �� `SrgMappings`(MCPConfig �� joined tsrg)�� `ObfOfficial`
-(`proguard-to-tsrg.ps1` �� Mojang client mappings ����,1.20.x ���� `obf-official-1.20.4.tsrg` ������),
-�� `add-line.ps1 -SrgMappings ... -ObfOfficial ...` �ؽ�����һ����(���� 1.21.4 �� 1.21.8,������������+��Ӱ
-��¼�ɶ���),Ȼ�����������뽨����Ӱ��**�����һ������,��Ӧ��һ����������ȱ��Ա����**,�����Ǽ���һ����Աһ����Ա�ز�׮
-���� ������֧������������ `stub-additions` ��������Ա��
+**下一步(下一轮的第一件事)**:给 1.21.x 建 `SrgMappings`(MCPConfig 的 joined tsrg)与 `ObfOfficial`
+(`proguard-to-tsrg.ps1` 从 Mojang client mappings 生成,1.20.x 已有 `obf-official-1.20.4.tsrg` 的先例),
+用 `add-line.ps1 -SrgMappings ... -ObfOfficial ...` 重建其中一条线(建议 1.21.4 或 1.21.8,它们已有世界+光影
+记录可对照),然后重跑验收与建档光影。**如果这一步成立,它应当一次消掉整族缺成员崩溃**,而不是继续一个成员一个成员地补桩
+—— 这条分支接下来不再往 `stub-additions` 里加这族成员。
 
-#### ����һ�ڽ��۵�**��խ**(ͬһ���ڵ����Ҹ���,�����ں�)
+#### 对上一节结论的**收窄**(同一轮内的自我更正,量测在后)
 
-��һ��д��"������֧���غ��� SRG �������������� Mojang ����"��**���˵��̫ǿ,��������խ**:���غ�
-`ChunkMap$TrackedEntity` ���ֽ��������� `m_`/`f_` ��ʽ�ĵ��ó��������һ�� ���� һ��ֻ�� **2 ��**
-(`ServerLevel.m_7654_`��`MinecraftServer.m_7186_`),����������õĿͻ��� jar �ﶼ**������**;�����������
-������ SRG ����Ҳ����˵�ⲻ��"�����غɰ� SRG ����",����**�غ������������ SRG ������**(���ֹ۲쵽�����
-һ�� 3 ����Ա),����������һ���� Mojang �� ���� ����û���롣
+上一节写成"这条分支的载荷是 SRG 命名、运行期是 Mojang 命名"。**这个说法太强,已量测收窄**:把载荷
+`ChunkMap$TrackedEntity` 的字节码里所有 `m_`/`f_` 形式的调用抽出来数了一遍 —— 一共只有 **2 条**
+(`ServerLevel.m_7654_`、`MinecraftServer.m_7186_`),两条在启动用的客户端 jar 里都**不存在**;类里其余调用
+都不是 SRG 名。也就是说这不是"整份载荷按 SRG 编译",而是**载荷里残留了少量 SRG 名引用**(本轮观察到会崩的
+一共 3 个成员),而运行期那一侧是 Mojang 名 —— 两边没对齐。
 
-��ȷ����һ����˸�����,���� rig ��**�Ѿ����ֳɵĹ���**:
+正确的下一步因此更具体,而且 rig 里**已经有现成的工具**:
 
-1. �� rig �Լ��� `SrgResidue` ����⼸�� 1.21.x �غ�(1.20.4 ���ܹ�,������ `logs\srgresidue-1.20.4-*.txt`),
-   ��"���ж��� SRG ������ֱ����ļ�����"������,�����ǿ�����һ����ײ;
-2. 1.20.x �����߽�����������������:`SrgRemap` ���غɵ� SRG ����д����������(`add-line.ps1` ��
-   `-SrgMappings` + `-ObfOfficial`),���� `41b4bb4` �޹�"���Ӽ����������û�й�һ"����ò���©����ԭ��
-   ���� 1.21.x ��δ������һ��,Ҳû�ж�Ӧ�� `obf-official-1.21*.tsrg`;
-3. ����**һ��**��������+��Ӱ��¼��������(1.21.4 �� 1.21.8),�������� + ������Ӱ,�����ж�"������ɾ�֮��
-   ��������Ƿ���ʧ"��**������֧������������ `stub-additions` ��������Ա**(Ĭ�����ѹ�������Ū��)��
+1. 用 rig 自己的 `SrgResidue` 审计这几个 1.21.x 载荷(1.20.4 上跑过,产物是 `logs\srgresidue-1.20.4-*.txt`),
+   把"还有多少 SRG 残留、分别在哪几个类"量出来,而不是靠崩溃一个个撞;
+2. 1.20.x 那条线解决这族问题的做法是:`SrgRemap` 把载荷的 SRG 名改写成运行期名(`add-line.ps1` 的
+   `-SrgMappings` + `-ObfOfficial`),并且 `41b4bb4` 修过"连接键里的描述符没有归一"这个让残留漏网的原因
+   —— 1.21.x 从未做过这一步,也没有对应的 `obf-official-1.21*.tsrg`;
+3. 先在**一条**已有世界+光影记录的线上试(1.21.4 或 1.21.8),重跑验收 + 建档光影,用它判断"残留清干净之后
+   整族崩溃是否消失"。**这条分支接下来不再往 `stub-additions` 里加这族成员**(默认体会把功能悄悄弄坏)。
 
-### SRG �����**Ԥ�������**��������:1.21 ������ 114 ������(��������������Ա����������),������ 0 ��
+### SRG 残留的**预测性审计**跑起来了:1.21 这条线 114 条残留(而且三条崩溃成员都在名单里),其余线 0 条
 
-��һ�ְ�"�غ���������� SRG ��"�����������һ�롣��һ���� rig ��**����е�** `SrgResidue` ���߰�����������:
-�ȸ� 1.21 ����(neoform zip ��� `config/joined.tsrg` + `proguard-to-tsrg.ps1` �� Mojang mappings ���ɵ�
-`obf-official-1.21.tsrg`,8269 �� / 37906 �ֶ� / 73419 ����),Ȼ����:
+上一轮把"载荷里残留少量 SRG 名"这件事量到了一半。这一轮用 rig 里**早就有的** `SrgResidue` 工具把它量完整了:
+先给 1.21 建表(neoform zip 里的 `config/joined.tsrg` + `proguard-to-tsrg.ps1` 从 Mojang mappings 生成的
+`obf-official-1.21.tsrg`,8269 类 / 37906 字段 / 73419 方法),然后跑:
 
 ```
 java -cp <tools> kynarain.cn.optifineoforge.optifine.SrgResidue joined-1.21.tsrg <neoform-merged> \
      work\1.21\optifine-patched.jar work\1.21\runtime-1.21.jar
 ```
 
-| �� | SRG ��״���� | �غ��Լ������� SRG �� | residue |
+| 线 | SRG 形状引用 | 载荷自己声明的 SRG 名 | residue |
 |---|---|---|---|
-| **1.21** | **306** | **84** | **114 distinct**(ȫ�� "no table entry") |
+| **1.21** | **306** | **84** | **114 distinct**(全部 "no table entry") |
 | 1.21.4 | 0 | 0 | **none - every SRG reference resolves to a runtime member** |
 
-�ؼ���:��������ϱ����������Ա**����������** ����
-`Gui -> MinecraftServer.m_195518_()Z`��`GameRenderer -> IntegratedServer.m_129918_()Z`��
-`ChunkMap$TrackedEntity -> MinecraftServer.m_7186_(I)I`��Ҳ����˵������**�����ڱ����Ѽ����г���**
-(�����嵥�� `logs\srgresidue-1.21.txt`,306 ������ / 114 ��ȥ��,ȥ�غ��ѡ 63 ��)��
-**���� 1.21.4 �Ǹɾ���** ���� �����ⲻ��������֧������,����**1.21.0 �������Լ��� OptiFine ����
-(`OptiFine_1.21_HD_U_J1_pre9`)�Ǹ������:�󲿷ֳ�Ա�� official ��,ȴ���������� SRG ������**��
+关键点:本轮真机上崩掉的三个成员**都在名单里** ——
+`Gui -> MinecraftServer.m_195518_()Z`、`GameRenderer -> IntegratedServer.m_129918_()Z`、
+`ChunkMap$TrackedEntity -> MinecraftServer.m_7186_(I)I`。也就是说这个审计**能先于崩溃把家族列出来**
+(完整清单在 `logs\srgresidue-1.21.txt`,306 条引用 / 114 条去重,去重后候选 63 条)。
+**而且 1.21.4 是干净的** —— 所以这不是整条分支的问题,而是**1.21.0 这条线自己的 OptiFine 构建
+(`OptiFine_1.21_HD_U_J1_pre9`)是个混合体:大部分成员是 official 名,却残留了这批 SRG 名引用**。
 
-#### ����"����������"��·,��������**���**��
+#### 两条"看起来能修"的路,都量过并**否掉**了
 
-1. **���ɸ��µ� OptiFine ����** ���� ����:1.21.0 ����ʽ�� `OptiFine_1.21_HD_U_J1.jar` �� optifine.net ��
-   ���¼�(`File not found.`),����(`bmclapi2`)�� `1.21/HD_U_J1` �� `1.21/HD_U_J1_pre9` ���� 404��
-2. **�� 1.20.2/1.20.4 ������ `SrgRemap`** ���� ����,���������**��������**����:`prepare-line -SrgMappings
-   joined-1.21.tsrg -ObfOfficial obf-official-1.21.tsrg` ����������
-   `rewrote 0 method and 0 field names, 34261 could not be resolved, 0 renames refused`;���غɻ���С��
-   (5420805 �ֽ�),plan ���ǵ� **6167 �� / 388 donor**(����ԭ���� 381/99)������Ϊ `SrgRemap` ������ٶ���
-   obf/SRG �������غ�,�������ߵ��غ�**�󲿷��Ѿ��� official ��**,����û�ж�Ӧ��,����"ʲô��û��"��
-   ���ʵ����غ��� runtime ��ͼ**�ѻ���**(`*.pre-srgremap`)��
+1. **换成更新的 OptiFine 构建** —— 不行:1.21.0 的正式版 `OptiFine_1.21_HD_U_J1.jar` 在 optifine.net 上
+   已下架(`File not found.`),镜像(`bmclapi2`)对 `1.21/HD_U_J1` 与 `1.21/HD_U_J1_pre9` 都是 404。
+2. **照 1.20.2/1.20.4 那样做 `SrgRemap`** —— 不行,而且这次是**量出来的**不行:`prepare-line -SrgMappings
+   joined-1.21.tsrg -ObfOfficial obf-official-1.21.tsrg` 跑完的输出是
+   `rewrote 0 method and 0 field names, 34261 could not be resolved, 0 renames refused`;新载荷还变小了
+   (5420805 字节),plan 暴涨到 **6167 条 / 388 donor**(对照原来的 381/99)——因为 `SrgRemap` 的输入假定是
+   obf/SRG 命名的载荷,而这条线的载荷**大部分已经是 official 名**,表里没有对应项,于是"什么都没改"。
+   这次实验的载荷与 runtime 视图**已回退**(`*.pre-srgremap`)。
 
-#### ʣ�µ�·(��һ�ֵĺ�ѡ,����������)
+#### 剩下的路(下一轮的候选,按代价排序)
 
-1. **��Բ��������**:114 ��ȥ������һ������**�غ��Լ��ڲ���֮���������**
-   (`RenderSystem$AutoStorageIndexBuffer` ���Լ��� `f_157469_` �� 9 ����`GlStateManager$*` һ�塢
-   `ParticleEngine$ParticleDefinition` һ��),ֻҪ�غ��Ƿ��౻װ��ȥ�����Լ�����;�����絽**������**��
-   ����������������:`Gui`��`ChunkMap$TrackedEntity`��`GameRenderer`��`DebugScreenOverlay`��`TitleScreen`��
-   `ClientLevel`��`ClientLevel$EntityCallbacks`��`VertexBuffer`/`VertexConsumer`��`ModelPart`
-   (`ModelPart.m_171324_` ���� `getChild`,�������Ѿ��Ѹ������ݻ��������ڵ���)��
-   ���е�������**�� owner ���������д**(��ͬ�� rig ��� `SrgMemberMap`,���غ�����Щ `m_*/f_*` ���ø�д��
-   �����ڵ� official ��),�����ǰ� obf ���ֿռ����� remap ���� ��Ҳ�� `SrgResidue` �� `classify()` �Ѿ��������ж�,
-   ֻ��һ��д�ز��衣
-2. ���߶��б����Ǽ���"OptiFine �������ǹؼ�"����(�� `ChunkMap$TrackedEntity`)�Ȱ����ౣ�����,�ѱ�������С,
-   ����������ʣ�� ���� ������**Ȩ��**,����� `Gui` ���ֱ�ȻҪװ�غɵ��ࡣ
+1. **针对残留本身修**:114 条去重里有一大批是**载荷自己内部类之间的自引用**
+   (`RenderSystem$AutoStorageIndexBuffer` 调自己的 `f_157469_` 等 9 条、`GlStateManager$*` 一族、
+   `ParticleEngine$ParticleDefinition` 一族),只要载荷那份类被装进去就能自己解析;真正跨到**运行期**的
+   集中在少数几个类:`Gui`、`ChunkMap$TrackedEntity`、`GameRenderer`、`DebugScreenOverlay`、`TitleScreen`、
+   `ClientLevel`、`ClientLevel$EntityCallbacks`、`VertexBuffer`/`VertexConsumer`、`ModelPart`
+   (`ModelPart.m_171324_` 就是 `getChild`,而我们已经把该类整份换成运行期的了)。
+   可行的做法是**按 owner 类做定向改写**(用同在 rig 里的 `SrgMemberMap`,把载荷里这些 `m_*/f_*` 引用改写成
+   运行期的 official 名),而不是按 obf 名字空间整体 remap —— 这也是 `SrgResidue` 的 `classify()` 已经在做的判断,
+   只差一个写回步骤。
+2. 或者对列表里那几个"OptiFine 补丁并非关键"的类(如 `ChunkMap$TrackedEntity`)先按整类保留处理,把崩溃面缩小,
+   再逐条处理剩余 —— 但这是**权宜**,不解决 `Gui` 这种必然要装载荷的类。
 
-#### ��β״̬��һ��**�µĲ���**(��ʵ��,��һ�ֱ����)
+#### 收尾状态与一个**新的差异**(如实记,下一轮必须查)
 
-������������·�������˺ۼ�,�����������:
+那两条被否掉的路都留下了痕迹,已清理并复验:
 
-* `SrgRemap` �Ǵ�ʵ��������غ��� runtime ��ͼ**�ѻ���**(`work\1.21\*.pre-srgremap`),ʧ��ʵ��д�µ�
-  plan(6167 �� / 388 donor)**����������**:�ñ���֧Դ���������������� + ��� donor Ŀ¼������,
-  ������ **plan 381 �� / donor 99 �� / keep plan 3 �� / interface plan 13 �� / access plan 255 ��**,
-  �������ߴ�ǰ���õ���һ��ͬ����,registered jar ���ؽ�(`add-line.ps1 -SkipInstall`)��
-* �ؽ��� 1.21 ������������Ȼͨ��(STARTED / user yes / sound yes / ���� 0),**�� stderr �Ӽ�¼ֵ
-  **14141** ��� **46767** �ֽ�**([OptiFine] 241 ��)������һ��**�µġ���δ���͵Ĳ���**,�����Ȳ�����̸����������
-  ���� ����ܵ�ԭ����:��һ�ε� plan/donor ����**����֧Դ��**�������������,����ǰ�Ǵ��õ���
-  `tools-classpath.txt` ���Ƿ�**��ķ�֧ʱ��**��������(`tools-patch-keepfix`,��һ���Ѽ�¼��"���Լ�������"),
-  ���������������ļƻ���ͬ ? �غ��ﱻ"������"�ĳ�Ա��ͬ ? OptiFine �� Reflector ����(��������־)��֮�仯��
-  ����������һ����һ�� A/B ���ܶ�(ͬһ���غ�,��������������һ�� plan,�ֱ��ؽ���� stderr ��
-  `logs\srgresidue-1.21.txt` ����������)��
+* `SrgRemap` 那次实验产生的载荷与 runtime 视图**已回退**(`work\1.21\*.pre-srgremap`),失败实验写下的
+  plan(6167 条 / 388 donor)**已重新生成**:用本分支源码编译的生成器重算 + 清空 donor 目录后重算,
+  现在是 **plan 381 条 / donor 99 个 / keep plan 3 行 / interface plan 13 行 / access plan 255 条**,
+  与这条线此前可用的那一份同量级,registered jar 已重建(`add-line.ps1 -SkipInstall`)。
+* 重建后 1.21 的四项验收仍然通过(STARTED / user yes / sound yes / 崩溃 0),**但 stderr 从记录值
+  **14141** 变成 **46767** 字节**([OptiFine] 241 行)。这是一个**新的、尚未解释的差异**,必须先查清再谈这条线是绿
+  —— 最可能的原因是:这一次的 plan/donor 是用**本分支源码**的生成器重算的,而此前那次用的是
+  `tools-classpath.txt` 里那份**别的分支时代**的生成器(`tools-patch-keepfix`,上一轮已记录它"把自己屏蔽了"),
+  两份生成器产出的计划不同 ⇒ 载荷里被"补回来"的成员不同 ⇒ OptiFine 的 Reflector 噪声(非致命日志)随之变化。
+  这条假设下一轮用一次 A/B 就能定(同一个载荷,两份生成器各出一份 plan,分别重建后比 stderr 与
+  `logs\srgresidue-1.21.txt` 的两组数字)。
 
-#### ���˺��һ�θ���:��Ϊ������ǰһ��(��ʵ��)
+#### 回退后的一次复跑:行为与手术前一致(如实记)
 
-�û��˲��ؽ���� 1.21 jar ������һ�β˵�����(`logs\world-121-run9.txt`):�����б����,����һ��**û��������**
-(`world row click: never landed`,��������),**���� 0��NPE 0** ���� ��֮ǰ�� run6/run7 ͬ��(run8 �ɹ���������),
-Ҳ����˵**�������������û�иı���Ϊ����**,ֻ�ǰѱ���Ⱦ�ļƻ���������������(381/99)����ڵ�"��ʱ����ʱ����"
-����������Ȼ��������,��һ����Ҫ�Ȱ�"ѡ���� �� �� Play"����ȷ���Բ���(������֪������:Play ��δѡ����ʱ�ǽ��õ�,
-���ҵ��е��ֻ��һ������ѡ��)��
-1.21 �� stderr ����(46767 vs ��¼ 14141)�Թ���,���Ƽ������һ��,δ�� A/B��
+用回退并重建后的 1.21 jar 又跑了一次菜单驱动(`logs\world-121-run9.txt`):世界列表打开了,但这一次**没有起世界**
+(`world row click: never landed`,无世界标记),**崩溃 0、NPE 0** —— 与之前的 run6/run7 同类(run8 成功进过世界),
+也就是说**这次清理与重算没有改变行为种类**,只是把被污染的计划换回了正常量级(381/99)。入口的"有时起、有时不起"
+这件事因此仍然独立存在,下一轮仍要先把"选中行 → 点 Play"做成确定性步骤(本轮已知的线索:Play 在未选中行时是禁用的,
+而我的行点击只有一部分能选中)。
+1.21 的 stderr 差异(46767 vs 记录 14141)仍挂着,机制假设见上一节,未做 A/B。
 
-### �� `SrgResidue` ���嵥**������ 1.21 �ı���**:�����޺ò�����,����������˴�����޷�
+### 用 `SrgResidue` 的清单**定点修 1.21 的崩溃**:两处修好并复验,第三处否掉了错误的修法
 
-���������嵥(����һ��),��һ�ֲ��ٿ�����ײ,�������嵥��:
+有了完整清单(见上一节),这一轮不再靠崩溃撞,而是照清单修:
 
-1. **`ChunkMap$TrackedEntity` ���ౣ�������ڰ汾** ���� �غ��Ƿݵ��� `MinecraftServer.m_7186_(I)I`
-   (SRG ��,������û��),����ʵ��׷�ٵ� tick ·�����ؽ�ʱ��ӡ
-   `patch entries dropped for 1 class(es): [net/minecraft/server/level/ChunkMap$TrackedEntity]`,**�÷������������ʧ**
-   (���� `logs\world-121-run11.txt`:��������� **2 �ݽ��� 1 ��**)��
-2. **`IntegratedServer.m_129918_()Z` ���ɷ��� false**(= "not published")���� �غ� `GameRenderer` ��
-   `tryTakeScreenshotIfNeeded` �����,�� `GameRenderer` �ǹ�Ӱ���ӡ�**����**���ౣ�����׮����һ�����ٱ���
-3. **������(`m_182649_()Ljava/util/Optional;`,ͬһ���������ŵ�һ��)������"��
-   `tryTakeScreenshotIfNeeded` ��������屣�������ڰ汾"���� ����޷��������ѻ���**,��Ϊ����
-   `build-jars` �����**��������� patch ��Ŀ����**
+1. **`ChunkMap$TrackedEntity` 整类保留运行期版本** —— 载荷那份调用 `MinecraftServer.m_7186_(I)I`
+   (SRG 名,运行期没有),崩在实体追踪的 tick 路径。重建时打印
+   `patch entries dropped for 1 class(es): [net/minecraft/server/level/ChunkMap$TrackedEntity]`,**该服务器侧崩溃消失**
+   (复跑 `logs\world-121-run11.txt`:崩溃报告从 **2 份降到 1 份**)。
+2. **`IntegratedServer.m_129918_()Z` 补成返回 false**(= "not published")—— 载荷 `GameRenderer` 在
+   `tryTakeScreenshotIfNeeded` 里调它,而 `GameRenderer` 是光影钩子、**不能**整类保留。补桩后那一处不再崩。
+3. **第三处(`m_182649_()Ljava/util/Optional;`,同一方法里紧接着的一行)我试了"把
+   `tryTakeScreenshotIfNeeded` 这个方法体保留运行期版本"—— 这个修法被否掉并已回退**,因为量到
+   `build-jars` 会因此**把整个类的 patch 条目丢掉**
    (`patch entries dropped for 1 class(es): [net/minecraft/client/renderer/GameRenderer]`),
-   Ҳ���� **OptiFine �� `GameRenderer`(��Ӱ���)�������ᱻװ��ȥ** ���� �ǲ���"�޲���",����**���Ķ����Ӱ֧��**��
-   ��������Ϊ����д�� keep �ƻ���ע���
-   �����һ���о�:**�� `Optional` ���෵�ض���ķ�������׮�᷵�� null**,���÷� `Optional.isEmpty()` ֱ�� NPE,
-   ������һ�岻���ò�׮����ȥ��
+   也就是 **OptiFine 的 `GameRenderer`(光影入口)根本不会被装进去** —— 那不是"修残留",而是**悄悄丢掉光影支持**。
+   这条已作为反例写进 keep 计划的注释里。
+   另外记一条判据:**对 `Optional` 这类返回对象的方法补空桩会返回 null**,调用方 `Optional.isEmpty()` 直接 NPE,
+   所以这一族不能用补桩糊过去。
 
-**��һ�ֵ�ֱ�ӽ���**:`tryTakeScreenshotIfNeeded` �������� SRG ����(�Լ� `DebugScreenOverlay` ��
-`IntegratedServer.m_306290_/m_304767_/m_129880_` �ĵ���)ֻ�ܿ�**�����д**(���غ�����Щ `m_*` ���øĳ�������
-official ��,��ͬ�� rig ��� `SrgMemberMap`,`SrgResidue.classify()` �Ѿ���"�ٷ�����ʲô"�������)����
-"����ȷ�������׮"����,������һ�ֵĵ�һ���¡�1.21 ���ڵ�״̬��:�������硢�� join���ܼ��ع�Ӱ��,
-**ʣ�� 1 �ݿͻ��˱���**(`m_182649_`)�����δ�����Ĳ����
+**下一轮的直接结论**:`tryTakeScreenshotIfNeeded` 里那三个 SRG 调用(以及 `DebugScreenOverlay` 对
+`IntegratedServer.m_306290_/m_304767_/m_129880_` 的调用)只能靠**定向改写**(把载荷里这些 `m_*` 引用改成运行期
+official 名,用同在 rig 里的 `SrgMemberMap`,`SrgResidue.classify()` 已经把"官方名是什么"算出来了)或者
+"带正确语义体的桩"来修,这是下一轮的第一件事。1.21 现在的状态是:能起世界、能 join、能加载光影包,
+**剩下 1 份客户端崩溃**(`m_182649_`)与若干未触发的残留。
 
-### 1.21 **��һ��������ͨ"���� + ��Ӱ��"�������**(join �� �Զ����� �� 0 ����),�Լ���һ���õ��о�
+### 1.21 **第一次完整跑通"建档 + 光影包"且零崩溃**(join → 自动保存 → 0 崩溃),以及这一轮用的判据
 
-������һ�ڵ��嵥��������,��һ�ְ�ʣ�µ���������,���ҸĶ���һ��**����������**:
+接着上一节的清单继续定修,这一轮把剩下的三处补掉,并且改动了一条**加载器规则**:
 
-1. **������:`Optional` �������Ͳ��ܲ� null**��`defaultBody()` ���ڶ� `java/util/Optional` ����
-   `Optional.empty()` ������ `aconst_null` ���� ��������������:���÷�һ��д `isPresent()/isEmpty()/orElse()` һ���д��,
-   null ֻ�ǰ�"ȱ��Ա"���һ�� NPE(`GameRenderer.java:1238` �Ǵ���������)������**��Ʒ�����**,����ÿ���ߵĲ�����
-2. `IntegratedServer.m_182649_()Ljava/util/Optional;` �� `m_129921_()I`(����ͬһ����������,SrgResidue ���й�)����׮��:
-   ǰ�������������������򷵻� `Optional.empty()`,���߷��� 0��
-3. `BakedModel.useAmbientOcclusion(BlockState, RenderType)Z`(NeoForge ��������չ��ʽ,�غ�
-   `ModelBlockRenderer.tesselateBlock:86` ����)��׮���� false��
+1. **加载器:`Optional` 返回类型不能补 null**。`defaultBody()` 现在对 `java/util/Optional` 返回
+   `Optional.empty()` 而不是 `aconst_null` —— 理由是量出来的:调用方一律写 `isPresent()/isEmpty()/orElse()` 一类的写法,
+   null 只是把"缺成员"变成一个 NPE(`GameRenderer.java:1238` 那处就是这样)。这是**产品侧规则**,不是每条线的补丁。
+2. `IntegratedServer.m_182649_()Ljava/util/Optional;` 与 `m_129921_()I`(都在同一处调用链里,SrgResidue 都列过)进补桩表:
+   前者现在由上面那条规则返回 `Optional.empty()`,后者返回 0。
+3. `BakedModel.useAmbientOcclusion(BlockState, RenderType)Z`(NeoForge 的两参扩展形式,载荷
+   `ModelBlockRenderer.tesselateBlock:86` 调用)补桩返回 false。
 
-**����(`logs\world-121-run13.txt`,�˵����� + MakeUp ��Ӱ��)**:
+**复验(`logs\world-121-run13.txt`,菜单驱动 + MakeUp 光影包)**:
 
 ```
 reached a world : True      joined : True
@@ -2061,54 +2061,54 @@ shader pack     : [Shaders] Loaded shaderpack: MakeUp-UltraFast-9.5e.zip
 crash reports   : 0         NullPointerException : 0
 ```
 
-����������**��һ��������ͨ**"������ �� join �� �Զ����� �� �˳�ǰ�����",���ҹ�Ӱ��ȷʵ���ء���������ͬʱ����ͨ��
-(STARTED / user yes / sound yes / ���� 0)��
+这是这条线**第一次完整跑通**"进世界 → join → 自动保存 → 退出前零崩溃",而且光影包确实加载。四项验收同时保持通过
+(STARTED / user yes / sound yes / 崩溃 0)。
 
-**��ʵ������һ���޷��Ĵ�����߽�**(�����ö�����Ϊ 1.21 �Ѿ��ɾ�):
-* `useAmbientOcclusion(...)` ��׮�ش� **false**,���Ǹ�ģ��**�����������ڱ�** ���� ����**�ɼ����Ӿ�ƫ��**,���Ǳ�����
-  ����"������"��׮(����Ĭ��ֵ)ֻ�������������ܲ�,**����**�����޷�;
-* �������޷�����**�����д**:���غ�����Щ�絽�����ڵ� `m_*`/��չ��Ա���ø�д���������Լ��ĳ�Ա
-  (`SrgResidue.classify()` �Ѿ�����ٷ���,`SrgMemberMap` �� rig ��),��һ����δ��;
-* 1.21 �� **stderr ��¼��������**:������ͨ��,�� stderr �� **46767** �ֽ�(��¼ֵ 14141),���Ƽ���(�������汾��ͬ)
-  ��δ A/B;
-* �������� 1.21.x ��**��û���ܽ�����Ӱ**(������ ModelPart / IntegratedServer �����Ķ�֮����Ҫ����),
-  �����Ǹ����Ƿ�Ҳ�������ߵ� `SrgResidue` �嵥֮���ȱʧ��Ա,Ҫ��ͬһ�װ취��������
+**如实记下这一轮修法的代价与边界**(不能让读者以为 1.21 已经干净):
+* `useAmbientOcclusion(...)` 的桩回答 **false**,即那个模型**不做环境光遮蔽** —— 这是**可见的视觉偏差**,不是崩溃。
+  这类"语义型"补桩(返回默认值)只能让线跑起来受测,**不是**最终修法;
+* 真正的修法仍是**定向改写**:把载荷里那些跨到运行期的 `m_*`/扩展成员引用改写成运行期自己的成员
+  (`SrgResidue.classify()` 已经算出官方名,`SrgMemberMap` 在 rig 里),这一步仍未做;
+* 1.21 的 **stderr 记录差异仍在**:四项检查通过,但 stderr 是 **46767** 字节(记录值 14141),机制假设(生成器版本不同)
+  尚未 A/B;
+* 其余六条 1.21.x 线**还没重跑建档光影**(它们在 ModelPart / IntegratedServer 两处改动之后需要重跑),
+  而它们各自是否也有这条线的 `SrgResidue` 清单之外的缺失成员,要按同一套办法逐条量。
 
-### �����װ취�̵�����������:5/7 ������"������ + ��Ӱ������ + 0 ����"
+### 把这套办法铺到其余六条线:5/7 条做到"进世界 + 光影包加载 + 0 崩溃"
 
-��һ���޺� 1.21 ֮��,��ͬһ�װ취�������ߵ����ȱʧ��Ա**�̵�����������**
-(`stub-additions-<mc>.txt`;װ����ֻ�ڸó�Աȷʵȱʧʱ��ע��,�����ڲ���Ҫ�������Ƕ��Ե�),�����ؽ�������
-���� + ��Ӱ��(quick play,RigSession,MakeUp-UltraFast-9.5e):
+上一节修好 1.21 之后,按同一套办法把这条线的五个缺失成员**铺到其余六条线**
+(`stub-additions-<mc>.txt`;装载器只在该成员确实缺失时才注入,所以在不需要它的线是惰性的),逐条重建并重跑
+建档 + 光影包(quick play,RigSession,MakeUp-UltraFast-9.5e):
 
-| �� | �̿�ǰ | �̿��� |
+| 线 | 铺开前 | 铺开后 |
 |---|---|---|
-| 1.21.1 | **FAILED**(���� 1;���� yes����Ӱ loaded) | **STARTED / world yes / ��Ӱ loaded / ���� 0** |
-| 1.21.3 | **FAILED**(ͬ��) | **STARTED / world yes / ��Ӱ loaded / ���� 0** |
-| 1.21.4 | STARTED / world yes / ��Ӱ loaded / ���� 0 | ͬ��(�̿��Ƕ��Ե�) |
-| 1.21.8 | STARTED / world yes / ��Ӱ loaded / ���� 0 | ͬ�� |
-| 1.21.6 | STARTED / world yes / **��Ӱ��û����** | ͬ��(�뱾���޹صĶ���ȱ��) |
-| 1.21.7 | STARTED / world yes / **��Ӱ��û����** | ͬ�� |
-| 1.21(�˵�·) | join + ��Ӱ loaded + ���� 0 | ͬ�� |
+| 1.21.1 | **FAILED**(崩溃 1;世界 yes、光影 loaded) | **STARTED / world yes / 光影 loaded / 崩溃 0** |
+| 1.21.3 | **FAILED**(同上) | **STARTED / world yes / 光影 loaded / 崩溃 0** |
+| 1.21.4 | STARTED / world yes / 光影 loaded / 崩溃 0 | 同上(铺开是惰性的) |
+| 1.21.8 | STARTED / world yes / 光影 loaded / 崩溃 0 | 同上 |
+| 1.21.6 | STARTED / world yes / **光影包没加载** | 同左(与本轮无关的独立缺陷) |
+| 1.21.7 | STARTED / world yes / **光影包没加载** | 同左 |
+| 1.21(菜单路) | join + 光影 loaded + 崩溃 0 | 同左 |
 
-������ϸ��:
-* 1.21.1 / 1.21.3 ��ǰ�ı�������**ͬһ����Ա**(�������̿�ǰû���⼸����׮),�̿������߶���� 0 ���� ���� ��Ҳ
-  ������˵��"�����嵥�Ǳ��غɼ���Ĺ���,���� 1.21 ������";
-* `BakedModel.useAmbientOcclusion(...)` ��׮��Ȼ�ش� false,��**�Ǹ�ģ�Ͳ����������ڱ�**,�������������ϵ�
-  **�ɼ��Ӿ�����**,������Ӧ��"�����д"���(����һ��)��
+记两个细节:
+* 1.21.1 / 1.21.3 修前的崩溃正是**同一批成员**(它们在铺开前没有这几条补桩),铺开后两线都变成 0 崩溃 —— 这也
+  反过来说明"这套清单是本载荷家族的共性,不是 1.21 的特例";
+* `BakedModel.useAmbientOcclusion(...)` 的桩仍然回答 false,即**那个模型不做环境光遮蔽**,这是套在整族上的
+  **可见视觉代价**,最终仍应由"定向改写"替代(见上一节)。
 
-**��δͨ������������ԭ��**(��ʵ):1.21.6 / 1.21.7 ���������Ӱ��Ҫôȱһ:
+**仍未通过的四条线与原因**(如实):1.21.6 / 1.21.7 的世界与光影都要么缺一:
 `Failed to parse post chain at minecraft:post_effect/fxaa_of_2x.json | JsonSyntaxException: No key
-fragment_shader / No key vertex_shader` ���� 1.21.5 ���������ʽ�� `shaders/post`(vertex/fragment)����
-`post_effect`(vertex_shader/fragment_shader),�������ߵ� OptiFine �������Ǿɸ�ʽ;Ҫ�������Ի�Ƿһ�ζ���
-(ͬһ�� OptiFine �Ž�ͬ�汾��**����**���Ǽ������� NeoForge ��һ��,���Ƿ�ͬ������ ���� �ǲŽ�"OptiFine ��汾������",
-���ڵ�˵��ֻ��"�غ����������ƥ��")��
+fragment_shader / No key vertex_shader` —— 1.21.5 起后处理链格式从 `shaders/post`(vertex/fragment)换成
+`post_effect`(vertex_shader/fragment_shader),而这条线的 OptiFine 构建仍是旧格式;要给它定性还欠一次对照
+(同一份 OptiFine 放进同版本、**不带**我们加载器的 NeoForge 跑一次,看是否同样报错 —— 那才叫"OptiFine 与版本不兼容",
+现在的说法只是"载荷与解析器不匹配")。
 
-### 1.21.6 / 1.21.7 ��Ӱ������ʧ��**��λ�������ֶ�**:�� OptiFine �Ƿ� JSON �� schema ����ڸð汾,���Ǽ�����
+### 1.21.6 / 1.21.7 光影包加载失败**定位到具体字段**:是 OptiFine 那份 JSON 的 schema 落后于该版本,不是加载器
 
-�������汾�� OptiFine jar(1.21.4 ���á�1.21.6/1.21.7 ������)�����ǵ��غ� jar ����ȽϺ�,��ʵ��:
-**���� jar �����ĸ���Դһģһ��**(`assets/minecraft/post_effect/fxaa_of_{2,4}x.json` �� 620 �ֽڡ�
-`assets/minecraft/shaders/post/fxaa_of_{2,4}x.json` �� 719/443 �ֽ�),Ҳ����˵**��Դû�б����ǵ���ˮ�߶���**,
-�����������Դ������� 620 �ֽ��Ƿݴ򿪿�,���� schema ��:
+把三个版本的 OptiFine jar(1.21.4 可用、1.21.6/1.21.7 不可用)与我们的载荷 jar 逐个比较后,事实是:
+**三个 jar 里那四个资源一模一样**(`assets/minecraft/post_effect/fxaa_of_{2,4}x.json` 各 620 字节、
+`assets/minecraft/shaders/post/fxaa_of_{2,4}x.json` 各 719/443 字节),也就是说**资源没有被我们的流水线动过**,
+问题在这份资源本身。把 620 字节那份打开看,它的 schema 是:
 
 ```json
 { "targets": { "swap": {} },
@@ -2116,72 +2116,73 @@ fragment_shader / No key vertex_shader` ���� 1.21.5 �������
               { "program": "minecraft:post/blit",        "inputs": [ { "sampler_name": "In", "target": "swap" } ],         "output": "minecraft:main" } ] }
 ```
 
-�� 1.21.6/7 �Ľ�����Ҫ����**ÿ�� pass �Դ� `vertex_shader` / `fragment_shader`**(����ԭ�ľ���
+而 1.21.6/7 的解析器要的是**每个 pass 自带 `vertex_shader` / `fragment_shader`**(报错原文就是
 `No key fragment_shader in MapLike[{"program":"minecraft:post/blit","inputs":[...],"output":"minecraft:main"}]`
-�Լ�ͬһ����� `No key vertex_shader`)���� Ҳ���� 1.21.5 �� 1.21.6 ֮��**������ schema �ָ���һ��**,�������ߵ�
-OptiFine Ԥ�������԰� 1.21.5 ��д����**����ⲻ�����Ǽ�������ȱ��**(ͬһ����Դ��ԭʼ jar ���������),
-����"�غ��������ڰ汾�� schema ��ƥ��"��
+以及同一份里的 `No key vertex_shader`)—— 也就是 1.21.5 到 1.21.6 之间**后处理链 schema 又改了一次**,而这条线的
+OptiFine 预览构建仍按 1.21.5 的写法。**因此这不是我们加载器的缺陷**(同一份资源在原始 jar 里就是这样),
+而是"载荷与运行期版本的 schema 不匹配"。
 
-**��ѡ�޷�(���嵽��������,��һ����)**:�����ǵ� jar �ṩһ�ݸ�д���� schema �ĸ�����Դ
-(`assets/minecraft/post_effect/fxaa_of_{2,4}x.json`,��ÿ�� pass �� `"program": X` ����
-`"vertex_shader": X, "fragment_shader": X`,���� `inputs`/`output` ����;���� program ��
-`minecraft:post/fxaa_of_2x`��`minecraft:post/blit` ������ OptiFine �ľɸ�ʽ�ļ��ﱻ����,˵�����Ǵ���)��
-�ж���׼�ܼ�:�ؽ����� 1.21.6/1.21.7 �����ܽ�����Ӱ,�� `[Shaders] Loaded shaderpack:` �Ƿ���֡�
-`Failed to parse post chain` �Ƿ���ʧ��
+**候选修法(具体到可以照做,下一轮试)**:由我们的 jar 提供一份改写成新 schema 的覆盖资源
+(`assets/minecraft/post_effect/fxaa_of_{2,4}x.json`,把每个 pass 的 `"program": X` 换成
+`"vertex_shader": X, "fragment_shader": X`,其余 `inputs`/`output` 不动;两个 program 名
+`minecraft:post/fxaa_of_2x`、`minecraft:post/blit` 都已在 OptiFine 的旧格式文件里被引用,说明它们存在)。
+判定标准很简单:重建后在 1.21.6/1.21.7 上重跑建档光影,看 `[Shaders] Loaded shaderpack:` 是否出现、
+`Failed to parse post chain` 是否消失。
 
-#### ����"�����ǵ���Դ�������� post chain",**û��Ч**(��ʵ��,��������һ����Ӳ�ĺ�ѡ)
+#### 试了"由我们的资源覆盖那条 post chain",**没生效**(如实记,并给出下一个更硬的候选)
 
-����һ�ڵĺ�ѡ�޷�,�Ѹ�д���� schema �� `assets/minecraft/post_effect/fxaa_of_{2,4}x.json`(ÿ�� pass ��
-`vertex_shader`/`fragment_shader`)�Ž�����֧�� `src/main/resources`,�ؽ� 1.21.6 / 1.21.7 ������:
+按上一节的候选修法,把改写成新 schema 的 `assets/minecraft/post_effect/fxaa_of_{2,4}x.json`(每个 pass 带
+`vertex_shader`/`fragment_shader`)放进本分支的 `src/main/resources`,重建 1.21.6 / 1.21.7 并复跑:
 
-* ��Դ**ȷʵ���˽��� jar**(`javap`/zip ���:`assets/minecraft/post_effect/fxaa_of_2x.json`,724 �ֽ�);
-* �������־**һ��δ��**,����������**������**(`{"program":"minecraft:post/blit", ...}`),
-  Ҳ���ǿͻ���**��Ȼ������ OptiFine �Ƿ�**,���ǵ� mod ��Դû��Ӯ����(�غ��Ƿ�����"��װ����Ϸ jar ����Դ"��ݴ��ڵ�,
-  ���ȼ����� mod ��Դ��)��**��������·�߰����ڵ�����������**��
+* 资源**确实进了交付 jar**(`javap`/zip 检查:`assets/minecraft/post_effect/fxaa_of_2x.json`,724 字节);
+* 但真机日志**一字未变**,报错里仍是**旧内容**(`{"program":"minecraft:post/blit", ...}`),
+  也就是客户端**仍然读的是 OptiFine 那份**,我们的 mod 资源没有赢过它(载荷那份是以"被装进游戏 jar 的资源"身份存在的,
+  优先级高于 mod 资源包)。**这条覆盖路线按现在的做法不成立**。
 
-**��һ����ѡ��(��Ӳ������,��һ����)**:�Ѹ�д**ֱ������������ OptiFine jar**(�� `build-jars`/
-`OptifineJarFixer` װ����һ��,�� `assets/minecraft/post_effect/fxaa_of_{2,4}x.json` �滻���� schema),
-����"˭�ڶ�"��"���ķ�"����ͬһ���ļ�,���������ȼ�����;�ж���׼���� 1.21.6 / 1.21.7 ��
-`[Shaders] Loaded shaderpack:` �Ƿ���֡�`Failed to parse post chain` �Ƿ���ʧ��
-��:��������**����ʼ���Ǻõ�**(world yes������ 0��4 �� region �ļ�),����ȱ��ֻ����һ����
+**下一个候选人(按硬度排序,下一轮试)**:把改写**直接做进交付的 OptiFine jar**(即 `build-jars`/
+`OptifineJarFixer` 装配那一步,把 `assets/minecraft/post_effect/fxaa_of_{2,4}x.json` 替换成新 schema),
+这样"谁在读"和"读哪份"就是同一个文件,不存在优先级问题;判定标准仍是 1.21.6 / 1.21.7 上
+`[Shaders] Loaded shaderpack:` 是否出现、`Failed to parse post chain` 是否消失。
+另:这两条线**世界始终是好的**(world yes、崩溃 0、4 个 region 文件),所以缺的只有这一处。
 
-### ������β:ʮһ�� ModLauncher �ߵ���������**ȫ������**(��ǰ jar),���� stderr ������ʵ����
+### 本轮收尾:十一条 ModLauncher 线的四项验收**全部重跑**(当前 jar),两条 stderr 差异如实挂账
 
 `retest-all.ps1 -Only 1.21,1.21.1,1.21.3,1.21.4,1.21.6,1.21.7,1.21.8,1.20.1,1.20.2,1.20.4,1.20.6`
 (`logs\retest-modlauncher-round154.txt`):
 
-| �� | �ж� | user | sound | ���� | stderr | ���¼ֵ |
+| 线 | 判定 | user | sound | 崩溃 | stderr | 与记录值 |
 |---|---|---|---|---|---|---|
-| 1.21 | STARTED | yes | yes | 0 | 46767 | **����**(��¼ 14141) |
-| 1.21.1 | STARTED | yes | yes | 0 | 0 | = ��¼ |
-| 1.21.3 | STARTED | yes | yes | 0 | 0 | = ��¼ |
-| 1.21.4 | STARTED | yes | yes | 0 | 0 | = ��¼ |
-| 1.21.6 | STARTED | yes | yes | 0 | 0 | = ��¼ |
-| 1.21.7 | STARTED | yes | yes | 0 | 0 | = ��¼ |
-| 1.21.8 | STARTED | yes | yes | 0 | 0 | = ��¼ |
-| 1.20.6 | STARTED | yes | yes | 0 | 17856 | ��֪����(��ʮ�� �Ѷ�λ) |
-| 1.20.4 | STARTED | yes | yes | 0 | 14481 | = ��¼ |
-| 1.20.2 | STARTED | yes | yes | 0 | 14631 | **���� 6 �ֽ�**(��¼ 14625) |
-| 1.20.1 | STARTED | yes | yes | 0 | 0 | = ��¼ |
+| 1.21 | STARTED | yes | yes | 0 | 46767 | **差异**(记录 14141) |
+| 1.21.1 | STARTED | yes | yes | 0 | 0 | = 记录 |
+| 1.21.3 | STARTED | yes | yes | 0 | 0 | = 记录 |
+| 1.21.4 | STARTED | yes | yes | 0 | 0 | = 记录 |
+| 1.21.6 | STARTED | yes | yes | 0 | 0 | = 记录 |
+| 1.21.7 | STARTED | yes | yes | 0 | 0 | = 记录 |
+| 1.21.8 | STARTED | yes | yes | 0 | 0 | = 记录 |
+| 1.20.6 | STARTED | yes | yes | 0 | 17856 | 已知差异(§十三 已定位) |
+| 1.20.4 | STARTED | yes | yes | 0 | 14481 | = 记录 |
+| 1.20.2 | STARTED | yes | yes | 0 | 14631 | **差异 6 字节**(记录 14625) |
+| 1.20.1 | STARTED | yes | yes | 0 | 0 | = 记录 |
 
-�������춼Ҫ�ڷ���ǰ�����д��:
-* **1.21:46767 vs 14141** ���� ���Ƽ���(����֧�������� `tools-classpath.txt` ��ɷ�֧�����������ļƻ���ͬ)δ�� A/B;
-* **1.20.2:14631 vs 14625** ���� ֻ�� **6 �ֽ�**,ͬ������δ���͵�С����(�ܿ���Ҳ�Ǽƻ�/�������汾�����������־�в�),
-  �����߱���Ҳ�ؽ����ƻ�,���������¿���ͬԴ��
+两条差异都要在发布前结清或写清:
+* **1.21:46767 vs 14141** —— 机制假设(本分支生成器与 `tools-classpath.txt` 里旧分支生成器产出的计划不同)未做 A/B;
+* **1.20.2:14631 vs 14625** —— 只差 **6 字节**,同样是尚未解释的小差异(很可能也是计划/生成器版本差异带来的日志行差),
+  这条线本轮也重建过计划,所以两件事可能同源。
 
 ### 工程目录搬到 `I:\mods`(环境变更,已复验),以及一次**被我改坏又还原**的文档编码事故
 
-* 三个仓库(`OptifiNeoforge` / `-120x` / `-26x`)与 rig(`optifineoforge-test`)整体移到
-  **`I:\mods\...`**;`.gradle` 按选择**留在 C:** 不动(其它项目不受影响)。C: 释放约 6.3 GB(现 31.0 GB 空闲),
-  I: 余 577.7 GB。
-* 脚本/配置里的绝对路径已同步改写(14 个文本文件);**两个 worktree 用 `git worktree repair` 修好**
-  (它们的 `.git` 原来指向 `C:\...\OptifiNeoforge\.git\worktrees\...`),现在 `git worktree list` 显示
-  三条线都在新位置、分支未变(`1.21.x` / `1.20.x` / `26.x`),工作区干净。
+* 三个仓库(`OptifiNeoforge` / `-120x` / `-26x`)与 rig(`optifineoforge-test`)整体移到 **`I:\mods\...`**;
+  `.gradle` 按选择**留在 C:** 不动。C: 释放约 6.3 GB(现 31.0 GB 空闲),I: 余 577.7 GB。
+* 脚本/配置里的绝对路径已同步改写;**两个 worktree 用 `git worktree repair` 修好**
+  (它们原来的 `.git` 指向 `C:\...\OptifiNeoforge\.git\worktrees\...`),`git worktree list` 现在三条线都在新位置、
+  分支未变(`1.21.x` / `1.20.x` / `26.x`),工作区干净。
 * **复验**:在新位置跑 `retest-all.ps1 -Only 1.20.4` ⇒ STARTED / user yes / sound yes / 崩溃 0 /
   stderr **14481 = 记录值**(natives 也从 `I:\mods\optifineoforge-test\natives` 解析);rig 的十个主要脚本
   PowerShell 解析 0 错误。
-* **事故(如实记)**:我做路径改写时用 `Get-Content -Raw` 读、`Set-Content -Encoding UTF8` 写,而 PowerShell 5.1
-  的 `Get-Content` **默认按 ANSI(GBK)解码**,于是两份分支文档(`1.20.x` 的 `docs/MATRIX.md`、
-  `26.x` 的 `docs/DEVELOPMENT.md`)被"UTF-8→GBK→UTF-8"破坏成乱码并少了 9 行。**已用 git 精确还原并推送**
-  (`1.20.x` a4b08d7、`26.x` 3e64e89,提交信息写明了原因),两份文档现在与改写前**逐字节一致**;rig 侧也做了一次
-  反向解码。教训写在这里:**这台机器上读写 UTF-8 文本必须显式给 `-Encoding UTF8`**(读也一样)。
+* **事故与还原(如实记)**:路径改写那一步用 `Get-Content -Raw` 读、`Set-Content -Encoding UTF8` 写,而
+  PowerShell 5.1 的 `Get-Content` **默认按 ANSI(GBK)解码** —— 两份分支文档(`1.20.x` 的 `docs/MATRIX.md`、
+  `26.x` 的 `docs/DEVELOPMENT.md`)被破坏,已用 git **精确还原并推送**(a4b08d7 / 3e64e89)。
+  随后我为了"反向解码"又跑了一次启发式反转,而它的判据(连续两个 CJK 落在 `U+7E00..` 区间)会**误伤正常中文**
+  (例如"载荷"两字都在该区间),于是把本仓库的 `README.md`、`docs/PLAN.md`、`docs/VERSIONING.md`、
+  `docs/VERSIONS.md` 也改坏了(表现为整文件行行不同)。这四个文件**已从上一个提交精确还原**,本节是重新追加的。
+  教训:**这台机器上读写 UTF-8 文本必须显式 `-Encoding UTF8`(读也一样),而且不要用启发式去"反转"编码**。
