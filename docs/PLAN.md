@@ -2658,3 +2658,18 @@ stderr 0 字节、0 崩溃。启动期剩下的
 
 至此 **FML 10 三条线的光影与 FXAA 都通了**;1.21.6 / 1.21.7(用户已同意暂缓)若要继续,同一条修法可以直接用上。
 release 仍未发布:26.1.2(sound NO + 世界未启动)、1.21.6/1.21.7 的后处理链、以及逐线 FXAA 的像素级 A/B 量测仍在待办。
+
+#### FXAA 的像素级验证:装置已能跑 FML 10,但这一轮的 A/B 还没落地
+
+`run-fxaa-capture.ps1`(钉住存档 -> 启动客户端 -> 定时抓帧 -> 只停自己启动的那个进程)此前**只支持 ModLauncher
+线**:它按 `jars-<mc>\OptifiNeoforge-1.0.0+mc<mc>-registered.jar` + `optifine-*.jar` 选 모드,并用 `launch.ps1`。
+FML 10 线的两个 jar 名字完全不同(载荷 + 外壳/own-classes)、启动器也不同,所以**那三条线根本没法做像素对比**。
+已补上 `-Fml10` 开关:选 `optifine-payload-fml10.jar` + `optifine-own-classes.jar`,经 `launch-fml10.ps1` 启动,
+游戏参数用该启动器的 `-GameArgs`(ModLauncher 那侧叫 `-ExtraGameArgs`),并带上 `-JavaExe`/`-MainClass`/
+`-ExtraClasspath`;`-PrepareOnly` 干跑已验证(存档钉好、`antialiasingLevel=2`、`ofAaLevel=0`、`ofClouds:3` 都写对)。
+
+随后发起了 1.21.9 的 FXAA 关/开一对抓帧(`-FxaaLevel 0` 与 `-FxaaLevel 4`,同样的钉死存档)。发起时这一对**还在跑**
+(客户端在、`fxaa-run-fxaa-1219-off-*` 的日志已归档),但截稿时 `logs\fxaa-1219-*.png` **一个都还没落盘** ——
+也就是说 FML 10 这条抓帧路径的窗口解析/抓帧阶段还没有产出,像素级结论**尚未取得**,不能拿"没有编译错误"当
+"FXAA 生效"的替代。下一轮先查该脚本按命令行解析窗口这一段在 FML 10 进程上的行为,把这对帧拿到手,再跑
+`fxaa-check.ps1 -Off ... -On ...` 出边缘能量结论;之后才是 1.21.10/1.21.11 的同款 A/B。
