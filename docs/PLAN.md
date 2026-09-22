@@ -2589,3 +2589,35 @@ at `ModelBlockRenderer.tesselateWithAO:143`。这与 1.20.4 起 ml11 各线早�
 26.1.2 仍是 sound NO + 世界未启动。三条线的光影日志都带
 `Resource not found: minecraft:shaders/post/fxaa_of_{2,4}x.json` —— 后处理链告警未解,与 FXAA 量测一起列在待办。
 release 仍未发布。
+
+#### FXAA 真的被测到了,而且失败点是明确的:`minecraft:post/blit` 顶点着色器不存在
+
+装置侧先补了一个缺口:`run-save-shaders-all.ps1` **以前根本没有 -ShaderAaLevel 参数**,也就是"真正的 FXAA"
+(optionsshaders.txt 的 `antialiasingLevel`,GUI 标签就是 "FXAA 2x"/"FXAA 4x",由 `GameRenderer.setFxaaShader`
+应用)在整条流水线上**从来没有被请求过**——之前所有 `-AaLevel` 跑的都是 optionsof.txt 的多重采样,不是 FXAA。
+现在有了该参数(默认 0,并写进日志 tag),并且明确:FXAA 与 ofAaLevel 互斥,要测 FXAA 必须 `-AaLevel 0`。
+
+实测(FML 10 三条线,MakeUp-UltraFast-9.5e.zip,`-AaLevel 0 -ShaderAaLevel 2`,300 s):
+
+* 三条线都是 `STARTED / sound yes / 建档成功(4、6、9 个 region,level.dat 重写)/ 0 崩溃`;
+* 三条线都在请求 FXAA 时打出**同一对**新日志:
+
+```
+[Render thread/ERROR] [com.mojang.blaze3d.opengl.GlDevice/]: Couldn't find source for VERTEX shader (minecraft:post/blit)
+[Render thread/ERROR] [com.mojang.blaze3d.opengl.GlDevice/]: Couldn't compile pipeline minecraft:fxaa_of_2x/1: vertex shader minecraft:post/blit was invalid
+```
+
+也就是说:**FXAA 确实被启用了**(游戏按 `post_effect/fxaa_of_2x` 建了后处理管线,说明 OptiFine 那份
+`post_effect/fxaa_of_2x.json` 被读到了),但它引用的顶点着色器 `minecraft:post/blit` 在这条线上**没有对应的
+着色器源码**,于是管线编译失败 -> FXAA 静默不生效(不崩溃)。启动期那两条
+`Resource not found: minecraft:shaders/post/fxaa_of_{2,4}x.json` 是 OptiFine 仍在按旧路径探测自己的后处理链
+(1.21.6+ 起原版把后处理从 `shaders/post/` 迁到 `post_effect/`),与这个编译失败是同一件事的两面。
+
+下一步(已定,未做):按这一线**实际带有的**顶点阶段改写/补齐后处理链——要么随载荷提供缺失的
+`assets/minecraft/shaders/core/blit.vsh`(该线期望的 uniforms/attributes),要么把
+`post_effect/fxaa_of_{2,4}x.json` 改成引用该线确实存在的顶点阶段(OptiFabric 参考实现的两步做法:
+写自己的 `shaders/post/fxaa_of_*.json` 指向包内 `post/fxaa_of_*.vsh/.fsh`,并移除游戏自带的
+`post_effect/fxaa_of_*.json`)。三条线(以及同样"世界可以、光影包不加载"的 1.21.6/1.21.7)共用这一条修法。
+
+结论:**FXAA 目前不是绿的**,因此 release 不发。四条线(1.21.6、1.21.7、1.21.9、1.21.10、1.21.11)的 FXAA
+都卡在这一个原因上。
