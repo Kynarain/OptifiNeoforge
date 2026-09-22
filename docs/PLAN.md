@@ -2328,3 +2328,21 @@ work\1.21.9\runtime-1.21.9.jar    有 PacketProcessor,也没有 clientPreProcess
    最终修法是让 NeoForge 的那条成员不被冲掉(处理器顺序或"在保留前先取转换后的字节")。
 3. 三条线仍共有的 `Resource not found: minecraft:shaders/post/fxaa_of_{2,4}x.json` 与 1.21.6/7 同源,
    按 OptiFabric 两步(补写老式链文件 + 移除 `post_effect/` 那份)一起修。
+
+#### `PacketProcessor` 的根因量到**字段类型**这一层,以及"保留路径本身不覆盖"的事实
+
+`javap` 对照(1.21.9)给出不兼容的确切位置 —— 不是方法体,是**字段类型**:
+
+| | `packetsToBeHandled` 的类型 |
+|---|---|
+| 运行期(NeoForge) | `java.util.Queue<net.neoforged.neoforge.network.handling.QueuedPacket>` |
+| 载荷(OptiFine) | `java.util.Queue<net.minecraft.network.PacketProcessor$ListenerAndPacket<?>>` |
+
+NeoForge 自己的 `scheduleIfPossible` 往队列里放 `QueuedPacket`,而 OptiFine 的 `processQueuedPackets`
+按 `ListenerAndPacket` 取出来 ⇒ 必然 `ClassCastException`。**所以整类必须来自同一侧,且必须是运行期那一侧**
+(调用方是 NeoForge 的网络栈),这解释了为什么"只保留内部类"会失败。
+
+同时看到一件重要事实:`OptifinePayloadClassProcessor.transform()` 的保留分支(第 125-130 行)是
+**直接 `return`、不覆盖 `node`** —— 也就是"保留"= 不替换,保留的是**流水线交到我们手上的那份**。
+那么整类保留时 `clientPreProcessPacket` 仍缺失,只能说明 **NeoForge 自己那条成员在这个流水线里没有落到这个类上**
+(顺序或条件问题),而不是我们把它冲掉。这就是下面那条工作项的依据。
