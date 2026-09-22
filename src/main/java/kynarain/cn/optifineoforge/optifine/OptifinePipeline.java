@@ -183,6 +183,18 @@ public final class OptifinePipeline {
 							System.out.println("  " + stripped + ": no missing vertex stage to repair");
 						}
 					}
+					// ... and the vertex stage OptiFine wrote for the pre-1.21.6 pipeline, which the new one does not
+					// feed (the quad comes from gl_VertexID there). Left alone, FXAA compiles and renders black.
+					if(java.util.Arrays.asList(FxaaPostChainRepair.VERTEX_ENTRIES).contains(stripped)) {
+						byte[] repaired = FxaaPostChainRepair.applyVertex(data);
+						if(repaired != null) {
+							data = repaired;
+							System.out.println("  repaired " + stripped
+									+ ": rebuilt for this version's quad (gl_VertexID) and still emits texCoord + posPos");
+						} else {
+							System.out.println("  " + stripped + ": no pre-1.21.6 vertex stage to rebuild");
+						}
+					}
 					ZipEntry copy = new ZipEntry(stripped);
 					copy.setTime(entry.getTime());
 					out.putNextEntry(copy);

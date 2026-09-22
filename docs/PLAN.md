@@ -2772,3 +2772,31 @@ FML 10 线的两个 jar 名字完全不同(载荷 + 外壳/own-classes)、启动
 
 装置侧已把诊断改动**撤回**(`jars-1.21.9\optifine-own-classes.jar` 还原为仓库修法生成的那份),仓库里的
 `FxaaPostChainRepair` 仍只改 blit 趟 —— 现状是"选中 FXAA 会黑屏",这一点在文档里写清楚,免得被当成可用功能。
+
+#### FXAA 修好了,**并且这次是像素级验证通过**
+
+按上一节的诊断补齐了顶点阶段。修法(`FxaaPostChainRepair`,仍由 `OptifinePipeline.split` 应用)现在是两件事:
+
+1. **blit 趟**的 `vertex_shader` 从本线不存在的 `minecraft:post/blit` 改成该线自己的 `minecraft:core/screenquad`;
+2. **OptiFine 自带的 FXAA 顶点着色器内容整体重写**(`assets/minecraft/shaders/post/fxaa_of_{2,4}x.vsh`):
+   原版按 1.21.5 时代约定写(`in vec4 Position` + `ProjMat`,四边形来自顶点缓冲),而 1.21.9 的后处理渲染器
+   **用 `gl_VertexID` 直接造全屏三角形、不提供顶点属性**,所以那个 vsh 读的是垃圾 —— 这就是黑屏的来源。
+   重写后的 vsh 采用该线自己的四边形构造(照抄 `core/screenquad.vsh` 的 `gl_VertexID` 三角),并**保留
+   OptiFine 的 `posPos` 计算**(`posPos.xy/zw = texCoord ± 0.5/OutSize * (0.5 ∓ SubPixelShift)`),
+   因为它的片元阶段同时需要 `texCoord` 与 `posPos`;`SamplerInfo`/`FxaaConfig` 两个 UBO 该版本仍然提供
+   (原版自己的后处理着色器也在用 SamplerInfo)。
+
+**实测(1.21.9,钉死存档,`MakeUp-UltraFast-9.5e.zip`,游戏自身截图 F2,只改选项)**
+
+| 条件 | 三帧大小 | `fxaa-check` 结论 |
+|---|---|---|
+| FXAA 关(0) | 729781 / 722255 / 717817 B | 基准 |
+| FXAA 开(2x) | 730219 / 709779 / 710614 B | **FXAA VISIBLE** ×2 对 |
+
+两对帧:`mean edge energy 16.369 -> 15.677`(**-4.2%**)、硬边 `43501 -> 40907`(**-6.0%**),场景差异仅 **5.0%**;
+第二对:`17.623 -> 16.891`(**-4.1%**)、硬边 `45808 -> 42979`(**-6.2%**),场景差异 **4.9%**。
+即**同一场景下开 FXAA 后高频能量与硬边都下降** —— 这才是"FXAA 生效"的证据,不再是"没报错"或"画面变黑/变亮"。
+两次运行管线编译错误都是 0。
+
+**1.21.10 / 1.21.11** 已用同一条修法重新生成 classpath + 外壳 jar(管线分别报告:1.21.10 两条链都修、
+1.21.11 的 blit 无需修但 vsh 需要重写),它们的像素级 FXAA 验证留到下一轮跑同一对 F2 截图。
