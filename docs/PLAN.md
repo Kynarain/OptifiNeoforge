@@ -2242,3 +2242,35 @@ OptiFine 预览构建仍按 1.21.5 的写法。**因此这不是我们加载器�
 
 **结论(如实)**:按发布口径,现在真正"绿"的是**十一条 ModLauncher 线**(四项验收 + 建档光影),
 FML 10 四条线**只过了四项验收**;1.21.6 / 1.21.7 的光影包按用户指示暂缓。
+
+### FML 10 那四次"建档+光影"失败里的崩溃:三条线**同一个缺陷**,已定性到类,并找到了这条构建路径的入口
+
+读崩溃报告(1.21.9 / 1.21.10 / 1.21.11 三条线**逐字相同**,26.1.2 没有崩溃报告):
+
+```
+Description: Unexpected error
+java.lang.ClassCastException: class net.neoforged.neoforge.network.handling.QueuedPacket$CustomPayload
+    cannot be cast to class net.minecraft.network.PacketProcessor$...
+  at net.minecraft.network.PacketProcessor.processQueuedPackets(PacketProcessor.java:77)
+```
+
+配合两个量测,机制就清楚了:
+
+* 交付的 `jars-1.21.9\optifine-payload-fml10.jar` **含 3 个 `network/PacketProcessor*` 条目** ——
+  也就是**载荷自己的 `PacketProcessor`(及内部类)被装了进去**,而 NeoForge 的网络补丁往队列里放的是它自己的
+  `QueuedPacket$CustomPayload`,两边不是同一份编译产物 ⇒ 取出来强制转换时 ClassCastException;
+* `build-fml10-payload.ps1` 里 keep 计划的来源是**唯一一条路径**:`PayloadDrift` 写
+  `work\<mc>\plan\keep-runtime.proposed.txt`,脚本把它**原样复制**成载荷里的
+  `optifineoforge/keep-runtime.txt`(第 103-110 行),而 **FML 10 这四条线没有任何 rig 侧的
+  `keep-runtime-<mc>.txt`**(1.21.6/1.21.7/1.21.8 有,1.21.9/10/11/26.1.2 没有)—— 所以现在没有任何地方能塞进
+  "这几个类整类保留运行期版本"这条决定。
+
+**下一轮的修法(具体、与已有机制同形)**:
+1. 给 `build-fml10-payload.ps1` 加一个可选的 `keep-additions-<mc>.txt`(照 `add-line.ps1` 里
+   `stub-additions-<mc>.txt` 的写法:在复制 `keep-runtime.proposed.txt` 之后**追加**这些行);
+2. 给 1.21.9 / 1.21.10 / 1.21.11 各写一行
+   `net/minecraft/network/PacketProcessor	*`(如果 crash 换到内部类,再把
+   `net/minecraft/network/PacketProcessor$QueuedPacket	*` 一起加上);
+3. 用 `retest-all.ps1 -Group fml10 -Rebuild` 重建并重跑建档+光影。
+另外四条线共同的 `Resource not found: minecraft:shaders/post/fxaa_of_{2,4}x.json` 与 1.21.6/7 的 post chain 是
+同一件事,**按 OptiFabric 的两步修法一起做**(补写老式链文件 + 移除 `post_effect/` 那份)即可,不再单独排期。
