@@ -263,7 +263,18 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 			}
 			getProviders.desc = "()Ljava/util/Map;";
 			getId.name = "getKey";
-			getId.desc = "(Ljava/lang/Object;)Lnet/minecraft/resources/ResourceLocation;";
+			// The return type is read from the line, never written here. A resource location changed name inside
+			// this group's own span - 1.21.9 and 1.21.10 call it net.minecraft.resources.ResourceLocation and
+			// 1.21.11 renamed it net.minecraft.resources.Identifier - and the first version of this repair
+			// hardcoded ResourceLocation. Measured 2026-09-24 on 1.21.11, where every particle then died with
+			//   NoSuchMethodError: 'net.minecraft.resources.ResourceLocation
+			//       net.minecraft.core.Registry.getKey(java.lang.Object)'
+			//     at ParticleEngine.makeParticle(ParticleEngine.java:74)
+			//     at ClientLevel.doAddParticle(...)  <- GlowSquid.aiStep
+			// because that runtime's Registry.getKey returns Identifier. The name arrives in
+			// /optifineoforge/runtime-location.txt, which build-fml10-payload.ps1 writes from the runtime jar;
+			// the payload's own copy of the class names neither, so it cannot be discovered from the class.
+			getId.desc = "(Ljava/lang/Object;)L" + locationClass() + ";";
 			mapGet.owner = "java/util/Map";
 			mapGet.desc = "(Ljava/lang/Object;)Ljava/lang/Object;";
 			LOGGER.info("OptiFine payload: " + installed.name.replace('/', '.') + "." + method.name
@@ -1382,6 +1393,53 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 	}
 
 	private static java.util.Map<String, java.util.List<String[]>> stubs;
+
+	/** The internal name this runtime gives a resource location, from /optifineoforge/runtime-location.txt. */
+	private static String locationClass;
+
+	/**
+	 * The class this runtime uses for a resource location, read once.
+	 *
+	 * <p>It is a build-time fact carried in the payload rather than a guess in code, because the name changed
+	 * inside the FML 10 group's own span: 1.21.9 and 1.21.10 have {@code net.minecraft.resources.ResourceLocation}
+	 * and 1.21.11 has {@code net.minecraft.resources.Identifier} instead (measured 2026-09-24: each runtime jar
+	 * holds exactly one of the two, and that line's own mappings file names it 2377 times). The payload's copy of
+	 * the class under repair names neither - it asks for the removed int-keyed view - so the name cannot be read
+	 * out of the class itself, and a hardcoded one is wrong on one line or the other.</p>
+	 */
+	private static String locationClass() {
+		if(locationClass != null) {
+			return locationClass;
+		}
+		String name = null;
+		try(java.io.InputStream stream = OptifinePayloadClassProcessor.class
+				.getResourceAsStream("/optifineoforge/runtime-location.txt")) {
+			if(stream != null) {
+				java.io.BufferedReader reader = new java.io.BufferedReader(
+						new java.io.InputStreamReader(stream, java.nio.charset.StandardCharsets.UTF_8));
+				String line;
+				while((line = reader.readLine()) != null) {
+					line = line.trim();
+					if(!line.isEmpty() && !line.startsWith("#")) {
+						name = line;
+						break;
+					}
+				}
+			}
+		} catch(Throwable t) {
+			LOGGER.warn("OptiFine payload: could not read the runtime's resource-location class name: " + t);
+		}
+		if(name == null) {
+			name = "net/minecraft/resources/ResourceLocation";
+			LOGGER.warn("OptiFine payload: no /optifineoforge/runtime-location.txt in this jar, so a repair that "
+					+ "needs a resource location assumes " + name.replace('/', '.') + "; on a line that renamed it, "
+					+ "the repaired call fails with NoSuchMethodError the first time it runs");
+		} else {
+			LOGGER.info("OptiFine payload: this runtime's resource location is " + name.replace('/', '.'));
+		}
+		locationClass = name;
+		return locationClass;
+	}
 
 	/** The members a KEPT class must still be given, from /optifineoforge/stubs.txt: owner, name, descriptor. */
 	private static java.util.Map<String, java.util.List<String[]>> stubs() {

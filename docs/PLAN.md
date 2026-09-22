@@ -2395,3 +2395,87 @@ NeoForge 自己的 `scheduleIfPossible` 往队列里放 `QueuedPacket`,而 OptiF
 
 **下一轮第一件事**:用当前分支的 `ForgeApiShims`(kind 由调用点决定)重新生成三条线的 `optifine-own-classes.jar`,
 重建载荷并重跑建档+光影;26.1.2 的同类壳(`jars-26.1.2\optifine-own-classes.jar`)也一并复查。
+
+### FML 10 三条线:三个真实缺陷修掉,1.21.10 / 1.21.11 全绿;1.21.9 只剩光影包不被接受
+
+四道验收(GROUP=fml10,`-SkipRebuild`)在修完后:1.21.9 = STARTED/声音 yes/0 崩溃/stderr 0(记录值 0)、
+1.21.10 = STARTED/yes/0/0(记录 0)、1.21.11 = STARTED/yes/0/107(记录 107)。
+建档 + 光影(MakeUp-UltraFast-9.5e.zip,300 s):
+
+| 线 | 四道验收 | 建档(region/level.dat) | 光影包 | 崩溃 |
+|---|---|---|---|---|
+| 1.21.9 | STARTED, 0, 0 | 4 个 region,level.dat 已重写 | **未加载**(见下) | 0 |
+| 1.21.10 | STARTED, 0, 0 | 6 个 region,已重写 | `Loaded shaderpack: MakeUp-UltraFast-9.5e.zip` | 0 |
+| 1.21.11 | STARTED, 0, 107 | 9 个 region,已重写 | `Loaded shaderpack: MakeUp-UltraFast-9.5e.zip` | 0 |
+
+#### 缺陷一:Forge 外壳的**种类**是旧的(三条线都中)
+
+`javap` 实据(1.21.9,其余两条同):交付的
+`jars-1.21.9\optifine-own-classes.jar` 里
+`net/minecraftforge/client/extensions/common/IClientItemExtensions.class`(876 字节,2026-09-19)是
+**类**(有 `DUMMY` 字段和公开构造器),而载荷 `ItemInHandRenderer` 的调用点是
+`invokestatic IClientItemExtensions.of(ItemStack)` + `invokeinterface applyForgeHandTransform(...)`
+ -> `IncompatibleClassChangeError`。生成器本身在 `345ef82` 已按调用点决定种类,但
+`build-fml10-own-classes.ps1` **只在 `work\<line>\stubs` 为空时**才重新生成,于是三条线一直发着旧产物。
+重新生成后:1.21.9/10/11 分别 90/99/94 个外壳(原 87/95/90,多出来的正是一接口一份的 `$Noop`),
+`javap` 显示三条线现在都是 `public interface ... { static of(ItemStack); abstract applyForgeHandTransform(...) }`。
+修:该脚本改成**按新鲜度**判断(生成器类比产物新就重生成),`retest-all.ps1` 也补上 own-classes 的重建、
+并把重建失败写成 `NO-RESULT` 行(以前 `Select-String 'payload :'` 会把构建器的 throw 吞掉)。
+
+#### 缺陷二:NeoForge 的生命周期钩子被 OptiFine 的 `IntegratedServer` 顶掉(三条线都中)
+
+`Exception ticking world` / `IllegalStateException: Cannot get config value before config is loaded`
+(`NeoForgeServerConfig.removeErroringEntities`),`Suppressed Exceptions: ~~NONE~~`。
+`javap -c` 对照:运行时的 `IntegratedServer` 调
+`ServerLifecycleHooks.handleServerAboutToStart/Starting`,**服务端 config 就是在那里加载的**;
+载荷发的是 OptiFine 自己的 `srg/net/minecraft/client/server/IntegratedServer.class`,而 `keep-runtime.txt`
+没有它 —— 于是 `config\neoforge-server.toml` 从不生成、config 值永远未加载,第一条抛异常的生物 tick
+就死在 `Level.guardEntityTick` 自己的错误分支里,崩溃报告因此写的是 config 而不是那只生物(1.21.8 同一个病,
+当时的修法也是整类保留)。修:三条线 `keep-additions-*.txt` 加
+`net/minecraft/client/server/IntegratedServer<TAB>*`。修后 `neoforge-server.toml` 三条线都出现、该崩溃消失。
+
+#### 缺陷三:1.21.11 把 `ResourceLocation` 改名成 `Identifier`,而我们的处理器写死了旧名(1.21.11 独有)
+
+修完缺陷二后 1.21.11 走到渲染,报
+`NoSuchMethodError: 'net.minecraft.resources.ResourceLocation net.minecraft.core.Registry.getKey(java.lang.Object)'`
+at `ParticleEngine.makeParticle:74`。根因在我们的 `OptifinePayloadClassProcessor.repairParticleProviderLookup`:
+它把 `Registry.getId` 改写成 `getKey` 时**写死**了返回类型
+`getId.desc = "(Ljava/lang/Object;)Lnet/minecraft/resources/ResourceLocation;"`。
+实测:1.21.9/1.21.10 运行时只有 `ResourceLocation`,1.21.11 只有 `Identifier`(该线 mappings 文件里
+`Identifier` 出现 2377 次、`ResourceLocation` 0 次);OptiFine 自己的 1.21.11 jar 也用 `Identifier`(99 次)。
+同一个类里 `repairLegacyTagCreator` 早就踩过同一个坑并改成"找而不是写",这里漏了。
+修:名字不再写死,而是由 `build-fml10-payload.ps1` 从 `work\<line>\runtime-<line>.jar` 读出
+(两个名字必须恰好存在一个,否则构建失败),写进载荷资源 `optifineoforge/runtime-location.txt`,
+处理器读它。修后该线日志出现
+`OptiFine payload: this runtime's resource location is net.minecraft.resources.Identifier` 与
+`ParticleEngine.makeParticle reads the particle provider through the runtime's Map keyed by resource location`,
+粒子崩溃消失。
+顺带修掉一个同族陷阱:`build-fml10-payload.ps1` 里 `foreach ($line in ...)` 因为 PowerShell 变量名大小写不敏感,
+会覆盖脚本自己的 `$Line` 参数(实测报错路径变成 `work\1.21.11\runtime-net\minecraft\client\server\IntegratedServer\t*.jar`),
+循环变量已改名。
+
+#### 缺陷四:1.21.11 的 `ModelBlockRenderer$1` 开关表为 null(三条线都补上)
+
+修完缺陷三、世界真正开始渲染后:
+`NullPointerException: Cannot load from int array because "...ModelBlockRenderer$1.$SwitchMap$net$minecraft$util$TriState" is null`
+at `ModelBlockRenderer.tesselateWithAO:143`。这与 1.20.4 起 ml11 各线早已用整类保留修好的是同一个类同一个字段
+(其 `<clinit>` 不在任何 donor 里,字段被还原却没有初始化器);FML 10 线一直没带这条。修:三条线
+`keep-additions-*.txt` 加 `net/minecraft/client/renderer/block/ModelBlockRenderer$1<TAB>*`。
+
+#### 未解决:1.21.9 的光影包不被接受(只此一条线)
+
+日志只有成对的 `[Shaders] Load shaders configuration.` -> `[Shaders] No shaderpack loaded.`,既没有
+`Antialiasing is enabled` 也没有 `Fabulous Graphics`。已**证伪**的假设,按实测逐条记下:
+* 不是"包没装"或"路径不对":`<profile>\shaderpacks\MakeUp-UltraFast-9.5e.zip`(400417 字节)存在;
+* 不是 `shaderPacksDir` 指针错:`shadersConfig` 与 `shaderPacksDir` 都来自
+  `Minecraft.getInstance().gameDirectory`(`Shaders.<clinit>` 里相邻两条 `new File(...)`),
+  而该目录的 `options.txt`/`optionsof.txt` 确实被这个客户端写过(02:06:01);
+* 不是"配置文件没读到"的简单情形:`loadConfig()` 只在 `!configFile.exists()` 时 `storeConfig()`,
+  而日志里**没有** `Save shaders configuration.`,文件也没被覆盖(126B/写入时刻保持);
+* 不是属性名不同:`EnumShaderOption.<clinit>` 在 1.21.9 与 1.21.10 上的键/默认值逐条相同;
+* 也不是 base dir 的问题:把 `shaderPack` 写成**绝对路径**再启动,仍然是 `No shaderpack loaded.`
+  (`getShaderPack` 对绝对子路径会忽略父目录,若名字真的传到就必然成功)。
+结论方向:`getShaderPack` 收到的是**空名字**,即 1.21.9 这条线上 `loadShaderPack()` 看到的 `shadersConfig`
+里 `shaderPack` 还是 `loadConfig()` 写进去的空默认值(`ldc ""`),尽管文件存在且被读入。
+下一步最省的做法是给这条线做一次**临时探针**(在处理器安装 `net/optifine/shaders/Shaders` 时打一行
+`configFile/shaderPacksDir/shaderPack 值`),测完即撤;这条线达标前不发 release。
