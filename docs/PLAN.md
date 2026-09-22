@@ -2346,3 +2346,30 @@ NeoForge 自己的 `scheduleIfPossible` 往队列里放 `QueuedPacket`,而 OptiF
 **直接 `return`、不覆盖 `node`** —— 也就是"保留"= 不替换,保留的是**流水线交到我们手上的那份**。
 那么整类保留时 `clientPreProcessPacket` 仍缺失,只能说明 **NeoForge 自己那条成员在这个流水线里没有落到这个类上**
 (顺序或条件问题),而不是我们把它冲掉。这就是下面那条工作项的依据。
+
+### FML 10:把 stub 机制移植进处理器(代码+装配+逐线条目),崩溃**连推两步**,又撞上已在 ml11 修过的"外壳种类"
+
+本轮动手做了上一轮定下的机制移植(FML 10 处理器原本只认 keep-runtime / member-restores+donors / reparent):
+
+1. `OptifinePayloadClassProcessor` 新增 `stubs()`(读 `/optifineoforge/stubs.txt`,格式 `owner name desc [static]`)
+   与 `stubMissing(node)`,并在**保留分支**(第 125 行那段"直接 return"之前)调用它 —— 被保留的类正是
+   NeoForge 运行期注入成员丢失的地方;
+2. `build-fml10-payload.ps1` 把 `stub-additions-<Line>.txt` 装成载荷里的 `optifineoforge/stubs.txt`
+   (与 keep 追加同形,三条线都打印 `stub list: N member(s)`);
+3. 三条线加 `net/minecraft/network/PacketProcessor	clientPreProcessPacket	(Lnet/minecraft/network/protocol/Packet;)V	static`。
+
+**实测推进(逐条都是真机崩溃报告)**:
+
+| 阶段 | 结果 |
+|---|---|
+| 整类保留、无 stub | `NoSuchMethodError: PacketProcessor.clientPreProcessPacket(Packet)` at `ListenerAndPacket.handle:93` |
+| 补了 **实例**桩 | 桩确实生效(日志 `stubbed … clientPreProcessPacket`),但调用点是 `invokestatic` ⇒ `IncompatibleClassChangeError: Expected static method …` |
+| 补了 **static** 桩(本轮) | 这一处**解决**了,而且世界明显往前走:**首次写出 2 个 region 文件**(此前一直 0) |
+| 现在的下一步 | `IncompatibleClassChangeError: Method 'net.minecraftforge.client.extensions.common.IClientItemExtensions …'` at `ItemInHandRenderer.renderArmWithItem:536` |
+
+最后这条**不是新问题**:它就是 ml11 线早就修过的"**Forge 外壳的 kind 要按调用点决定**"(`af0b296` / `345ef82`:
+`IClientItemExtensions` 在载荷里是**接口**,而生成出来的壳是**类**,于是 `invokeinterface` 撞上类)。
+⇒ FML 10 的载荷需要**用当前 `ForgeApiShims` 重新生成 Forge 壳**(kind 由调用点决定),这是下一轮第一件事。
+
+另外三条线仍共有 `Resource not found: minecraft:shaders/post/fxaa_of_{2,4}x.json`(与 1.21.6/7 同源),
+按 OptiFabric 两步(补写老式链文件 + 移除 `post_effect/` 那份)一起修。

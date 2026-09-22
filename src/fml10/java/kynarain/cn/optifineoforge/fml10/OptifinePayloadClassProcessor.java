@@ -123,6 +123,7 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 		ClassNode finished = new ClassNode();
 		new ClassReader(bytes).accept(finished, 0);
 		if(keepWhole().contains(node.name)) {
+			stubMissing(node);
 			keptWhole++;
 			LOGGER.info("OptiFine payload: " + node.name.replace('/', '.') + " is kept as the runtime's own "
 					+ "class (keep plan), not replaced [" + keptWhole + " so far]");
@@ -1378,5 +1379,103 @@ public final class OptifinePayloadClassProcessor extends SimpleClassProcessor {
 			out.write(buffer, 0, count);
 		}
 		return out.toByteArray();
+	}
+
+	private static java.util.Map<String, java.util.List<String[]>> stubs;
+
+	/** The members a KEPT class must still be given, from /optifineoforge/stubs.txt: owner, name, descriptor. */
+	private static java.util.Map<String, java.util.List<String[]>> stubs() {
+		if(stubs != null) {
+			return stubs;
+		}
+		java.util.Map<String, java.util.List<String[]>> result = new java.util.HashMap<>();
+		try(java.io.InputStream stream = OptifinePayloadClassProcessor.class
+				.getResourceAsStream("/optifineoforge/stubs.txt")) {
+			if(stream != null) {
+				java.io.BufferedReader reader = new java.io.BufferedReader(
+						new java.io.InputStreamReader(stream, java.nio.charset.StandardCharsets.UTF_8));
+				String line;
+				while((line = reader.readLine()) != null) {
+					if(line.startsWith("#") || line.isBlank()) {
+						continue;
+					}
+					String[] parts = line.split("\\s+");
+					if(parts.length >= 3) {
+						result.computeIfAbsent(parts[0], key -> new java.util.ArrayList<>())
+								.add(new String[] {parts[1], parts[2], parts.length > 3 ? parts[3] : ""});
+					}
+				}
+				LOGGER.info("OptiFine payload: stub list: "
+						+ result.values().stream().mapToInt(java.util.List::size).sum() + " member(s) across "
+						+ result.size() + " class(es)");
+			}
+		} catch(Throwable t) {
+			LOGGER.warn("OptiFine payload: could not read the stub list: " + t);
+		}
+		stubs = result;
+		return stubs;
+	}
+
+	/** Adds the listed members to a kept class when it lacks them; default bodies, as the ml11 loader does. */
+	private static void stubMissing(org.objectweb.asm.tree.ClassNode node) {
+		java.util.List<String[]> wanted = stubs().get(node.name);
+		if(wanted == null) {
+			return;
+		}
+		for(String[] member : wanted) {
+			boolean present = false;
+			for(org.objectweb.asm.tree.MethodNode existing : node.methods) {
+				if(existing.name.equals(member[0]) && existing.desc.equals(member[1])) {
+					present = true;
+					break;
+				}
+			}
+			if(present) {
+				continue;
+			}
+			int stubAccess = org.objectweb.asm.Opcodes.ACC_PUBLIC | org.objectweb.asm.Opcodes.ACC_SYNTHETIC;
+			if(member.length > 2 && "static".equals(member[2])) {
+				// The call site decides: NeoForge calls clientPreProcessPacket with invokestatic, and an instance stub
+				// answered that with "IncompatibleClassChangeError: Expected static method" (measured 2026-09-23).
+				stubAccess |= org.objectweb.asm.Opcodes.ACC_STATIC;
+			}
+			org.objectweb.asm.tree.MethodNode stub = new org.objectweb.asm.tree.MethodNode(stubAccess, member[0],
+					member[1], null, null);
+			org.objectweb.asm.Type returnType = org.objectweb.asm.Type.getReturnType(member[1]);
+			switch(returnType.getSort()) {
+				case org.objectweb.asm.Type.VOID ->
+						stub.instructions.add(new org.objectweb.asm.tree.InsnNode(org.objectweb.asm.Opcodes.RETURN));
+				case org.objectweb.asm.Type.BOOLEAN, org.objectweb.asm.Type.BYTE, org.objectweb.asm.Type.CHAR,
+						org.objectweb.asm.Type.SHORT, org.objectweb.asm.Type.INT -> {
+					stub.instructions.add(new org.objectweb.asm.tree.InsnNode(org.objectweb.asm.Opcodes.ICONST_0));
+					stub.instructions.add(new org.objectweb.asm.tree.InsnNode(org.objectweb.asm.Opcodes.IRETURN));
+				}
+				case org.objectweb.asm.Type.LONG -> {
+					stub.instructions.add(new org.objectweb.asm.tree.InsnNode(org.objectweb.asm.Opcodes.LCONST_0));
+					stub.instructions.add(new org.objectweb.asm.tree.InsnNode(org.objectweb.asm.Opcodes.LRETURN));
+				}
+				case org.objectweb.asm.Type.FLOAT -> {
+					stub.instructions.add(new org.objectweb.asm.tree.InsnNode(org.objectweb.asm.Opcodes.FCONST_0));
+					stub.instructions.add(new org.objectweb.asm.tree.InsnNode(org.objectweb.asm.Opcodes.FRETURN));
+				}
+				case org.objectweb.asm.Type.DOUBLE -> {
+					stub.instructions.add(new org.objectweb.asm.tree.InsnNode(org.objectweb.asm.Opcodes.DCONST_0));
+					stub.instructions.add(new org.objectweb.asm.tree.InsnNode(org.objectweb.asm.Opcodes.DRETURN));
+				}
+				default -> {
+					// Optional must not answer null: its callers write isPresent()/isEmpty() immediately.
+					if("java/util/Optional".equals(returnType.getInternalName())) {
+						stub.instructions.add(new org.objectweb.asm.tree.MethodInsnNode(org.objectweb.asm.Opcodes.INVOKESTATIC,
+								"java/util/Optional", "empty", "()Ljava/util/Optional;", false));
+					} else {
+						stub.instructions.add(new org.objectweb.asm.tree.InsnNode(org.objectweb.asm.Opcodes.ACONST_NULL));
+					}
+					stub.instructions.add(new org.objectweb.asm.tree.InsnNode(org.objectweb.asm.Opcodes.ARETURN));
+				}
+			}
+			node.methods.add(stub);
+			LOGGER.info("OptiFine payload: stubbed " + node.name.replace('/', '.') + "." + member[0] + member[1]
+					+ " on a class kept from the runtime");
+		}
 	}
 }
