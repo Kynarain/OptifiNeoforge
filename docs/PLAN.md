@@ -2673,3 +2673,26 @@ FML 10 线的两个 jar 名字完全不同(载荷 + 外壳/own-classes)、启动
 也就是说 FML 10 这条抓帧路径的窗口解析/抓帧阶段还没有产出,像素级结论**尚未取得**,不能拿"没有编译错误"当
 "FXAA 生效"的替代。下一轮先查该脚本按命令行解析窗口这一段在 FML 10 进程上的行为,把这对帧拿到手,再跑
 `fxaa-check.ps1 -Off ... -On ...` 出边缘能量结论;之后才是 1.21.10/1.21.11 的同款 A/B。
+
+#### FXAA 像素 A/B:抓帧路径修好了,但这一对本身跑错了条件(无光影包)
+
+上一轮"没有帧落盘"的原因找到了,是**装置缺陷**而不是客户端问题:`run-fxaa-capture.ps1` 在命令行里按
+`MojangTricksIntelDriversForPerformance|net\.minecraft|BootstrapLauncher` 认"游戏窗口",而 **FML 10 客户端的命令行里
+这三个都没有**(实测 1.21.9:命令行含 `DiagnosticClientAny`/`fml.startup.Client`,窗口标题是
+`Minecraft NeoForge* 1.21.9`,但就是不含 `net.minecraft`)。于是 `$windowed` 为空 -> `$title` 为空 ->
+打印 "NO WINDOW ... nothing to capture" -> 一帧不抓,客户端一直跑到自己的超时。
+已在该过滤器里补上 `fml\.startup\.Client|DiagnosticClient`,并实测通过:off/on 两次运行各抓到 3 帧
+(870x519,标题 `Minecraft NeoForge* 1.21.9 - Singleplayer`,每次都只停自己启动的那个 pid)。
+
+但这一对的**像素结论仍然无效**,而且原因换了一个,同样记清楚:
+
+* 抓帧脚本**不支持 `-Pack`**,它经 `test-save-shaders.ps1 -PrepareOnly` 写出的 `optionsshaders.txt` 是
+  `shaderPack=`(空)—— 三次 FXAA-on 帧的日志里就是 `[Shaders] No shaderpack loaded.`;
+* 结果:FXAA 关的三帧是正常画面(平均亮度 165.6),FXAA 4x 的三帧**几乎全黑**(平均亮度 21.6,三帧字节数完全相同
+  16328),`fxaa-check.ps1` 判 **INCONCLUSIVE**(两帧 84.7% 像素变化,远超可比的阈值)。
+* 也就是说,这一对测的是"**没有光影包时开 FXAA**"的画面,不是闸门条件(有光影包 + FXAA)。
+  下一步必须先给抓帧脚本加 `-Pack`(与闸门同条件),用 FXAA **2x**(不是 4x)重跑,再判"黑帧"是否只是
+  "无光影包 + FXAA"的产物;若带包仍黑,那才是需要追的真缺陷。
+
+**结论:FXAA 的像素级生效证据仍未取得**(编译通过与像素生效是两件事);已证实的是:三条 FML 10 线 FXAA 2x
+不再有管线编译错误、0 崩溃(上一节)。
