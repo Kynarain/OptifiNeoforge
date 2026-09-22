@@ -2274,3 +2274,27 @@ java.lang.ClassCastException: class net.neoforged.neoforge.network.handling.Queu
 3. 用 `retest-all.ps1 -Group fml10 -Rebuild` 重建并重跑建档+光影。
 另外四条线共同的 `Resource not found: minecraft:shaders/post/fxaa_of_{2,4}x.json` 与 1.21.6/7 的 post chain 是
 同一件事,**按 OptiFabric 的两步修法一起做**(补写老式链文件 + 移除 `post_effect/` 那份)即可,不再单独排期。
+
+### FML 10:构建链修通 + `PacketProcessor` 整类保留**生效**,崩溃随之推进一步(未解决)
+
+* **构建链(已修)**:`build-fml10-payload.ps1` 第 53 行要求仓库里已编译的 fml10 源集,而编译**必须带该线的目标**:
+  `gradlew -p <repo> compileJava -Pmc=<mc> -Pneoforge=<ver> -Pmountpoint=fml10 -Ptarget_java_version=21`
+  (不带就是 15 个 `程序包 net.neoforged.neoforgespi.transformation 不存在`)。此前每次 `-Rebuild` 都因为
+  `retest-all.ps1` 把构建器输出过滤成只看 `payload :` 而**把抛错吞掉**,一直用旧载荷 —— 这个过滤器必须改。
+* **钩子(已生效)**:三条线现在都打印 `keep additions: 1 line(s)`,交付 jar 的 keep 计划里确实多了
+  `net/minecraft/network/PacketProcessor	*`。
+* **崩溃换了一步(这是本轮最有信息量的量测)**:原来的
+  `ClassCastException: QueuedPacket$CustomPayload → PacketProcessor$…` **没了**,现在是
+  ```
+  java.lang.NoSuchMethodError: 'void net.minecraft.network.PacketProcessor.clientPreProcessPacket(
+      net.minecraft.network.protocol.Packet)'
+    at net.minecraft.network.PacketProcessor$ListenerAndPacket.handle(PacketProcessor.java:93)
+  ```
+  (`crash-2026-09-23_00.20.16-client.txt`)。也就是说**整类保留运行期版本之后,运行期自己的
+  `ListenerAndPacket.handle` 需要 NeoForge 给这个类加过的成员 `clientPreProcessPacket(Packet)`,而它不在**。
+  修法方向有两条,下一轮二选一实测:①把这条成员按已有机制补回来(成员级恢复/补桩,注意它是"每个包都调用"的路径,
+  语义要正确);②**收窄保留范围**——只把不兼容的内部类(`PacketProcessor$QueuedPacket`)整类保留,让
+  `PacketProcessor` 本体仍走载荷(这样 NeoForge 的注入与 OptiFine 的补丁都在同一份上)。
+* 三条线(1.21.9 / 1.21.10 / 1.21.11)的建档+光影**仍 FAILED**,各崩 1 次(上面这条错误);
+  它们也仍报 `Resource not found: minecraft:shaders/post/fxaa_of_{2,4}x.json`,与 1.21.6/7 同源,
+  按 OptiFabric 那两步(补写老式链文件 + 移除 `post_effect/` 那份)一并处理。
