@@ -3057,3 +3057,20 @@ FXAA 本来就没有可平滑的边缘,`fxaa-check` 于是给出 NOT VISIBLE。�
 
 **下一步(顺序)**:①窗口解析改成"按命令行锁定我方客户端 → 取句柄";②`pin-save-state.ps1` 扩展为同时钉 `Pos`,
 用写存档代替游戏内 `/tp`,彻底不再依赖聊天栏;③重做 1.21.4 的成对抓帧与判定;④继续 1.20.x/1.21 各线。
+
+#### 26.1.2 的"载荷缺粒子修复"已经不成立(实测),剩下的是"世界没起来 + sound NO"
+
+按目标里挂着的那一条"26.1.2 的离线载荷缺粒子修复",跑了一次 `repair-26.1.2-payload.ps1 -DryRun`(只读检查):
+
+* 脚本的报告是:`no method of ... ParticleEngine reads the particle provider through
+  ParticleResources.getProviders()/Registry.getId()/Int2ObjectMap.get(), so nothing was repaired` ——
+  也就是**它要找的那段旧形状已经不存在了**,紧接着它自己打出
+  `makeParticle calls ParticleResources.getProviders()Ljava/util/Map;`,正是**修好之后**的写法;
+* 交付件的时间也对得上:`jars-26.1.2\optifine-26.1.2-neoforge.jar` 是 **2026-09-20 08:03**(10170792 字节),
+  而 `.before-particle-fix` 备份是 09-19 23:50(10018170 字节)—— 修复是在那次之后落进交付件的。
+
+**结论:这一条可以从待办里划掉**,26.1.2 真正剩下的问题是**"世界从未启动 + Sound engine 起不来"**,以及它的
+`optifine-own-classes.jar` 仍是 09-19 的产物(没有带上这一轮为 FML 10 写的两个修复:`ShadersPackLoadedRepair`
+与 `FxaaPostChainRepair`)。注意 26.1.2 走的是**它自己那套**(OptiFine 自带类处理器、载荷是重建过的 OptiFine jar),
+所以那两条修法不会自动落到它身上 —— 需要先按它的架构重新生成 own-classes,再实跑一次看世界为什么不启动
+(而不是继续沿用"载荷缺修复"这个已经过期的判断)。
