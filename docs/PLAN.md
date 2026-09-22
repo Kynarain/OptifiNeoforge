@@ -2479,3 +2479,16 @@ at `ModelBlockRenderer.tesselateWithAO:143`。这与 1.20.4 起 ml11 各线早�
 里 `shaderPack` 还是 `loadConfig()` 写进去的空默认值(`ldc ""`),尽管文件存在且被读入。
 下一步最省的做法是给这条线做一次**临时探针**(在处理器安装 `net/optifine/shaders/Shaders` 时打一行
 `configFile/shaderPacksDir/shaderPack 值`),测完即撤;这条线达标前不发 release。
+
+#### 更正:1.21.9 那条"绝对路径"实验本身无效(`Properties` 会吃掉反斜杠)
+
+上一条把"绝对路径仍不被接受"当成"base dir 不是问题"的实据,这是**错的**,记录如下以免下次重犯:
+`Shaders.loadConfig()` 用 `shadersConfig.load(new FileReader(configFile))`,即 `java.util.Properties`
+的解析规则,而它把 `\` 当转义符 —— 写进去的
+`shaderPack=I:\mods\optifineoforge-test\game\neoforge-21.9.16-beta\shaderpacks\MakeUp-UltraFast-9.5e.zip`
+读回来会变成 `I:modsoptifineoforge-testgame...`(每个 `\x` 被吞掉一个字符,未知转义直接丢反斜杠),
+于是 `isFile()` 必然为假 -> `getShaderPack` 返回 null -> `No shaderpack loaded.`。
+也就是说这次运行只证明了"名字不是原样传进去的",**没有**排除 `shaderPacksDir` 指向别处。
+`Properties` 同时是 `optionsshaders.txt` 里 `shaderPack` 值的真实解析器,所以下一个探针应当直接打印
+`Shaders.configFile`、`Shaders.shaderPacksDir`、`shaderPacksDir.exists()` 和
+`shadersConfig.getProperty("shaderPack","<absent>")`,而不是再靠改文件猜。
