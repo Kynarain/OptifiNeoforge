@@ -3092,3 +3092,24 @@ FXAA 本来就没有可平滑的边缘,`fxaa-check` 于是给出 NOT VISIBLE。�
 也就是说:同一个"标题看起来一模一样"的客户端,该助手能凭命令行把它认成**不是我们家的**,这正是前几轮
 0 帧问题的根因所在。下一步把它接进抓帧流程(F2 之前先用它确认"本次运行的客户端确实是我方的、且窗口可用"),
 再做 1.21.4 的成对抓帧;随后才是 `pin-save-state.ps1` 钉 `Pos`(绕开聊天栏)与 1.20.x/1.21 各线。
+
+#### 用写存档来钉玩家位置:代码加了,但**还没验证通过**,不能算可用
+
+想法(接上一节):与其在跑着的客户端里敲 `/tp`(聊天栏会吃掉截图键),不如直接写存档的 `playerdata\*.dat`
+—— `pin-save-state.ps1` 本来就是这么钉视角的。于是给它加了 `-PlayerX/-PlayerY/-PlayerZ`,写 `Pos`(list<double>[3],
+与 `Rotation` 同一套"定宽原地改写、不动长度前缀"的做法)。
+
+但当场实测暴露两件事,**功能目前不可用**:
+
+1. `Set-Fixed` **没有 'double' 分支**(只有 byte/int/long/float),照现在的代码会抛
+   `unsupported write kind double` —— 必须先补上这一种宽度;
+2. 更关键:`-Dump` 读回来是 `Rotation: list<0> []` 与 `Pos: list<0> []`,**列表元素个数读成了 0**,
+   与事实不符(该存档玩家的 `Pos`/`Rotation` 显然有 3 与 2 个元素)。在这一点解释清楚之前,
+   `Payload+5/+13/+21` 这几个偏移就不能信 —— 也就是说"钉 Pos"现在既没写成也没读对。
+
+因此**本轮不宣称任何进展落地**:`-PlayerX/-PlayerY/-PlayerZ` 只是半成品。下一步:①补 `Set-Fixed` 的 'double';
+②用十六进制对照(直接 dump `playerdata\*.dat` 解压后的字节)查清列表计数为什么读成 0、必要时修 `Read-Nbt`;
+③读数正确之后,才用 0/100/0 钉住 1.21.4 的相机并重做成对抓帧。
+
+(The dump reading list counts as 0 also affects the *existing* Rotation pinning if it is the same bug - the rotation
+pin has been used for FXAA captures all along, so this needs checking rather than assuming.)
