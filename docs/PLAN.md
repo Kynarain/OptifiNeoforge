@@ -2741,3 +2741,34 @@ FML 10 线的两个 jar 名字完全不同(载荷 + 外壳/own-classes)、启动
 开的一侧边缘能量更低(硬边更少),那才算"FXAA 生效"。
 
 结论:FXAA 仍未通过 —— 现在是**实测到"开了就黑屏"**,因此 release 不发。
+
+#### FXAA 黑屏的根因确认:OptiFine 那条链的**顶点阶段**是旧约定的,换成该线自身的阶段就恢复可见
+
+上一节把"FXAA 打开后近乎全黑"记为真缺陷,并怀疑是"只修了 blit 趟、FXAA 趟仍用 OptiFine 自带的旧约定 vsh"。
+这一轮用**诊断性**(只改装置里那份 jar,不进仓库修法)验证了这一点:
+
+* 把 `post_effect/fxaa_of_{2,4}x.json` 里 **FXAA 趟**的顶点阶段也改成 `minecraft:core/screenquad`
+  (只改这一处,blit 趟保持已修状态),重跑 FXAA 2x 并用游戏自身截图取帧:
+
+| 条件 | 平均亮度 | 颜色数 | 管线编译错误 |
+|---|---|---|---|
+| FXAA 关 | 134.2 | 166 | 0 |
+| FXAA 开,**只修 blit 趟**(仓库现在的状态) | **11.8 / 14.3**(近乎全黑) | 118 | 0 |
+| FXAA 开,**两趟都用该线 screenquad**(诊断) | **182.2 / 181.1**(画面可见) | 118 / 119 | 0 |
+
+结论:**黑屏来自 OptiFine 自带的 FXAA 顶点着色器**。它按 1.21.5 时代的约定写(`in vec4 Position`、`Projection`、
+`SamplerInfo`),而 1.21.9 的后处理渲染器给的是新约定(原版自己的 `core/screenquad.vsh` 只用 `gl_VertexID`
+造全屏三角形,并只输出 `out vec2 texCoord`)——它能编译但输出不对,于是把黑写进 `swap`,blit 趟照抄回
+`minecraft:main`。
+
+但"可见"不等于"正确":`screenquad` 只提供 `texCoord`,而 OptiFine 的 `post/fxaa_of_2x.fsh` 还需要
+**`in vec4 posPos`**(由它自己那个 vsh 算出的 `{rcpFrame.xy*0.5+xy, xy-rcpFrame*0.5}`)。诊断运行里 `posPos`
+是未定义值,画面虽然回来了(而且偏亮,182 对 134),但那是取样错位的结果,不是 FXAA。
+
+**因此正确的下一步是补齐顶点阶段**:或给该线写一个新的顶点着色器,按新约定(`gl_VertexID` 全屏三角形 +
+`SamplerInfo` 的 `OutSize`/`InSize`)同时输出 `texCoord` 与 `posPos`;或把 FXAA 的片元阶段改成只用 `texCoord`
+自算偏移(OptiFabric 参考实现走的就是后者那条"自带 vsh/fsh + 改 JSON"的路)。做完之后必须用同一对
+**游戏自身截图**判定:关/开两帧是同一场景、且开的一侧硬边更少,才算 FXAA 生效。
+
+装置侧已把诊断改动**撤回**(`jars-1.21.9\optifine-own-classes.jar` 还原为仓库修法生成的那份),仓库里的
+`FxaaPostChainRepair` 仍只改 blit 趟 —— 现状是"选中 FXAA 会黑屏",这一点在文档里写清楚,免得被当成可用功能。
