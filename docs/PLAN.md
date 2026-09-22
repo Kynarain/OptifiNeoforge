@@ -2102,3 +2102,29 @@ fragment_shader / No key vertex_shader` —— 1.21.5 起后处理链格式从 `
 `post_effect`(vertex_shader/fragment_shader),而这条线的 OptiFine 构建仍是旧格式;要给它定性还欠一次对照
 (同一份 OptiFine 放进同版本、**不带**我们加载器的 NeoForge 跑一次,看是否同样报错 —— 那才叫"OptiFine 与版本不兼容",
 现在的说法只是"载荷与解析器不匹配")。
+
+### 1.21.6 / 1.21.7 光影包加载失败**定位到具体字段**:是 OptiFine 那份 JSON 的 schema 落后于该版本,不是加载器
+
+把三个版本的 OptiFine jar(1.21.4 可用、1.21.6/1.21.7 不可用)与我们的载荷 jar 逐个比较后,事实是:
+**三个 jar 里那四个资源一模一样**(`assets/minecraft/post_effect/fxaa_of_{2,4}x.json` 各 620 字节、
+`assets/minecraft/shaders/post/fxaa_of_{2,4}x.json` 各 719/443 字节),也就是说**资源没有被我们的流水线动过**,
+问题在这份资源本身。把 620 字节那份打开看,它的 schema 是:
+
+```json
+{ "targets": { "swap": {} },
+  "passes": [ { "program": "minecraft:post/fxaa_of_2x", "inputs": [ { "sampler_name": "In", "target": "minecraft:main" } ], "output": "swap" },
+              { "program": "minecraft:post/blit",        "inputs": [ { "sampler_name": "In", "target": "swap" } ],         "output": "minecraft:main" } ] }
+```
+
+而 1.21.6/7 的解析器要的是**每个 pass 自带 `vertex_shader` / `fragment_shader`**(报错原文就是
+`No key fragment_shader in MapLike[{"program":"minecraft:post/blit","inputs":[...],"output":"minecraft:main"}]`
+以及同一份里的 `No key vertex_shader`)—— 也就是 1.21.5 到 1.21.6 之间**后处理链 schema 又改了一次**,而这条线的
+OptiFine 预览构建仍按 1.21.5 的写法。**因此这不是我们加载器的缺陷**(同一份资源在原始 jar 里就是这样),
+而是"载荷与运行期版本的 schema 不匹配"。
+
+**候选修法(具体到可以照做,下一轮试)**:由我们的 jar 提供一份改写成新 schema 的覆盖资源
+(`assets/minecraft/post_effect/fxaa_of_{2,4}x.json`,把每个 pass 的 `"program": X` 换成
+`"vertex_shader": X, "fragment_shader": X`,其余 `inputs`/`output` 不动;两个 program 名
+`minecraft:post/fxaa_of_2x`、`minecraft:post/blit` 都已在 OptiFine 的旧格式文件里被引用,说明它们存在)。
+判定标准很简单:重建后在 1.21.6/1.21.7 上重跑建档光影,看 `[Shaders] Loaded shaderpack:` 是否出现、
+`Failed to parse post chain` 是否消失。
