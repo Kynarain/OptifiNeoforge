@@ -2819,3 +2819,20 @@ FML 10 线的两个 jar 名字完全不同(载荷 + 外壳/own-classes)、启动
 **至此 FML 10 三条线(1.21.9/1.21.10/1.21.11)在"启动验收 + 建档 + 光影包 + FXAA"四项上全部有正向实测。**
 仍未完成的线:1.21.6 / 1.21.7(世界可以、光影包不加载,后处理链同一族,用户已同意暂缓)、26.1.2(sound NO +
 世界未启动)。release 仍未发布。
+
+#### 1.21.6 / 1.21.7 的"光影包不加载"不是同一个原因
+
+这两条线(用户已同意暂缓)一直是"世界可以、0 崩溃,但光影包不加载"。既然刚在 1.21.9 上查到两个真实缺陷
+(丢失分支的 `loadShaderPack`、旧约定的 FXAA 着色器),先用同一个工具把它们的 OptiFine jar 查了一遍,
+结论是**这两处都不是**:
+
+* `jars-1.21.6\optifine-OptiFine_1.21.6_HD_U_J6_pre3.jar` 与
+  `jars-1.21.7\optifine-OptiFine_1.21.7_HD_U_J6_pre7.jar` 里 `srg/net/optifine/shaders/Shaders.class` 的
+  `shaderPackLoaded` 指令序列是 `PUTSTATIC(结果) -> GETSTATIC + IFEQ(判定)`,**中间没有那对多余的
+  `ICONST_0; PUTSTATIC`**(1.21.9 的 J7_pre2 有,1.21.11 的 J9 也没有)—— 也就是这两条线的
+  `loadShaderPack` 是"修好"的形状,不是 1.21.9 那个缺陷。
+* 两者的 OptiFine jar **都自带** `assets/minecraft/post_effect/fxaa_of_{2,4}x.json`(与 1.21.9/10 一样),
+  说明后处理链的位置是对的;它们的光影包不加载另有原因,需要单独调查(下一步:抓这两条线启动时
+  `Shaders.loadShaderPack` 前后的日志与 `getShaderPack` 的输入,像当初对 1.21.9 做的那样,而不是套用同一结论)。
+
+因此 1.21.6 / 1.21.7 的问题继续保持在"待调查",不把它算作已修。
