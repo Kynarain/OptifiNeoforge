@@ -3813,3 +3813,55 @@ stderr 为什么从 14141 涨到 46767,以及为什么它和"换路径/换 -Fres
 安静返回 null —— 出厂的 mod 不该为一批**按设计不存在**的类打 11 条 NPE 栈。做完之后按本段这份证据
 **重新记录 1.21 的 stderr 基线**(不是无条件重基线:要先证明并写清"多出来的都是 Forge 专有类 + 无 ERROR/SEVERE + 无崩溃")。
 重建 `jars-1.21` 时注意 `add-line.ps1` 只在产物不存在时才跑 `prepare-line` 的复用陷阱。
+
+#### 1.21 的 11 条 NPE **根因已定到字节码**:是 OptiFine 自己的递归漏了"接口没有父类",不是 Forge 类缺失
+
+上一轮我把根因归到"多探测了 5 个 Forge 专有类"。**那只说对了一半**,真正触发 NPE 的是**类的形状**。
+把 `srg/net/optifine/reflect/FieldLocatorName.class`(1.21 预备 jar 内,2582 字节)反编译出来,方法体是:
+
+```java
+private Field getDeclaredField(Class cls, String name) throws NoSuchFieldException {
+    for (Field f : cls.getDeclaredFields())            // 0: aload_1 / 1: getDeclaredFields  <- cls 为 null 就在这一行炸
+        if (f.getName().equals(name)) return f;
+    if (cls == Object.class)                            // 42: aload_1 / 43: ldc Object / 45: if_acmpne 57
+        throw new NoSuchFieldException(name);           // 48..56
+    return getDeclaredField(cls.getSuperclass(), name);  // 57..63  <- 递归,传的是 getSuperclass()
+}
+```
+
+`Class.getSuperclass()` 对**接口**返回 **null**(对 `Object` 也返回 null)。而这里只挡了 `cls == Object.class`,
+**没挡 null**。于是:探测的字段属主只要是**接口**,就会用 null 递归一层,然后在 `getDeclaredFields()` 上 NPE。
+栈里恰好是 `getDeclaredField:70` 叠在 `getDeclaredField:81` 两层 —— 与"递归一层后炸"完全吻合。
+
+所以:
+* 这是**OptiFine 自己的缺陷**(漏了接口/无父类的情形),不是我们缺类;
+* 上一轮那 5 个 Forge 专有类(`IForgeEntity` 是接口,`ForgeConfigSpec$ConfigValue` 等)只是**让它更容易被踩到**,
+  是相关而非因果;**给这些类补桩并不能修掉它**(接口形状本身就会触发);
+* 只在 1.21 这条线上>0 条,与"这条线的 Reflector 表里恰好有属主为接口的字段被解析"一致。
+
+**修法(已设计好,要求栈中性、帧中性)**:把第 63 条指令从
+`invokevirtual net/optifine/reflect/FieldLocatorName.getDeclaredField(Class,String)Field`
+改成 `invokestatic <guard>(Lnet/optifine/reflect/FieldLocatorName;Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/reflect/Field;`。
+第 63 条之前栈上正好是 `[this, getSuperclass(), name]`,与静态方法的三参数**逐位对应**,返回类型也一样,
+所以 **maxStack 不变、控制流不变、不需要新的 StackMapTable 帧**(这正是上次 `ShadersPackLoadedRepair` 里
+"插入 GOTO 导致 VerifyError"的教训的反面)。guard 的语义与 OptiFine 原实现**完全等价**,只在原实现会 NPE 的地方
+改为抛 `NoSuchFieldException`(也就是原实现对 `Object` 的情形所做的处理):
+
+```java
+public static Field getDeclaredFieldGuarded(FieldLocatorName self, Class<?> cls, String name)
+        throws NoSuchFieldException {
+    for(Class<?> c = cls; c != null && c != Object.class; c = c.getSuperclass())
+        for(Field f : c.getDeclaredFields())
+            if(f.getName().equals(name)) return f;
+    throw new NoSuchFieldException(name);
+}
+```
+
+`getField()` 本来就有 catch `NoSuchFieldException` → 返回 null 的分支(反编译里 12/48/55/62 处都是 `aconst_null; areturn`),
+所以"接口属主"从此安静地解析失败,而不是每次打一条 11 帧的栈。
+
+**尚未实施,因而绝不声称修好**。实施要点(下一轮):guard 类必须与 OptiFine 的类**同一个加载器**可见,
+所以它要作为**新条目写进 OptiFine 那个 jar**(放我们自己的包有 NoClassDefFoundError 的风险);
+这一条与 FML 10 的载荷路径不同 —— 那里走的是 `OptifinePipeline.split`(条目名已去掉 `srg/` 前缀),
+而 1.21 的 ModLauncher 线是从预备 jar 的 **`srg/` 前缀**条目里加载的,所以 ENTRY 要按 `srg/...` 匹配,
+两个前缀都要覆盖,否则"修了 FML 10、1.21 照旧"。
