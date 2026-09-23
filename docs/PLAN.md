@@ -3736,3 +3736,38 @@ NullPointerException: Cannot invoke "java.lang.Class.getDeclaredFields()" becaus
 修复方向仍是在载荷里给 `FieldLocatorName.getDeclaredField` 加 null 保护(与已有的
 `ShadersPackLoadedRepair`/`FxaaPostChainRepair` 同族),因为它现在**必然**往 stderr 打 11 条 NPE 栈 ——
 出厂的 mod 不该这样;但**未验证不得声称修好**。
+
+#### 1.21 NPE 追查续:产物变量**全部排除**,对照实验有一次被我自己做成无效,并给出一个便宜的判决实验
+
+**先说被我做成无效的那次对照**(照实记,不能当成证据):我拿"未准备的 `optifine-original.jar`"去跑,得到
+stderr 3232 字节、NPE **0** —— 看起来像是"准备好的 jar 才引发 NPE"。**这是无效结论**:该次运行
+`Exception in thread "main" java.lang.RuntimeException: java.lang.reflect.InvocationTargetException`
+**直接崩在启动阶段**,`Sound engine=NO / Setting user=NO`,客户端根本没到能解析 Reflector 的地步,
+所以它的 0 条 NPE 只说明"没跑到那里"。同一坑第五次出现,再次确认:**"没跑到" 与 "没有" 必须分开写。**
+
+**产物变量全部排除**(逐条实测):
+
+| 变量 | 旧 08:08(4 条 trace) | 新(11 条 NPE) | 证据 |
+|---|---|---|---|
+| 装载器 jar | — | — | `Get-FileHash` 相同 `F959DCCE…A634641` |
+| OptiFine 侧 | `optifine-OptiFine_1.21_HD_U_J1_pre9.jar`(5890672 B) | **同名同大小** | 两次日志的 `OptiFine ZIP file:` 全路径行 |
+| options / 光影状态 | 无光影包、`ofEmissiveTextures:true` | 同 | optionsof/optionsshaders 逐字段对照 |
+| JVM / ModLauncher | java 21.0.9 / 11.0.4 | 同 | 两次启动日志 |
+| `-Fresh` | — | — | 有/无 `-Fresh` 结果逐字节相同(46767 / 11 / 4) |
+
+于是**唯一剩下的差别就是 rig 的路径**:旧那次在 `C:\Users\kynar\IdeaProjects\optifineoforge-test`,
+新那次在 `I:\mods\optifineoforge-test`;而旧目录**已被删除**,无法原地对照。
+注意 union 路径的形状确实带着盘符:`union:/I:/mods/...jar%23182!/`,所以"非 C 盘 / union 路径"是**有嫌疑的**,
+但这只是嫌疑,没有被量到。
+
+**下一轮先做这个判决实验(便宜、且不改代码)**:建一个**目录联接(junction)**,把
+`C:\...\optifineoforge-test` 指向 `I:\mods\optifineoforge-test`,从 `C:` 那个路径再跑一次 1.21 验收。
+* 若 NPE 变成 0～4 条 ⇒ 症状随**路径**走,属于"搬家"引入的 rig 环境问题,那就该在装载侧修路径处理,
+  而不是去改 OptiFine 的反射代码;
+* 若仍是 11 条 ⇒ 路径无关,`FieldLocatorName.getDeclaredField` 的 null 保护(与
+  `ShadersPackLoadedRepair`/`FxaaPostChainRepair` 同族的载荷修复)才是正道,并且要先解决
+  `add-line.ps1` 只在产物不存在时才 `prepare-line` 的复用陷阱,重建后再测。
+
+**另外记一个我自己的装置缺陷**:这次 A/B 里 `launch.ps1` 会把 `logs\launch-<profile>.out.log` 覆盖,
+我只保住了 `.err.log`,导致"能跑通的那次"的 stdout 被后一次崩溃运行盖掉。以后凡是对照实验,
+**两份日志都要在运行后立刻另存**,只留 err 不够。
