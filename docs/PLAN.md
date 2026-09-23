@@ -3356,3 +3356,30 @@ FML 10 线的修法是**整类保留运行时的 `IntegratedServer`**(写在 `ke
 `wait-for-world`(这次期望能真正 `joined the game` 且不再 tick 崩溃)→ 之后才取 FXAA 成对帧。
 1.21.1 / 1.21.3 / 1.21.6 / 1.21.7 也缺这条,但它们各自的实测状态不同(1.21.1、1.21.3 记录为已通过;
 1.21.6 本轮实测有 `gatherCapabilities` 崩溃)—— **按各自证据逐条处理,不一律照搬**。
+
+#### 1.21.4 两个缺陷都已修复并实测通过
+
+按上一节的两处改动重建该线(重建日志本身就是证据):
+
+```
+== build-jars
+patch entries dropped for 1 class(es): [net/minecraft/client/server/IntegratedServer]   <- 载荷不再改这个类
+keep plan: 3 line(s)                                                                  <- 原来的 2 条 + 新的 IntegratedServer
+```
+
+并且**读了重建后 jar 内的 `optifineoforge/keep-runtime.txt`**,`IntegratedServer` 条目数 = 2(注释 + 条目)——
+不是靠体积或日志推断。随后清理 `crash-reports` 再实跑一次:
+
+| 检查项 | 结果 |
+|---|---|
+| `wait-for-world.ps1` | **ok**:`title='Minecraft NeoForge* 1.21.4 - Singleplayer'` **且**日志有 `joined the game` |
+| `Cannot get config value` | **0** |
+| `NoSuchMethodError` | **0**(上一轮的 `gatherCapabilities` 彻底消失) |
+| 新崩溃报告 | **0** |
+| 光影包 | `Loaded shaderpack: MakeUp-UltraFast-9.5e.zip` |
+
+也就是说 1.21.4 从"世界永远加载不完"推进到**世界能进、玩家能 join、无崩溃、光影包加载**。
+顺手也把 `jars-1.21.4` 与 `jars-1.21.4-new` 两份目录**同步成同一份**(`retest-all.ps1` 用的是后者)。
+
+下一步:①给 1.21.4 取 FXAA 成对帧(它现在还缺这一条判定);②对 1.21.6 做同样两件事(它本轮实测有
+`gatherCapabilities`,而 keep 清单里同样没有 `IntegratedServer`)——**先按它自己的证据确认,再动手**。
