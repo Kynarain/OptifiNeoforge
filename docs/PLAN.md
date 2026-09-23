@@ -3771,3 +3771,45 @@ stderr 3232 字节、NPE **0** —— 看起来像是"准备好的 jar 才引发
 **另外记一个我自己的装置缺陷**:这次 A/B 里 `launch.ps1` 会把 `logs\launch-<profile>.out.log` 覆盖,
 我只保住了 `.err.log`,导致"能跑通的那次"的 stdout 被后一次崩溃运行盖掉。以后凡是对照实验,
 **两份日志都要在运行后立刻另存**,只留 err 不够。
+
+#### 1.21 NPE 追查:路径假设**被实测排除**;并更正一个我自己的错误 —— 那份"旧日志"是 **09-20** 的,不是当天的
+
+**判决实验(目录联接)**:把 `C:\Users\kynar\IdeaProjects\optifineoforge-test` 做成指向 `I:\mods\optifineoforge-test`
+的 junction,从 `C:` 那个路径再跑一次 1.21 验收(日志确认游戏确实从 C: 路径起来:
+`OptiFine ZIP file: C:\Users\kynar\IdeaProjects\optifineoforge-test\game\...\optifine-OptiFine_1.21_HD_U_J1_pre9.jar`):
+
+| 运行路径 | stderr | cls-null NPE | NoClassDefFoundError |
+|---|---|---|---|
+| `I:\mods\...`(10:13 sweep) | 46767 | 11 | 4 |
+| `I:\mods\...`(10:20 非 -Fresh) | 46767 | 11 | 4 |
+| **`C:\...` 经 junction**(10:29) | **46767** | **11** | **4** |
+
+⇒ **与路径无关**,"搬家(盘符/union 路径)导致"这个候选**排除**。junction 已删除,避免同一 rig 有两条路径带来歧义。
+
+**更正(重要)**:我上一轮写"两次运行用同一个 jar,故差异不是 jar 变化"——**这个前提是错的**。
+`launch-21.0.167-fixchain.out.log` 的文件时间是 **09-20 08:08:29**,不是我先前以为的"当天 08:08"。
+那份日志(以及 14141 这个记录值)是 **09-20** 测的,而现在的 jar 是 **09-22 07:30** 重建的。
+jar 名是按版本生成的(`optifine-OptiFine_1.21_HD_U_J1_pre9.jar`),**重建不改名**,所以"同名同大小"根本
+不能证明"同一份内容" —— 我当时拿名称与大小当证据,是无效推理。**产物变量其实从没被排除过。**
+
+**真正指向根因的一条(实测差集)**:把两次运行的 `[OptiFine] (Reflector) Class not present:` 集合做差
+(09-20 那次 55 个,现在 60 个),**多出来的 5 个全部是 Forge 专有类**:
+
+```
++ net.minecraftforge.common.extensions.IForgeEntity
++ net.minecraftforge.common.ForgeConfig
++ net.minecraftforge.common.ForgeConfig$Client
++ net.minecraftforge.common.ForgeConfigSpec
++ net.minecraftforge.common.ForgeConfigSpec$ConfigValue
+```
+
+NeoForge 上这些类**按设计就不存在**,所以"找不到"本身是正常的;问题在于 OptiFine 的
+`FieldLocatorName.getDeclaredField` 拿到 null 类时**不做 null 检查**,直接 `cls.getDeclaredFields()`,
+于是每次探测都变成一条 NPE 栈打进 stderr(11 条),而不是安静地跳过。**这解释了两件事**:
+stderr 为什么从 14141 涨到 46767,以及为什么它和"换路径/换 -Fresh"都无关。
+
+**下一步(方向已明确)**:在载荷里给 `FieldLocatorName.getDeclaredField` 加 null 保护(与
+`ShadersPackLoadedRepair`/`FxaaPostChainRepair` 同族的字节码修复),让"类不存在"按 OptiFine 原本的语义
+安静返回 null —— 出厂的 mod 不该为一批**按设计不存在**的类打 11 条 NPE 栈。做完之后按本段这份证据
+**重新记录 1.21 的 stderr 基线**(不是无条件重基线:要先证明并写清"多出来的都是 Forge 专有类 + 无 ERROR/SEVERE + 无崩溃")。
+重建 `jars-1.21` 时注意 `add-line.ps1` 只在产物不存在时才跑 `prepare-line` 的复用陷阱。
