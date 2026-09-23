@@ -3970,3 +3970,47 @@ import net.neoforged.neoforgespi.transformation.ClassProcessor;
   `jars-1.21.8-probe` 6178283 → 6278649)。我的工具是整包重写(每条目复制时间戳但不保留压缩方式),
   体积异常说明这两个包的**重新压缩**引入了额外差异,而不只是那一处插入。所以这两条线必须**复扫确认**
   (1.21.7 与 1.21.8 的 stderr 是否仍为预期的 0),不能凭"补丁很小"就假定无事。
+
+#### null 保护在 11 条 ModLauncher 线上**复扫通过**;FML10 的根因是 rig 少了一步编译,已修
+
+**复扫结果(`retest-all.ps1 -Group modlauncher`,11 条线,全部真机跑过)**:
+
+| 线 | verdict/user/sound/crash | stderr | 判定 |
+|---|---|---|---|
+| 1.21 | STARTED / yes / yes / 0 | 14141 = 预期 | ✅ |
+| 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8 | STARTED / yes / yes / 0 | 0 = 预期 | ✅ |
+| **1.20.6** | STARTED / yes / yes / 0 | **0 = 预期**(此前 17856) | ✅ |
+| 1.20.4 | STARTED / yes / yes / 0 | 14481 = 预期 | ✅ |
+| 1.20.2 | STARTED / yes / yes / 0 | 14625 = 预期 | ✅ |
+| 1.20.1 | STARTED / yes / yes / 0 | 0 = 预期 | ✅ |
+
+即 **11 条 ModLauncher 线的四项验收全部通过**,而且 1.20.6 是**精确回到记录值 0**(不是重新基线):
+它的 `cls-null` NPE 由 6 条降到 **0**,`Sound engine=yes`、`Setting user=yes`、0 崩溃报告。
+这同时证明上一轮那个"两个 jar 体积异常 +99KB"的担心**不成立**:1.21.7 与 1.21.8 复扫后 stderr 仍是预期的 0,
+即整包重写虽然换了压缩结果,**没有改变行为**。(仍然记着:除 `jars-1.21` 外没有做补丁前备份。)
+
+**FML10 三条 NO-RESULT 的根因已修(是 rig 少了一步,不是代码)**:
+
+`prepare-fml10-line.ps1` 一直有这样一步:
+
+```
+gradlew.bat --no-daemon -q "-Pmc=$Mc" "-Pneoforge=$NeoForge" '-Pmountpoint=fml10' compileJava
+```
+
+而 `retest-all.ps1`(**真正负责重跑验收的那个脚本**)**没有**这一步,只在注释里警告过这个陷阱。
+后果实测:不带 `-Pmc/-Pneoforge` 直接编译会用 `gradle.properties` 里的默认(1.21.4 / 21.4.149),
+而 `src/fml10` 面向 1.21.9+,于是编译以 15 个错误失败,第一条正是
+
+```
+错误: 程序包 net.neoforged.neoforgespi.transformation 不存在
+```
+
+`build-fml10-payload.ps1` 于是拒绝("no compiled fml10 classes"),三条线只能报 NO-RESULT。
+
+修法(已落地并 parse 通过):在重建载荷之前,按该线自己的配对编译 mount point
+(`$neoForge = $line.profile -replace '^neoforge-',''`),失败则**照实**报 NO-RESULT 并跳过(不启动旧 jar 充数);
+并新增 `-Repository` 参数,默认与 `prepare-fml10-line.ps1` 一致,避免两个脚本对"仓库在哪"各说一套。
+**另加一道保险**:26.1.2 的载荷本来就不在本脚本重建设置里,所以它的编译步骤**故意跳过** ——
+否则一个"编译失败"会把一条**当前通过**的线变成 NO-RESULT(把通过洗成"没跑",同样是不诚实)。
+
+FML10 三条的复扫(编译 → 重建 → 验收)已在本轮末启动,结果见下一轮记录。
