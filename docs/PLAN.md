@@ -3113,3 +3113,28 @@ FXAA 本来就没有可平滑的边缘,`fxaa-check` 于是给出 NOT VISIBLE。�
 
 (The dump reading list counts as 0 also affects the *existing* Rotation pinning if it is the same bug - the rotation
 pin has been used for FXAA captures all along, so this needs checking rather than assuming.)
+
+#### 更严重的发现:装置的 NBT **列表计数一直读成 0** —— 也就是说"钉视角"从来没真正生效过
+
+补 `-PlayerX/Y/Z` 时顺手 dump 了整棵 NBT 树,结果连 `level.dat` 里的
+`ServerBrands: list<0> []` 都是 **count = 0**(它显然至少有两项:`vanilla`、`neoforge`),而同一棵树上
+**标量**都读得对(`Time: type 4 = 6000`、`DayTime: type 4 = 6000`、`raining: type 1 = 0`、`GameType/version/seed` 等)。
+
+由此可判定:`Read-Nbt` 的**列表分支(type 9)坏了** —— 计数(`$pos+1..$pos+4` 那四个字节)没有被正确读到。
+影响是双重的:
+
+1. 我这一轮加的 `Pos` 写入不可用(依赖列表偏移)—— 这一点上一节已经写了;
+2. **更要紧**:现有的 `Rotation`(pitch/yaw)钉定走的是同一个列表分支,而且脚本里带着
+   `if ($rot.Count -ne 2) { ... skipped }` 的保护 —— 计数永远是 0,于是**它每次都走"skipped"分支**,
+   也就是说**所谓"每次抓帧都把视角钉成 pitch 45"从来没有生效过**。这正好解释了前几轮在两三条线上看到的
+   "画面又暗又平"(相机其实停在存档原来的位置,可能就在地形里),而不是那些线渲染有问题。
+   (标量类的钉定 —— DayTime/GameTime/天气/游戏规则 —— 走的是定宽字段写入,那些是**真的生效**的:
+   dump 里 Time/DayTime 都是 6000,rain=0。)
+
+**对已通过判定的影响**:那 7 条 FXAA 判定不因此失效 —— 判定要求的是"两帧同一场景",而关/开两次用的是同一份
+存档、相机停在同一处,实测场景差异只有 4~6%。但文档里凡涉及"每帧都钉住视角"的措辞必须按此更正:
+**视角从未被钉住,被钉住的只有时间/天气/规则与存档状态**。
+
+**下一步**:①查清并修好 `Read-Nbt` 的列表分支(对照解压后的字节,先看 `ServerBrands` 这种简单列表);
+②补 `Set-Fixed` 的 'double';③用修好的列表读写来实现 `Pos`/`Rotation` 钉定,再把 1.21.4 的相机摆到地表、
+重做成对抓帧;④顺带复看那 7 条的证据(判定有效,但若"同场景"的可信度能被更强的视角钉定提高,应补做)。
