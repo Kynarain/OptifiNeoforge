@@ -3138,3 +3138,25 @@ pin has been used for FXAA captures all along, so this needs checking rather tha
 **下一步**:①查清并修好 `Read-Nbt` 的列表分支(对照解压后的字节,先看 `ServerBrands` 这种简单列表);
 ②补 `Set-Fixed` 的 'double';③用修好的列表读写来实现 `Pos`/`Rotation` 钉定,再把 1.21.4 的相机摆到地表、
 重做成对抓帧;④顺带复看那 7 条的证据(判定有效,但若"同场景"的可信度能被更强的视角钉定提高,应补做)。
+
+#### **更正上一节**:NBT 读取没有坏;真正的原因是这份存档**根本没有玩家数据**
+
+上一节我据 `-Dump` 输出(`ServerBrands: list<0> []`)判定"`Read-Nbt` 的列表分支坏了,所以视角钉定从未生效"。
+**这个判定是错的**,用原始字节核对后应当撤回:
+
+* 直接解压 `level.dat` 看字节,`ServerBrands` 就是 `09 00 0C 'ServerBrands' 00 00000000` ——
+  **elem=0、count=0**,即一个**空列表**;读取器读得没错,是我把"空列表"当成了"读错";
+* 再看 `level.dat` 里的 `Player` 复合:**`Pos` 与 `Rotation` 同样是 `type=9 elem=0 count=0` 的空列表**;
+* 而 `saves\RigSession\playerdata\` 目录**存在但一个文件都没有** —— 这份存档里玩家从未被保存过。
+
+也就是说:`pin-save-state.ps1` 自己早就写明过这种情况 ——
+"no playerdata\*.dat in this save - view direction not pinned ... the client then spawns a fresh player at
+SpawnX/Y/Z with the spawn angle"。**视角没有被钉住,不是因为读取器坏了,而是因为这份存档里没有可钉的玩家数据**,
+客户端每次都在出生点重新造一个玩家。1.21.4 抓到的画面又暗又平,正是"出生点恰好在没什么可看的地方"。
+
+标量类的钉定(时间/天气/游戏规则)照旧是真生效的;脚本的其它部分没有嫌疑。
+
+**下一步(改为走"出生点"这条路)**:`SpawnX/SpawnY/SpawnZ` 是 `level.dat` 里的 **TAG_Int 标量**,
+正是这个脚本**能可靠改写**的那种字段 —— 把它们钉到一个地表位置(例如 0/70/0),让新造的玩家落在有地形的地方,
+再用 F2 取帧;若仍不理想,再考虑让客户端正常退出一次以生成 `playerdata`,然后才谈 `Pos`/`Rotation` 钉定。
+(我这一轮加的 `-PlayerX/Y/Z` 依赖列表写入,在这份存档上没有意义;先留着,等有 playerdata 的线再用。)
