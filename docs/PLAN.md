@@ -3236,3 +3236,27 @@ level.dat SpawnZ: 0 -> 0
 **至此装置侧的三处修正都已落地并各自验证**:①窗口按进程身份解析(`client-window.ps1`,反例=别人家客户端);
 ②摆相机走 `level.dat` 的 `SpawnX/Y/Z` 标量(按字节读回验证);③取帧前必须有"在世界里"的双证据
 (`wait-for-world.ps1`,两个反例 + 一个正例)。下一轮就可以按这条加固流程,把 1.21.4 与其余线一次跑完。
+
+#### 1.21.4 的世界进不去的**真正原因**找到了:它的 stub 表少了 `BlockEntity` 能力三件套
+
+加固后的流程在 1.21.4 上两次 **TIMEOUT**(标题始终没有世界名、日志没有 `joined the game`),前置检查如实拒绝取帧。
+翻客户端日志,最后是**区块生成里的异常**:
+
+```
+java.lang.NoSuchMethodError: 'void net.minecraft.world.level.block.entity.BlockEntity.gatherCapabilities()'
+   at net.minecraft.server.level.ChunkMap.runGenerationTask(...)
+```
+
+也就是说:世界**在生成区块时抛错**,根本没加载完 —— 这才是这条线"又暗又平""一直不进世界"的原因,与出生点、取景无关。
+
+对照各线的 `stub-additions-*.txt`(ml11 的 loader 用它给被保留/替换的类补 NeoForge 加进来的成员):
+
+| 线 | 有 `BlockEntity gatherCapabilities ()V` 吗 |
+|---|---|
+| 1.21 / 1.21.1 / 1.21.3 | **有**(当年就是靠它修好同一故障) |
+| 1.21.4 | **缺**(`gatherCapabilities`/`getCapabilities`/`invalidateCaps` 三件套都没有) |
+| 1.21.6 / 1.21.7 / 1.21.8 / 1.21.9 / 1.21.10 / 1.21.11 | 也缺,但这些线的日志里**没有**这个错误,世界能进 —— 所以它们**不需要**,不能凭"别的线有"就一律补上(给不需要的类加空实现会掩盖真实缺成员) |
+
+**已做**:给 `stub-additions-1.21.4.txt` 补上三件套(带注释写明这是实测故障、以及为什么只补这一条线)。
+**下一步**:重建 1.21.4 的 loader jar(它由 `add-line.ps1` 生成,会消费该文件),再跑一次
+`wait-for-world` → 若世界能进,继续取成对帧;随后才回到 1.20.x/1.21 的 FXAA 验证。
