@@ -3569,3 +3569,45 @@ post chain 走旧布局,加载时不打这种日志)。如果只数日志行,就
 
 该线至此四项验收 + 存档 + 光照包 + FXAA 全部为绿。仍然缺 FXAA 像素证据的线:**1.20.1、1.20.2、1.21**
 (1.21 还要走菜单路线,quickPlay 不建世界)。
+
+#### 1.20.2:用户报的 `canSustainPlant` 崩溃**没再复现**(已实测),但 FXAA 的像素判定**这次是 NOT VISIBLE**
+
+先确认前提:出厂 jar(`jars-1.20.2\OptifiNeoforge-1.0.0+mc1.20.2-registered.jar`,09-22 04:11)里
+**确实带着**修好的计划与消费者 —— `optifineoforge/runtime-interfaces.txt`(1403 字符,含 `BlockState` 行)
+与 `PatchedClassTransformer` 都在包里。所以缺的从来不是代码,而是"真机跑一次会生成区块的场景"。
+
+为了真的走到 `canSustainPlant` 那条路径(加载现有存档不会重建区块),这轮把 `RigWorld` 复制成 `RigWorldGen`,
+清空它的 `region`/`entities`/`poi`,让**区块在加载时重新生成**——这才是调用那些 `BlockState` 成员的场景。
+
+两轮(对照 + FXAA)结果一致:
+
+| 项 | 对照(antialiasingLevel=0) | FXAA(antialiasingLevel=2) |
+|---|---|---|
+| 加入世界 | yes | yes |
+| `Preparing spawn area`(区块真的重建了) | yes | yes |
+| `canSustainPlant` 出现次数 | **0** | **0** |
+| `NoSuchMethodError` 次数 | **0** | **0** |
+| 崩溃报告 | 无 | 无 |
+| 光照包 | MakeUp-UltraFast-9.5e.zip | 同 |
+
+**结论:该缺陷在出厂 jar 上已不复现**,而且是在"生成区块"的条件下测的,不是"加载现成区块"的弱条件。
+
+**但 FXAA 这一侧的判定是负的**,照实记:
+
+```
+frame off : mean edge energy 7.8096  hard edges 15071
+frame on  : mean edge energy 7.7297  hard edges 14517
+edge energy change : 1.0%   hard edge change : 3.7%   scene difference : 6.1%
+VERDICT: NOT VISIBLE - edge energy changed by only 1.0%, under the 2.0% threshold.
+```
+
+这条**既不能当"FXAA 好了",也不能立刻当"1.20.2 的 FXAA 坏了"**,理由都写下来:
+
+* 硬边降了 **3.7%**,方向与 FXAA 一致;脚本的判定要**两项**都过,只有边能量没过(1.0% < 2.0%);
+* 这一帧的边密度只有 1.20.4 那对的**一半**(硬边 15071 对 38892,边能量 7.81 对 15.18)——
+  俯角 45° 对着地面,画面本来就平,留给 FXAA 的高频细节少,同一个阈值在这里的**信噪比更低**;
+* 场景差异 6.1%(1.20.4 是 4.3%),仍属"同一场景",但这些帧来自**重新生成的区块**,比加载现成区块更容易有差异。
+
+所以**下一轮要做的是换一个更有信号的场景重测**(把镜头对准有大量几何/树叶/栅栏的朝向,或直接测 4x),
+而不是把这 1.0% 当成结论。若在边密度正常的场景下仍然 NOT VISIBLE,那才是 1.20.2 的真缺陷。
+**在这一步做完之前,1.20.2 的 FXAA 不能记成通过。**
