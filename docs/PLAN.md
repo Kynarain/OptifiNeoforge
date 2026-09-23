@@ -3309,3 +3309,25 @@ java.lang.NoSuchMethodError: 'void net.minecraft.world.level.block.entity.BlockE
 
 另外仍需处理:`retest-all.ps1` 给 1.21.4 记的是 `dir = 'jars-1.21.4-new'`,而重建写的是 `jars-1.21.4`;
 两者必须在下次 sweep 之前统一,否则扫的还是旧 jar。
+
+##### 1.21.4 这个崩溃与 FML 10 三条线当年那个是**同一族**,修法已知
+
+崩溃报告的正文是:
+
+```
+Description: Exception ticking world
+java.lang.IllegalStateException: Cannot get config value before config is loaded.
+  at net.neoforged.neoforge.common.ModConfigSpec$ConfigValue.get(ModConfigSpec.java:1222)
+  at net.minecraft.world.level.Level.guardEntityTick(Level.java:582)
+```
+
+这正是我在 1.21.9/1.21.10/1.21.11 上诊断并修过的那件事:`Level.guardEntityTick` 只在**某个实体 tick 抛异常**时
+才去读 NeoForge 的**服务端 config**(`NeoForgeServerConfig`),而服务端 config 的加载挂在
+`ServerLifecycleHooks.handleServerAboutToStart` 上 —— 那个调用在**运行时**的 `IntegratedServer` 里;
+一旦载荷把 OptiFine 自己那份 `IntegratedServer` 顶上去(它没有这个调用),config 就永远不会加载,
+于是"第一个抛异常的实体 tick"死在错误处理路径里,崩溃报告写的却是 config,而**真正的实体异常被掩盖**。
+
+FML 10 线的修法是**整类保留运行时的 `IntegratedServer`**(写在 `keep-additions-<line>.txt` 里)。
+1.21.4 属于 ml11 分支,对应的做法是把它加进该线的 keep 计划(ml11 侧是 `keep-runtime-<mc>.txt` 一类),
+然后重建 loader jar 复测 —— 这与"它现在世界能进、然后服务器 tick 崩"的状态正好接上,
+而且**应当先确认该线的 `IntegratedServer` 是否也被载荷替换**(用同样的 `javap` 对照运行时与载荷两份)。
