@@ -3865,3 +3865,55 @@ public static Field getDeclaredFieldGuarded(FieldLocatorName self, Class<?> cls,
 这一条与 FML 10 的载荷路径不同 —— 那里走的是 `OptifinePipeline.split`(条目名已去掉 `srg/` 前缀),
 而 1.21 的 ModLauncher 线是从预备 jar 的 **`srg/` 前缀**条目里加载的,所以 ENTRY 要按 `srg/...` 匹配,
 两个前缀都要覆盖,否则"修了 FML 10、1.21 照旧"。
+
+#### 1.21 修好并**实测通过**:stderr 从 46767 回到 **14141 —— 与记录值逐字节相同**
+
+上一轮把根因定到字节码后,这轮实现了修复并验证。
+
+**修法(与设计一致,且比"加 guard 类"更省)**:在递归调用点把那一个 `getSuperclass()` 的结果补成非 null,
+全部是**直线指令**,因此**不需要新帧、不需要重算 maxStack、也不需要往 jar 里加新类**:
+
+```
+59: invokevirtual  Class.getSuperclass:()Ljava/lang/Class;
+    ldc            class java/lang/Object
+    invokestatic   java/util/Objects.requireNonNullElse:(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
+    checkcast      java/lang/Class
+62: aload_2
+63: invokevirtual  FieldLocatorName.getDeclaredField:(...)Ljava/lang/reflect/Field;
+```
+
+接口没有父类 → 现在传 `Object.class` 递归,递归里既有的 `cls == Object.class` 分支照旧抛 `NoSuchFieldException`,
+正是 OptiFine 原本对 `Object` 的行为;`getField()` 早就 catch 它并返回 null。**语义等价,只是不再 NPE。**
+
+**实测(同一台机、同一 jar 路径、同样走 `retest-all.ps1 -Only 1.21`)**:
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| `verdict / user / sound / crash` | STARTED / yes / yes / 0 | STARTED / yes / yes / **0** |
+| **stderr 字节** | 46767 | **14141** |
+| `cls-null NPE` | 11 | **0** |
+| `NoClassDefFoundError` | 4 | 4(**不变**,证明修复只动了它该动的) |
+| 结果行 | `STDERR DIFFERS (46767 vs 14141)` | **`expected stderr 14141`** ✅ |
+| `VerifyError` | — | **无**(直线插入,原有 StackMapTable 仍有效) |
+
+注意最后一行:修复后**正好等于记录值 14141**,不是"重新基线",而是把多出来的 11 条栈**真正消掉**之后
+自然回到基线。这也反过来解释了记录值与现状为何曾经对不上:09-20 那份基线的 jar 里,被解析的字段没有
+属主为接口的;09-22 重建后有了,于是凭空多出 11 条。**工具输出幂等**(对已修 jar 再跑一次报
+`nothing to repair`),可安全重复执行。
+
+**落地位置**:
+* `OptifinePipeline.split` 里新增第三个 OptiFine 类修复(与 `ShadersPackLoadedRepair`/`FxaaPostChainRepair` 同一处),
+  这样**今后任何一条线重建出来的 jar 都自带它** —— 发布要用的正是这条路径;
+* 独立的 `main(jar)` 用于**已准备好**的 jar(同时匹配 `srg/` 前缀与去前缀两种条目名,因为预备 jar 保留 `srg/`)。
+  1.21 的 jar 已就地修补(5890672 → 5890728 字节,备份 `*.pre-nullguard`)。
+
+**一条重要的衍生测量**:逐条检查 16 个 `jars-*` 目录里的 OptiFine jar(在**临时副本**上跑,不改动原件),
+**除 1.21 之外全都仍是未加保护的原样**:
+
+```
+1.20.1 1.20.2 1.20.2-fixed 1.20.4 1.20.6 1.21.1 1.21.3 1.21.4 1.21.4-new 1.21.6 1.21.7 1.21.8 (±3 个变体)
+```
+
+也就是说这是**全平台潜伏**的缺陷,只有 1.21 恰好解析到属主为接口的字段而显形。**没有顺手把它们也打上补丁**,
+理由是:那些线的 stderr 现在与记录**一致**,手改 jar 会让记录失去校验意义;而它们**重建时**会经流水线自动带上修复。
+下一步按目标书要求"用分支头重建后再验收"时,这 12 条线会一起得到修复并一起被验证。

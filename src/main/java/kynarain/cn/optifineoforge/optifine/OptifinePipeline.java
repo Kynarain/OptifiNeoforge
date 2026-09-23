@@ -195,6 +195,22 @@ public final class OptifinePipeline {
 							System.out.println("  " + stripped + ": no pre-1.21.6 vertex stage to rebuild");
 						}
 					}
+					// ... and the third OptiFine class repair: its field locator recurses with Class.getSuperclass(),
+					// which is null for an interface, and guards only the Object.class case - so a reflector field
+					// whose owner is an interface throws inside getDeclaredFields() once per probe. See
+					// FieldLocatorNullGuardRepair - it reports what it did and leaves a build without that
+					// unguarded recursion byte-for-byte unchanged.
+					if(FieldLocatorNullGuardRepair.ENTRY.equals(stripped)) {
+						byte[] repaired = FieldLocatorNullGuardRepair.apply(data);
+						if(repaired != null) {
+							data = repaired;
+							System.out.println("  repaired " + stripped
+									+ ": its recursive getSuperclass() call can no longer pass null"
+									+ " (an interface has no superclass)");
+						} else {
+							System.out.println("  " + stripped + ": no unguarded field-locator recursion in this build");
+						}
+					}
 					ZipEntry copy = new ZipEntry(stripped);
 					copy.setTime(entry.getTime());
 					out.putNextEntry(copy);
