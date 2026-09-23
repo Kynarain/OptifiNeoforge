@@ -3383,3 +3383,30 @@ keep plan: 3 line(s)                                                            
 
 下一步:①给 1.21.4 取 FXAA 成对帧(它现在还缺这一条判定);②对 1.21.6 做同样两件事(它本轮实测有
 `gatherCapabilities`,而 keep 清单里同样没有 `IntegratedServer`)——**先按它自己的证据确认,再动手**。
+
+#### 1.21.6:同样两处修复已重建并实测 —— 世界能进、无崩溃;只剩"光影包不加载"这条既有待办
+
+按 1.21.4 的两条修法处理 1.21.6(`keep-runtime-1.21.6.txt` 追加整类保留 `IntegratedServer`,
+`stub-additions-1.21.6.txt` 上一轮已补 `BlockEntity` 三件套),重建日志显示:
+
+```
+patch entries dropped for 1 class(es): [net/minecraft/client/server/IntegratedServer]
+keep plan: 4 line(s)
+```
+
+随后清空 `crash-reports` 实跑一次:
+
+| 检查项 | 结果 |
+|---|---|
+| `wait-for-world.ps1` | **ok**:`title='Minecraft NeoForge* 1.21.6 - Singleplayer'` 且日志有 `joined the game` |
+| `Cannot get config value` | **0** |
+| `NoSuchMethodError` | **0** |
+| 新崩溃报告 | **0** |
+| 光影包 | `No shaderpack loaded.` ← **仍未解决** |
+
+也就是说 1.21.6 的"世界能不能进/会不会崩"已经干净了,剩下的是**它本来挂着的那条待办**(用户已同意暂缓):
+光影包不加载 —— 与该线的后处理链/资源 schema 有关,与这次修的两件事无关。这一条要单独调查,
+不能因为"世界进了"就当成已通过。
+
+**1.21.4 / 1.21.6 两条线现在的状态**:世界能进、玩家能 join、无崩溃、光影包加载(1.21.6 除外);
+两条线都还缺 **FXAA 成对帧**这一步(1.21.4 只差取帧;1.21.6 要先解决光影包才谈 FXAA)。
