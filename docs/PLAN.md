@@ -4046,3 +4046,40 @@ ModLauncher 线目前是"修补过的旧构建"。下一条要补的就是这一
   仍缺 1.20.1、1.20.2(上次判 NOT VISIBLE 属低边密度场景,已加 `-Yaw/-Pitch` 可换景重测)、1.21、1.21.6、1.21.7、26.1.2;
 * 发布本身:version 已经在 `gradle.properties` 里是 `1.0.0`,但 `docs/PUBLISHING.md`(VERSIONING.md 指向它)**不存在**,
   发布流程缺文档 —— 在真正发布前必须先把这一步补上或改走别的既定流程。
+
+#### 1.20.1 的 FXAA 成对帧:**这对无效**(场景不同),照实记,不当判定
+
+用修好的助手(真机、F2 抓帧)在 1.20.1 上跑了控制组与 FXAA 组。两次运行的前置条件**都成立**:
+`joined the game = yes`、`Loaded shaderpack: MakeUp-UltraFast-9.5e.zip`、`Preparing spawn area = yes`,
+四次 F2 都真的写了图(`Saved screenshot as 2026-09-23_11.5x.xx.png`)。
+
+但 `fxaa-check.ps1` 的判定是:
+
+```
+frame off : mean edge energy 15.2845  hard edges 38846
+frame on  : mean edge energy  9.2501  hard edges 20040
+edge energy change : 39.5%   hard edge change : 48.4%
+scene difference   : 91.7% of pixels differ
+VERDICT: INCONCLUSIVE - the two frames are not the same scene
+```
+
+自己再量一遍也印证:控制组帧平均亮度 **127.9**、624294 字节;FXAA 组帧 **61.6**、282139 字节 ——
+**亮度差一倍、体积差一半**,这是"两个画面"而不是"同一画面的两种抗锯齿"。
+
+**所以这对既不支持通过、也不支持不通过**,只能记为无效。
+
+已经排除的:
+* **不是日志里有什么差别**:两次运行的日志是**对称**的 —— 双方 `fxaa` 提及都是 **0** 条
+  (与 1.20.4 相同,1.20.x 这条线开 FXAA 时本来就不打这种日志,所以**数日志行在这里同样会误导**),
+  双方"shader 问题"行数都是 **4** 条(相同),都没有 post/final 程序行;
+* **不是没进世界/没装光影包**(上面已列)。
+
+**下一轮的第一步(可判定,不是猜)**:先验证这条线的**相机钉定到底有没有生效** —— 这个失败模式在本项目里出现过:
+1.21.4 上就因为存档 `playerdata` 为空、`Rotation` 钉定走了 skipped 分支,导致两帧朝向不同(当时场景差异也是几十个百分点),
+后来靠 `-SpawnAngle` 才降下来。1.20.1 用的是 `RigSession` 存档,而助手钉的是 `-Yaw 0 -Pitch 45`,
+所以先按字节读回 `level.dat` 的 `Rotation`/`SpawnAngle`,确认两次运行得到的机位是否一致;机位一致了再谈 FXAA 的像素。
+
+**另记(为第 2 项准备的实测)**:ModLauncher 线"从分支头重建"的入口已确认 ——
+`add-line.ps1` 会**真的用当前源码跑 Gradle**(`gradlew -Pmc=$Mc -Pneoforge=$NeoForge -Pmountpoint=... jar` → `build-jars`),
+所以它是一次真重建;1.20.x 三条线用它的修正版 `rebuild-120x-line.ps1`(多了"每次从本分支源码重算计划"和 stub 传递的修正)。
+本轮尚未执行重建,只确认了入口与参数,免得把"重建"说成已经做过。
