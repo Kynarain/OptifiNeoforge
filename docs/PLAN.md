@@ -3917,3 +3917,56 @@ public static Field getDeclaredFieldGuarded(FieldLocatorName self, Class<?> cls,
 也就是说这是**全平台潜伏**的缺陷,只有 1.21 恰好解析到属主为接口的字段而显形。**没有顺手把它们也打上补丁**,
 理由是:那些线的 stderr 现在与记录**一致**,手改 jar 会让记录失去校验意义;而它们**重建时**会经流水线自动带上修复。
 下一步按目标书要求"用分支头重建后再验收"时,这 12 条线会一起得到修复并一起被验证。
+
+#### 全 15 条线验收复扫(在 1.21 修复之后):**11 条绿**,3 条因**构建前置缺失**判 NO-RESULT,1 条因**同一个 OptiFine 缺陷**判红
+
+`retest-all.ps1 -Group all`,一条线一个客户端,顺序跑完(结果表存 `logs\retest-all-after-nullguard.txt`):
+
+| 线 | verdict / user / sound / crash | stderr | 判定 |
+|---|---|---|---|
+| 1.21.9 / 1.21.10 / 1.21.11 | NO-RESULT | — | **REBUILD FAILED**(不是验收结果,不予采信) |
+| 26.1.2 | STARTED / yes / yes / 0 | 107 = 预期 | ✅ |
+| 1.21 | STARTED / yes / yes / 0 | 14141 = 预期 | ✅(本轮修好的那条) |
+| 1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7 / 1.21.8 | STARTED / yes / yes / 0 | 0 = 预期 | ✅ |
+| 1.20.6 | STARTED / yes / yes / 0 | **17856 ≠ 0** | ❌ |
+| 1.20.4 | STARTED / yes / yes / 0 | **14481 = 预期** | ✅ |
+| 1.20.2 | STARTED / yes / yes / 0 | 14625 = 预期 | ✅ |
+| 1.20.1 | STARTED / yes / yes / 0 | 0 = 预期 | ✅ |
+
+两条**变好**的(都是本轮/近几轮改动带来的,值得单独记):
+* **26.1.2 首次验收全绿**:`STARTED + sound yes + 0 崩溃 + stderr 107 = 预期`。此前它是"世界起不来 + sound NO";
+* **1.20.4 的 stderr 回到记录的 14481**(此前是 17841),即 `natives-for.ps1` 按线选 LWJGL 那一处接线确实修好了那个偏差。
+
+**1.20.6 为什么红(已查清,不是新缺陷)**:它的 stderr 17856 字节里是 **6 条 `cls-null` NPE**
+(`because "cls" is null`,`NoClassDefFoundError` 为 **0**),也就是**与 1.21 完全同一个 OptiFine 缺陷**
+(`FieldLocatorName.getDeclaredField` 递归不挡接口的无父类)。它的记录值 0 是在"尚未解析到属主为接口的字段"时测的。
+⇒ 这条线的红**正是本轮那个修复应当覆盖的第二例**,是全平台潜伏缺陷的又一次显形(见下)。
+
+**FML10 三条为什么 NO-RESULT(已查清,是构建前置,不是代码)**:
+
+```
+no compiled fml10 classes at I:\mods\OptifiNeoforge\build\classes\java\main\kynarain\cn\optifineoforge\fml10
+- run gradlew -Pmountpoint=fml10 compileJava first
+```
+
+而真的去跑 `gradlew -Pmountpoint=fml10 compileJava` 会**编译失败**(15 个错误),根因是缺依赖:
+
+```
+错误: 程序包 net.neoforged.neoforgespi.transformation 不存在
+import net.neoforged.neoforgespi.transformation.ClassProcessor;
+```
+
+即该 mount point 需要把 NeoForge 的 SPI 依赖解析进来才有得编。**这是下一轮的第一件事**(先让 FML10 能重建,
+再谈它们的验收)。注意:`build\classes\java\main\...\optifine\*.class` 是在的(09-23 09:13),
+只有 `fml10\` 子目录不在,说明这个 mount point 的编译产物不知何时被清掉且此后没再编成。
+
+**顺手把 null 保护打到了所有 ModLauncher 线的 OptiFine jar**(1.21 上一轮已打):12 个目录全部 `PATCHED`
+(+46 ~ +57 字节),`jars-1.21` 报 `already guarded`(幂等)。1.20.6 那条红预期会随之消失,**待复扫验证**。
+
+**一条我自己装置上的失误,照实记**:
+* 打补丁时**只给 `jars-1.21` 做了备份**(`*.pre-nullguard`),其余 11 个 jar 是**就地覆盖、没有备份**。
+  原始 OptiFine jar 仍在 `jars-*/optifine-original.jar` 等处,但"这次改动前的 prepared jar"没有留存 —— 后补备份不算备份;
+* 而且有两个 jar 的体积**不是 +50 字节而是 +99 KB 左右**(`jars-1.21.7` 6068212 → 6167474、
+  `jars-1.21.8-probe` 6178283 → 6278649)。我的工具是整包重写(每条目复制时间戳但不保留压缩方式),
+  体积异常说明这两个包的**重新压缩**引入了额外差异,而不只是那一处插入。所以这两条线必须**复扫确认**
+  (1.21.7 与 1.21.8 的 stderr 是否仍为预期的 0),不能凭"补丁很小"就假定无事。
