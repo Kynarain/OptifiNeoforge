@@ -3292,3 +3292,20 @@ java.lang.NoSuchMethodError: 'void net.minecraft.world.level.block.entity.BlockE
 `BlockEntity gatherCapabilities ()V` 三件套;③搞清 `jars-1.21.4` 与 `jars-1.21.4-new` 哪个是该线实际使用的,
 让两者一致(或修正 `retest-all.ps1` 的 `dir`);④对 1.21.4 跑 `wait-for-world` —— 世界若终于能进,再取 FXAA 成对帧;
 ⑤对 1.21.6 做同样的事。
+
+#### 1.21.4:stub 补上后世界**能进了**,`gatherCapabilities` 消失,下一个缺陷浮出水面
+
+用重建后的 loader jar(`jars-1.21.4`,其 `optifineoforge/stubs.txt` 已实测含
+`BlockEntity gatherCapabilities ()V` 三件套)重跑:客户端这次**进入了世界**(日志有 `Preparing spawn area`、
+光影包也加载了),而且 `NoSuchMethodError` 计数为 **0** —— 上一轮那个"区块生成抛错、世界永远加载不完"的故障
+**确实被这三条 stub 修掉了**(这是"读了 jar 里的资源"意义上的证据,不是靠体积推断)。
+
+但同一轮里出现了一个**新的、更靠后的**故障:集成服务器在 tick 时崩了,生成了
+`crash-2026-09-23_09.05.47-server.txt`(`MinecraftServer.tickChildren` 路径),随即
+`Stopping server`。所以 1.21.4 现在的状态是:**世界能进、然后服务器 tick 崩溃** —— 与 1.20.4 / 1.21.x 当年
+"进世界后撞到下一个缺成员"的节奏一样,下一步就是照当时那套方法读崩溃报告、定位缺的成员或错的类。
+`wait-for-world` 仍然判 TIMEOUT(它要求 `joined the game`,而这次是在进入过程中崩溃),这条判定是**对的**:
+崩溃的这一次不该被当成"世界已就绪"来取帧。
+
+另外仍需处理:`retest-all.ps1` 给 1.21.4 记的是 `dir = 'jars-1.21.4-new'`,而重建写的是 `jars-1.21.4`;
+两者必须在下次 sweep 之前统一,否则扫的还是旧 jar。
