@@ -3469,3 +3469,25 @@ VERDICT: FXAA VISIBLE
 **踩坑记录**:第一次改这个文件时我用 PowerShell 的 `-replace` 把整段写进去,替换串里的 `$Profile` 被当场
 展开成空值,文件被写坏(直接 parse 报错)。教训与之前"`Get-Content` 默认 ANSI 改写文件"同类:**不要用会做变量
 展开的字符串去改脚本文件**,要么用 write 整份重写,要么用单引号 here-string。这次是整份重写修好的。
+
+#### 1.20.4 两次"没有客户端"的真因:**我自己的命令行把 JDK 路径拆开了**(不是游戏、也不是助手)
+
+`wait-for-world` 的 `title=''` 一直被读成"助手认不出进程",实际是**客户端根本没启动**。启动器自己的错误日志写着:
+
+```
+no profile at Files\Java\jdk-17\versions\neoforge-20.4.251\neoforge-20.4.251.json
+```
+
+注意路径开头:`C:\Program ` 不见了。原因在我的临时命令里 —— 用
+`Start-Process -ArgumentList @(..., '-JavaHome', 'C:\Program Files\Java\jdk-17')` 时,含空格的参数**没有被引号包住**,
+于是被拆成 `C:\Program` 与 `Files\Java\jdk-17` 两个 token,后者粘到了下一个参数上,`launch.ps1` 于是把
+`Files\Java\jdk-17` 当成了游戏根目录,自然找不到 profile,**直接抛错退出、什么都没启动**。
+
+这正是 `run-fxaa-capture.ps1` 头部早就写下的那个坑("An array handed to powershell.exe would become separate
+command-line tokens"),它自己用
+`$quoted = @($launchArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })` 规避;
+而 rig 的其它脚本用调用运算符 `& powershell @args`(不重新解析,空格安全)。**我的临时流程两条都没用**,所以中招。
+
+**下一步**:把 1.20.4 的成对抓帧命令改成"含空格的参数先加引号"再 `Start-Process`(或直接用 `& powershell @args`
+并自己在后台跑),然后重跑;1.20.1/1.20.2 同理(它们同样走 JDK 17)。**这条与游戏本身无关,纯属我这一侧的命令拼装问题**,
+但把它记下来,免得下次又把它读成"1.20.x 的客户端有问题"。
