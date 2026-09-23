@@ -3542,3 +3542,30 @@ jars-1.20.4, found 2`。查下来 `jars-1.20.4` 里除了真正的构建,还躺�
 顺带说明为什么这轮**值得**记:三次 1.20.4 抓帧尝试其实一次 JVM 都没起来(先是被引号劈开路径,
 再是被 glob 挡住)。如果没有 `wait-for-world` 与助手自己的报错,这三轮极容易被写成"1.20.4 的 FXAA 不行" ——
 而它们连游戏都没启动过。**"测试没跑" 与 "测试失败" 必须分开**这条纪律,又救了一次。
+
+#### 1.20.4 的 FXAA 用**像素**测到了(该线原先缺的正是这一项)
+
+两个阻碍清掉之后,1.20.4 这一对跑通了,而且是本轮**第一次**由助手自己(不再靠临时驱动)产出 FXAA 证据:
+
+| 运行 | 帧文件 | 加入世界 | 光照包 |
+|---|---|---|---|
+| 对照(antialiasingLevel=0) | `1.20.4c-fxaa0-2.png` 627999 B | yes | MakeUp-UltraFast-9.5e.zip |
+| FXAA(antialiasingLevel=2) | `1.20.4c-fxaa2-2.png` 625581 B | yes | 同上 |
+
+`fxaa-check.ps1` 判定(同一场景,场景差异仅 4.3%):
+
+```
+frame off : mean edge energy 15.1785  hard edges 38892
+frame on  : mean edge energy 14.7033  hard edges 36845
+VERDICT: FXAA VISIBLE - edge energy fell 3.1% and hard edges 5.3% in the same scene.
+```
+
+两次运行都是"窗口按命令行认出来 + 日志有 joined the game + 世界标记齐全 + 0 崩溃报告",
+即**帧是在世界里拍的**,不是标题画面或加载画面 —— 这正是先前几次测量被作废的原因。
+
+**一条要记住的方法论**:FXAA 打开的那次,`latest.log` 里含 `fxaa` 的行数是 **0**(1.20.4 这条线的
+post chain 走旧布局,加载时不打这种日志)。如果只数日志行,就会得出"FXAA 没生效"的相反结论。
+**日志行数不是 FXAA 的证据,像素才是** —— 这也是 `fxaa-check.ps1` 存在的理由,本轮再次印证。
+
+该线至此四项验收 + 存档 + 光照包 + FXAA 全部为绿。仍然缺 FXAA 像素证据的线:**1.20.1、1.20.2、1.21**
+(1.21 还要走菜单路线,quickPlay 不建世界)。
