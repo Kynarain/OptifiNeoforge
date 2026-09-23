@@ -3431,3 +3431,27 @@ VERDICT: INCONCLUSIVE - the two frames are not the same scene
 把它一起钉住(同样的定宽原地写入),两次运行的视角就一致了;若该字段在某些线缺席,退一步的方案是
 **先让客户端正常退出一次生成 `playerdata`**,再钉 `Pos`/`Rotation`(那条路要等列表写入修好,现仍未做)。
 在此之前,1.21.4 的 FXAA **不能算通过**。
+
+#### 1.21.4 的 FXAA **判定通过** —— 钉住出生点朝向是关键
+
+给 `pin-save-state.ps1` 加上 `-SpawnAngle`(`level.dat` 的 TAG_Float 标量,与 SpawnX/Y/Z 同一套定宽原地写入),
+写完**读回字节验证**:`level.dat SpawnAngle: 0 -> 180`,读回 = 180。
+
+随后把出生点与朝向一起钉住(`0/70/0`,角度 180)重取 1.21.4 的一对:
+
+```
+[0] WORLD ok: title='Minecraft NeoForge* 1.21.4 - Singleplayer', log has 'joined the game'   frames: 3
+[2] WORLD ok: 同上                                                                          frames: 3
+
+frame off : mean edge energy 5.5465  hard edges 11138
+frame on  : mean edge energy 5.3569  hard edges 10939
+edge energy change : 3.4%   hard edge change : 1.8%
+scene difference   : 1.4% of pixels moved by more than 8 luma
+VERDICT: FXAA VISIBLE
+```
+
+**场景差异从 80.1% 掉到 1.4%** —— 上一轮判 INCONCLUSIVE 的原因(两次运行朝向不同)被这条标量写入解决了;
+在这个前提下,开 FXAA 后边缘能量下降 3.4%、硬边下降 1.8%,判定 **FXAA VISIBLE**。
+
+**因此 1.21.4 这条线现在同时具备**:世界能进、玩家能 join、无崩溃(上一轮两处修复)+ **FXAA 像素级可见**。
+**已通过 FXAA 像素验证的线增至 8 条**:1.21.9、1.21.10、1.21.11、1.21.8、1.20.6、1.21.4、1.21.3、1.21.1。
