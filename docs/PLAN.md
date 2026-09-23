@@ -3160,3 +3160,23 @@ SpawnX/Y/Z with the spawn angle"。**视角没有被钉住,不是因为读取器
 正是这个脚本**能可靠改写**的那种字段 —— 把它们钉到一个地表位置(例如 0/70/0),让新造的玩家落在有地形的地方,
 再用 F2 取帧;若仍不理想,再考虑让客户端正常退出一次以生成 `playerdata`,然后才谈 `Pos`/`Rotation` 钉定。
 (我这一轮加的 `-PlayerX/Y/Z` 依赖列表写入,在这份存档上没有意义;先留着,等有 playerdata 的线再用。)
+
+#### 摆相机的可靠办法落地:`-SpawnX/-SpawnY/-SpawnZ`(写 level.dat 的 TAG_Int 标量),已按字节验证
+
+按上一节的更正走"出生点"这条路。`pin-save-state.ps1` 新增 `-SpawnX/-SpawnY/-SpawnZ`,走的是这个脚本**最可靠**的
+那条写路径(与 DayTime/GameTime/天气同一套:定宽标量、原地改写、不动任何长度前缀),不依赖列表、不依赖游戏内输入。
+
+实测(1.21.4 的 `RigSession`,钉到 0/70/0):
+
+```
+level.dat SpawnX: 0 -> 0
+level.dat SpawnY: 60 -> 70
+level.dat SpawnZ: 0 -> 0
+```
+
+并且**直接解压 `level.dat` 读回字节**确认:`SpawnX = 0`、`SpawnY = 70`、`SpawnZ = 0` —— 写入确实落地。
+
+意义:对"playerdata 为空、玩家从未保存过"的存档(1.21.4 就是),这是**唯一**能摆相机的办法 ——
+`Pos`/`Rotation` 没有可写的对象,而出生点是 `level.dat` 里的标量,客户端会照它生成新玩家。
+下一步:用钉好的出生点重取 1.21.4 的一对帧,先看画面是否终于有细节(边缘能量应从 0.86 升到 10 的量级),
+再谈 FXAA 判定;然后同样处理其它"没保存过玩家"的线。
