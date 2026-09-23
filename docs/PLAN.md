@@ -3260,3 +3260,18 @@ java.lang.NoSuchMethodError: 'void net.minecraft.world.level.block.entity.BlockE
 **已做**:给 `stub-additions-1.21.4.txt` 补上三件套(带注释写明这是实测故障、以及为什么只补这一条线)。
 **下一步**:重建 1.21.4 的 loader jar(它由 `add-line.ps1` 生成,会消费该文件),再跑一次
 `wait-for-world` → 若世界能进,继续取成对帧;随后才回到 1.20.x/1.21 的 FXAA 验证。
+
+##### 补充:同一错误也出现在 **1.21.6** 的日志里(1.21.7 及以后没有)
+
+上表里"哪些线的日志真有这个错误"按实测逐条核对后是:
+
+| 线 | 日志里的实据 | 结论 |
+|---|---|---|
+| 1.21 / 1.21.1 / 1.21.3 | `Stubbed net.minecraft.world.level.block.entity.BlockEnt...` | 早先已修,靠的正是这个 stub |
+| 1.21.4 | `java.lang.NoSuchMethodError: ...BlockEntity.gatherCapabilities()`(区块生成) | **缺**,已补 |
+| **1.21.6** | **同样的 `NoSuchMethodError`** | **缺**,已补 |
+| 1.21.7 / 1.21.8 / 1.21.9 / 1.21.10 / 1.21.11 | 日志里**没有**这个错误 | 不动(避免用空实现掩盖真实缺成员) |
+
+因此 `stub-additions-1.21.6.txt` 也补上了同样的三件套(注释里写明实测依据与"为什么只补这两条线")。
+下一步:重建 **1.21.4 与 1.21.6** 的 loader jar 后各自重测 —— 1.21.4 看世界能否进入再取 FXAA 成对帧;
+1.21.6 看"世界可以、光影包不加载"是否也随之改变(它本来就是挂着"世界可以"的那条,值得重新确认)。
