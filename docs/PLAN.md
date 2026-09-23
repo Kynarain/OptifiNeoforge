@@ -4014,3 +4014,35 @@ gradlew.bat --no-daemon -q "-Pmc=$Mc" "-Pneoforge=$NeoForge" '-Pmountpoint=fml10
 否则一个"编译失败"会把一条**当前通过**的线变成 NO-RESULT(把通过洗成"没跑",同样是不诚实)。
 
 FML10 三条的复扫(编译 → 重建 → 验收)已在本轮末启动,结果见下一轮记录。
+
+#### rig 缺口修好后的 FML10 复扫:**三条全绿**;至此 15 条线的四项验收都已通过
+
+```
+line      profile               launcher  verdict  user  sound  crash  stderr
+1.21.9    neoforge-21.9.16-beta  fml10     STARTED  yes   yes    0      0     expected stderr 0
+1.21.10   neoforge-21.10.64      fml10     STARTED  yes   yes    0      0     expected stderr 0
+1.21.11   neoforge-21.11.45      fml10     STARTED  yes   yes    0      107   expected stderr 107
+```
+
+三条**都在真机上跑过**、`Sound engine=yes`、`Setting user=yes`、0 崩溃报告、stderr **等于各自记录值**。
+编译日志显示按线配对确实生效(分别解析到 147 / 147 / 136 个 artifact),也就是说载荷这次是**从当前源码**编出来再装的,
+而不是像上两轮那样"报 NO-RESULT 却仍在跑上一版 jar"。
+
+**验收状态汇总(本轮结束时)**:
+* **ModLauncher 11 条**:全绿(本轮 `-Group modlauncher` 复扫);
+* **FML10 1.21.9 / 1.21.10 / 1.21.11**:全绿(本轮);
+* **26.1.2**:全绿(在上一轮 `-Group all` 里测到 `STARTED + sound yes + 0 崩溃 + stderr 107 = 预期`;本轮按设计跳过它的编译,
+  因为本脚本不重建它的载荷 —— 这一条**是在 ModLauncher jar 打补丁之前**测的,它的产物此后未被改动,故结论仍成立)。
+
+⇒ **四项验收(VERDICT/Setting user/Sound engine/无崩溃 + stderr 对比)在 15 条线上都已通过。**
+
+**一条必须写明的区别(不许含糊)**:ModLauncher 那 12 个 OptiFine jar 是**就地打补丁**的,
+`OptifinePipeline` 里虽然已经接上这个修复,但"**用流水线从分支头重新构建**这 12 条线"这件事**还没有做**。
+所以目标书写的"用分支头重建后的 jar 再验收"目前**只对 FML10 成立**(它们的载荷每轮都从当前源码重编);
+ModLauncher 线目前是"修补过的旧构建"。下一条要补的就是这一项。
+
+**仍未完成(按目标书的第 3、5 项)**:
+* 逐线的"存档 + 光影 + FXAA"像素证据:已确证 9 条(1.21.9/1.21.10/1.21.11/1.21.8/1.20.6/1.21.4/1.21.3/1.21.1/1.20.4),
+  仍缺 1.20.1、1.20.2(上次判 NOT VISIBLE 属低边密度场景,已加 `-Yaw/-Pitch` 可换景重测)、1.21、1.21.6、1.21.7、26.1.2;
+* 发布本身:version 已经在 `gradle.properties` 里是 `1.0.0`,但 `docs/PUBLISHING.md`(VERSIONING.md 指向它)**不存在**,
+  发布流程缺文档 —— 在真正发布前必须先把这一步补上或改走别的既定流程。
