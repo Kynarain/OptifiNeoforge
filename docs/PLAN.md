@@ -3611,3 +3611,53 @@ VERDICT: NOT VISIBLE - edge energy changed by only 1.0%, under the 2.0% threshol
 所以**下一轮要做的是换一个更有信号的场景重测**(把镜头对准有大量几何/树叶/栅栏的朝向,或直接测 4x),
 而不是把这 1.0% 当成结论。若在边密度正常的场景下仍然 NOT VISIBLE,那才是 1.20.2 的真缺陷。
 **在这一步做完之前,1.20.2 的 FXAA 不能记成通过。**
+
+#### 1.21:用户报的"资源重载永不结束、声音引擎起不来"**已修好并实测**(四项检查前三项 + 崩溃全过),但 **stderr 基线对不上**,已分类到"是什么"但**还没结案**
+
+用出厂 jar 跑 `retest-all.ps1 -Only 1.21`(走 `launch.ps1`,natives 已按 `natives-for.ps1` 选好):
+
+```
+line   profile             launcher     verdict  user  sound  crash  stderr   notes
+1.21   neoforge-21.0.167   modlauncher  STARTED  yes   yes    0      46767    STDERR DIFFERS (46767 vs 14141); [OptiFine] 241
+```
+
+**`Sound engine started : yes`** —— 这正是该缺陷的判别点(此前"到得了标题界面、声音引擎永远起不来")。
+配合 `Setting user: yes` 与 **0 崩溃报告**,该缺陷判**已修复**,且是在真机、真启动路径上测的。
+
+**但 stderr 那一项**照实记为**不通过**:46767 对记录的 14141。查清了它的**构成**,而不是猜:
+
+| | 旧日志 `launch-21.0.167-fixchain.err.log` | 本次 `launch-neoforge-21.0.167.err.log` |
+|---|---|---|
+| 字节 | 14147(与记录的 14141 只差 6) | 46767 |
+| `NoClassDefFoundError` | **4** | **4**(相同) |
+| `Exception` 行 | 4 | 15 |
+| `ItemStack` 提及 | 0 | 6 |
+| `ERROR`/`SEVERE` | 0 | **0** |
+
+抛出点的栈顶是:
+
+```
+java.lang.NoClassDefFoundError: net/minecraft/world/level/block/state/BlockState
+    at java.base/java.lang.Class.getDeclaredMethods0(Native Method)
+    at java.base/java.lang.Class.privateGetDeclaredMethods(Class.java:3580)
+```
+
+即**反射枚举某类的声明方法**时,签名里引用了 `BlockState`/`ItemStack`,而在那一刻的类加载器里它们还不可见。
+`NoClassDefFoundError` 的**条数没变(4 对 4)**,多出来的是**同一族的栈行**(4 → 15);且这一族在**旧日志里本来就有**,
+所以**不是本轮新引入的缺陷**,更不是崩溃(0 个 crash report、0 个 ERROR/SEVERE)。
+
+**结论与下一步(不许含糊)**:功能上"能进标题界面 + 声音引擎起来 + 不崩"是通的;但按目标书写的验收口径,
+stderr 属于**四项之一**,所以 1.21 **现在不能记成通过**。两条路,下一轮选一条走完:
+① 把这几条反射探针的栈**消掉**(找到发起反射的那段代码,避免在 MC 类不可见时枚举其成员);
+② 或把它**降级为可解释噪声并重新基线**,但重新基线必须附上本表这份分类证据(条数未变、无 ERROR/SEVERE、无崩溃),
+否则就是把回归洗成通过。
+
+#### 1.20.2 的 FXAA 负判定:确认帧是**有效实景**,并给助手加上可调机位
+
+1.20.2 那一帧的实测:平均亮度 **93.1**、3 像素抽样下 **153** 种颜色 —— 是**有光的真实场景**,
+不是先前那种"又暗又平"的作废帧。它的硬边数(15071)只有 1.20.4(38892)的一半,所以 1.0% 的边能量变化
+**信噪比不足**,不能用它给 1.20.2 定论。
+
+为此把机位变成参数(`run-fxaa-capture.ps1` 新增 `-Yaw`/`-Pitch`,默认仍是 0/45,不再写死):
+原来 45° 俯角是为了避开移动的天空,但它同时也把高频细节挡掉了 —— 这正是"同一阈值在不同场景下灵敏度不同"的来源。
+下一轮用有更多几何/植被的朝向重测 1.20.2 的 FXAA。
