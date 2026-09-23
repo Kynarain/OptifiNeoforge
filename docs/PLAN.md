@@ -3520,3 +3520,25 @@ command-line tokens"),它自己用
 
 好处是双份的:既消除了"每换一条线就要手搓驱动、手搓就会再犯同一个引号错误"的复发路径,
 也让 FXAA 的像素证据第一次能由**同一个**助手在**每条线**上产出。
+
+#### `optifine-*.jar` 的选择改成"以 retest-all.ps1 的行表为准"(glob 一次错三条线)
+
+`-JavaHome` 的引号问题修好之后,1.20.4 又立刻停在下一道门口:`expected exactly one optifine-*.jar in
+jars-1.20.4, found 2`。查下来 `jars-1.20.4` 里除了真正的构建,还躺着 `optifine-remapped-src.jar` ——
+那是**流水线的输入**,不是 mod。顺手把每一条线都数了一遍,发现 glob 这个做法**一次错三条**(下表):
+
+| 线 | glob 给出的候选 | 行表记录的(权威) |
+|---|---|---|
+| 1.20.4 | `..._HD_U_I7.jar`, `optifine-remapped-src.jar` | `..._HD_U_I7.jar` |
+| 1.20.1 | `..._HD_U_I6.jar`, `..._HD_U_I6_pre6.jar` | `..._HD_U_I6.jar` |
+| 1.21 | `..._HD_U_J1_pre9.jar`, `optifine-original.jar` | `..._HD_U_J1_pre9.jar` |
+
+三条里两条**选错也是能启动的**(pre6 和 I6、original 和 pre9 都是真的 OptiFine 构建),
+也就是说不修的话会静默地拿错版本的 OptiFine 去测 —— 那比抛错更糟。所以改成:
+**OptiFine 构建名从 `retest-all.ps1` 的行表里读**(行表本来就是这个 rig 的单一口径,`run-save-shaders-all.ps1`
+早就这么做了),glob 只作为兜底,且兜底命中时会打印 `WARNING`;另加 `-OptifineJar` 显式覆盖。
+逐线核对:12 条 modlauncher 线全部解析到行表里的名字,且文件都在盘上(见本轮实测输出)。
+
+顺带说明为什么这轮**值得**记:三次 1.20.4 抓帧尝试其实一次 JVM 都没起来(先是被引号劈开路径,
+再是被 glob 挡住)。如果没有 `wait-for-world` 与助手自己的报错,这三轮极容易被写成"1.20.4 的 FXAA 不行" ——
+而它们连游戏都没启动过。**"测试没跑" 与 "测试失败" 必须分开**这条纪律,又救了一次。
