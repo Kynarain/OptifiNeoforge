@@ -3275,3 +3275,20 @@ java.lang.NoSuchMethodError: 'void net.minecraft.world.level.block.entity.BlockE
 因此 `stub-additions-1.21.6.txt` 也补上了同样的三件套(注释里写明实测依据与"为什么只补这两条线")。
 下一步:重建 **1.21.4 与 1.21.6** 的 loader jar 后各自重测 —— 1.21.4 看世界能否进入再取 FXAA 成对帧;
 1.21.6 看"世界可以、光影包不加载"是否也随之改变(它本来就是挂着"世界可以"的那条,值得重新确认)。
+
+#### 重建 1.21.4(进行中):loader jar 已变大,但**尚未验证**,而且发现一个目录不一致
+
+按上一节的结论重建 1.21.4 这一线:`add-line.ps1 -Mc 1.21.4 -NeoForge 21.4.149 -OptifineJar <1.21.4 的 OptiFine jar> -SkipInstall`。
+作业**尚未结束**(gradle 阶段的 java 进程仍在跑),所以本轮**不宣称修好**。已观察到的中间状态:
+
+* `jars-1.21.4\OptifiNeoforge-1.0.0+mc1.21.4-registered.jar` 已被重写:**1870326 字节**(原 1861509,+8.8 KB),
+  时间 09/23 08:25 —— 体积增量与"新增了 stub 条目"相符,但**这只是相符,不是证据**;
+* `jars-1.21.4-new\...` 仍是 **09/22** 的旧产物,而 `retest-all.ps1` 里 1.21.4 恰恰用的是
+  `dir = 'jars-1.21.4-new'`。**这个不一致必须在复测前解决**(否则重测的还是旧 jar,结论会误导);
+* 抽查的 `jars-1.21.4-new` 里 `optifineoforge/stubs.txt` 里 `gatherCapabilities` 仍为 **ABSENT** ——
+  同样是因为那份还是旧构建;重建后的 `jars-1.21.4` 那份尚未核对。
+
+**下一步(顺序)**:①等重建结束;②核对重建产物里 `stubs.txt`(或 loader 的 stub 计划)确实含
+`BlockEntity gatherCapabilities ()V` 三件套;③搞清 `jars-1.21.4` 与 `jars-1.21.4-new` 哪个是该线实际使用的,
+让两者一致(或修正 `retest-all.ps1` 的 `dir`);④对 1.21.4 跑 `wait-for-world` —— 世界若终于能进,再取 FXAA 成对帧;
+⑤对 1.21.6 做同样的事。
