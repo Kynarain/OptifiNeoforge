@@ -3331,3 +3331,28 @@ FML 10 线的修法是**整类保留运行时的 `IntegratedServer`**(写在 `ke
 1.21.4 属于 ml11 分支,对应的做法是把它加进该线的 keep 计划(ml11 侧是 `keep-runtime-<mc>.txt` 一类),
 然后重建 loader jar 复测 —— 这与"它现在世界能进、然后服务器 tick 崩"的状态正好接上,
 而且**应当先确认该线的 `IntegratedServer` 是否也被载荷替换**(用同样的 `javap` 对照运行时与载荷两份)。
+
+#### 1.21.4 的"缺 IntegratedServer 保留"已确认,并已补进该线的 keep 清单
+
+用 `javap`/jar 内容对照确认了与 FML 10 完全相同的机制:
+
+* 该线交付的 loader jar 里有 **`optifineoforge/patched/net/minecraft/client/server/IntegratedServer.class`**
+  —— 也就是载荷用的是 OptiFine 自己那份,运行时的 NeoForge 版本被替换掉;
+* 而 jar 内 `optifineoforge/keep-runtime.txt` 里 **`IntegratedServer` 条目数为 0** —— 没有保留;
+* 于是 `ServerLifecycleHooks.handleServerAboutToStart` 这个"加载服务端 config"的调用一起消失,
+  服务端 config 永不加载,首个抛异常的实体 tick 死在 `Level.guardEntityTick` 的错误路径里
+  (crash-2026-09-23_09.05.47-server.txt 正是这个)。
+
+再看各线的 keep 清单,**这条修法在 ml11 分支里本来就是既有做法**:
+
+| keep 清单 | 是否含 IntegratedServer 保留 |
+|---|---|
+| `keep-runtime-1.21.txt` | **有**,注释写着 "IntegratedServer.initServer - the server-lifecycle hook must be the runtime's own body" |
+| `keep-runtime-1.21.8.txt` | **有**(同上) |
+| `keep-runtime-1.21.1 / 1.21.3 / 1.21.4 / 1.21.6 / 1.21.7` | 都没有 |
+
+**已做**:给 `keep-runtime-1.21.4.txt` 追加整类保留 `net/minecraft/client/server/IntegratedServer	*`
+(带注释写明实测崩溃、机制与"为什么是整类保留")。**下一步**:重建 1.21.4 的 loader jar → 再跑一次
+`wait-for-world`(这次期望能真正 `joined the game` 且不再 tick 崩溃)→ 之后才取 FXAA 成对帧。
+1.21.1 / 1.21.3 / 1.21.6 / 1.21.7 也缺这条,但它们各自的实测状态不同(1.21.1、1.21.3 记录为已通过;
+1.21.6 本轮实测有 `gatherCapabilities` 崩溃)—— **按各自证据逐条处理,不一律照搬**。
