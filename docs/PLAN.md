@@ -3661,3 +3661,38 @@ stderr 属于**四项之一**,所以 1.21 **现在不能记成通过**。两条�
 为此把机位变成参数(`run-fxaa-capture.ps1` 新增 `-Yaw`/`-Pitch`,默认仍是 0/45,不再写死):
 原来 45° 俯角是为了避开移动的天空,但它同时也把高频细节挡掉了 —— 这正是"同一阈值在不同场景下灵敏度不同"的来源。
 下一轮用有更多几何/植被的朝向重测 1.20.2 的 FXAA。
+
+#### 更正上一轮的分类:1.21 stderr 多出来的**不是**"同一族更多栈行",而是**另一族、且旧日志里没有的 11 条 NPE**
+
+上一轮我写"多出来的是同一族的栈行(4 → 15)"。**这句是错的**,本轮把 15 条一条条列出来对照后:
+
+| | 旧 `launch-21.0.167-fixchain.err.log`(14147 B) | 本次 `launch-neoforge-21.0.167.err.log`(46767 B) |
+|---|---|---|
+| `NoClassDefFoundError` @ `ReflectorMethod.getMethod/getMethods` | 4 条(BlockState + 3×PoseStack) | 4 条(BlockState + 3×ItemStack) |
+| `NullPointerException: ... "cls" is null` @ `FieldLocatorName.getDeclaredField:70` | **0 条** | **11 条** |
+
+11 条 NPE 的完整调用链(去掉 JDK 帧):
+
+```
+NullPointerException: Cannot invoke "java.lang.Class.getDeclaredFields()" because "cls" is null
+  at net.optifine.reflect.FieldLocatorName.getDeclaredField(FieldLocatorName.java:70)
+  at net.optifine.reflect.FieldLocatorName.getDeclaredField(FieldLocatorName.java:81)
+  at net.optifine.reflect.FieldLocatorName.getField(FieldLocatorName.java:42)
+  at net.optifine.reflect.ReflectorField.getTargetField(ReflectorField.java:65)
+  at net.optifine.reflect.ReflectorField.resolve(ReflectorField.java:135)
+  at net.optifine.reflect.ReflectorResolver.resolve(ReflectorResolver.java:45)
+  at net.minecraft.client.renderer.GameRenderer.frameInit(GameRenderer.java:1568)
+```
+
+含义明确:`FieldLocatorName.getField(name)` 返回了 **null 类**,而 `getDeclaredField` 直接对它取 `getDeclaredFields()`,
+于是 NPE;异常被上层吞掉并打印,该 `ReflectorField` 保持**未解析**。所以这 11 条不是"噪声变多"那么简单 ——
+它意味着 1.21 这条线上有 **11 个 OptiFine 字段没绑上**(依赖它们的特性静默失效),同时把 stderr 顶到了 46767。
+**1.21 卡在 stderr 这一项是有实体的,不能靠重新基线绕过去**(除非先把这 11 个字段绑上)。
+
+**关键对照:两次运行的 jar 是同一个**(`jars-1.21` 的 09-22 07:30),所以差异**不是 jar 变化**造成的。
+08:08 那次只有 4 条、10:13 的 sweep 有 15 条,差别只可能来自**启动条件**(sweep 走 `launch.ps1 -Fresh` 并先跑
+`natives-for.ps1` 选本线 LWJGL;手动那次不是),即"哪条代码路径去解析哪些 Reflector 字段"随配置而变。
+下一轮的第一步就是把这一点**量出来**(先原样复现 sweep 的 15 条,再逐项改回手动那次的启动条件,二分到某一个条件),
+而不是直接改代码 —— 先知道是哪个条件,才知道该修哪里。
+
+同轮旁证:三条 FML 10 线的 stderr 是**对得上**的(1.21.10 = 0,1.21.11 = 107,与记录一致),所以这一族不是全平台现象。
