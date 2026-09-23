@@ -3410,3 +3410,24 @@ keep plan: 4 line(s)
 
 **1.21.4 / 1.21.6 两条线现在的状态**:世界能进、玩家能 join、无崩溃、光影包加载(1.21.6 除外);
 两条线都还缺 **FXAA 成对帧**这一步(1.21.4 只差取帧;1.21.6 要先解决光影包才谈 FXAA)。
+
+#### 1.21.4 终于取到成对帧,但**判定仍是 INCONCLUSIVE** —— 两帧不是同一场景
+
+世界能进之后,两次运行各取到 3 帧(`wait-for-world` 两次都 ok),但比较结果:
+
+```
+frame off : mean edge energy 8.8733  hard edges 11573
+frame on  : mean edge energy 5.3258  hard edges 10835
+edge energy change : 40.0%   hard edge change : 6.4%
+scene difference   : 80.1% of pixels moved by more than 8 luma
+VERDICT: INCONCLUSIVE - the two frames are not the same scene
+```
+
+亮度(112.8 / 106.9)与颜色数(170 / 119)看着相近,但有 80% 的像素变了 —— 说明**两次运行看到的不是同一个画面**。
+原因很明确:这份存档**仍然没有 playerdata**(玩家数据是客户端退出时才写的),于是每次启动都是"新玩家 + 出生点角度",
+而**朝向没有被钉住** —— 我上一轮只钉了 `SpawnX/Y/Z`,没有钉朝向。
+
+**下一步(照 SpawnX/Y/Z 那条已验证的路子)**:`level.dat` 里有 `SpawnAngle`(实测存在,是一个标量),
+把它一起钉住(同样的定宽原地写入),两次运行的视角就一致了;若该字段在某些线缺席,退一步的方案是
+**先让客户端正常退出一次生成 `playerdata`**,再钉 `Pos`/`Rotation`(那条路要等列表写入修好,现仍未做)。
+在此之前,1.21.4 的 FXAA **不能算通过**。
