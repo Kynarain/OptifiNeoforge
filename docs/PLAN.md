@@ -3491,3 +3491,32 @@ command-line tokens"),它自己用
 **下一步**:把 1.20.4 的成对抓帧命令改成"含空格的参数先加引号"再 `Start-Process`(或直接用 `& powershell @args`
 并自己在后台跑),然后重跑;1.20.1/1.20.2 同理(它们同样走 JDK 17)。**这条与游戏本身无关,纯属我这一侧的命令拼装问题**,
 但把它记下来,免得下次又把它读成"1.20.x 的客户端有问题"。
+
+#### 复核:路径被拆开的**机制**已用三方对照实测钉死,并把"F2 抓帧"固化进助手
+
+前一条把真因记成"我的临时命令",机制部分是**推断**。本轮用同一个含空格的值做了三方对照,现在是实测:
+
+| 调用方式 | 子进程看到的 `-JavaHome` |
+|---|---|
+| `& powershell @a`(调用运算符直接展开数组) | `C:\Program Files\Java\jdk-17` ✅ |
+| `Start-Process -ArgumentList $quoted`(含空格先加引号,即助手自己的写法) | `C:\Program Files\Java\jdk-17` ✅ |
+| `Start-Process -ArgumentList $a`(**不加引号**) | `C:\Program` ❌ 被空格劈开 |
+
+第三行正是 `shot-1.20.4b-*.err.log` 里 `no profile at Files\Java\jdk-17\versions\...` 的来历
+(`C:\Program ` 掉了,`Files\Java\jdk-17` 粘到 `-JavaHome` 上)。同时确认:**`shot-<prefix>-<n>.err.log`
+这套命名在 rig 里没有任何脚本使用**(rig 的助手写的是 `fxaa-run-<prefix>-launchconsole.err.log`),
+所以那些日志确实出自我的临时驱动,rig 的 `run-fxaa-capture.ps1`/`run-save-shaders-all.ps1`
+本身无此缺陷 —— 前者第 153 行有 `$quoted`,后者用调用运算符。
+
+**但"临时驱动"才是真正的隐患**,所以把它去掉:`run-fxaa-capture.ps1` 新增 `-ShotMethod F2`,
+让这个本来就会正确加引号、本来就会 `-JavaHome`、本来就会摆好存档与 options 的助手直接承担 FXAA 抓帧。
+新分支的规矩(全部来自已测事实,写在注释里):
+
+* `PrintWindow` 抓不到 FXAA 合成后的画面(FXAA 打开时每帧都是 16328 字节,即合成前的表面),
+  所以 FXAA 这一侧的帧**只能**用游戏自己的 F2 截图;
+* 连按两次、丢弃靠前的一帧(实测紧跟一次按键出现的 PNG 有时仍是上一帧);
+* `-NoFocus` 强制(实测:先抢焦点则按键丢失,不去抢是 1 帧、去抢是 0 帧,两次一致);
+* 期间**不得**打开任何界面(实测:聊天开着时 F2 不出图,1 帧 vs 0 帧)。
+
+好处是双份的:既消除了"每换一条线就要手搓驱动、手搓就会再犯同一个引号错误"的复发路径,
+也让 FXAA 的像素证据第一次能由**同一个**助手在**每条线**上产出。
