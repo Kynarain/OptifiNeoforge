@@ -3696,3 +3696,43 @@ NullPointerException: Cannot invoke "java.lang.Class.getDeclaredFields()" becaus
 而不是直接改代码 —— 先知道是哪个条件,才知道该修哪里。
 
 同轮旁证:三条 FML 10 线的 stderr 是**对得上**的(1.21.10 = 0,1.21.11 = 107,与记录一致),所以这一族不是全平台现象。
+
+#### 1.21 的 11 条 cls-null NPE:**"sweep 用了 -Fresh"这个假设已被实测排除**,行为可复现
+
+上一轮把差异归到"启动条件(sweep `-Fresh` + `natives-for`)",本轮先做了二分,结果如下。
+
+先排除"产物不同"(全部逐字节核对过):
+
+| 变量 | 旧 08:08 那次 | 新 10:13 sweep | 结论 |
+|---|---|---|---|
+| 装载器 jar | — | — | **同一个**:`Get-FileHash` 两边都是 `F959DCCE…A634641`(1906139 B) |
+| OptiFine 构建 | `OptiFine_1.21_HD_U_J1_pre9` | 同 | 同一构建 |
+| optionsshaders.txt | `shaderPack=` 空 | 同 | 都没有光影包 |
+| optionsof.txt | `ofEmissiveTextures:true / ofCustomEntityModels:true / ofAaLevel:0` | 同 | 同一配置 |
+| JVM | `java 21.0.9` / ModLauncher 11.0.4 | 同 | 同 |
+
+然后直接二分 `-Fresh`(两次运行各自把 stderr 单独存档,便于对照):
+
+| 运行 | stderr 字节 | cls-null NPE | NoClassDefFoundError |
+|---|---|---|---|
+| sweep(`-Fresh`) | 46767 | 11 | 4 |
+| 同参数**去掉 `-Fresh`** | **46767** | **11** | **4** |
+
+**逐字节相同的规模,连条数都一样** ⇒ `-Fresh` 不是触发条件,当前 1.21 的行为是**稳定可复现**的
+(而且这次非 `-Fresh` 的运行同样 `Sound engine started: yes` / `Setting user: yes`)。
+
+顺带排除的还有"整个 rig 搬到 `I:` 导致的普遍性问题":**如果**是搬家造成的,FML 10 那几条线的 stderr
+也该一起对不上,但它们**仍然对得上**(1.21.10 = 0、1.21.11 = 107,与记录一致)。所以这不是环境普遍现象,
+而是 **1.21 这一条线自己**的事。
+
+仍然成立的硬事实:旧日志 `launch-21.0.167-fixchain.err.log`(14147 B,与记录的 14141 只差 6)是
+**搬到 `I:` 之前**在 `C:\Users\kynar\IdeaProjects\optifineoforge-test` 上跑的,而且**那个目录现在已经不存在**
+(已核实 `C:\Users\kynar\IdeaProjects\optifineoforge-test` 与 `...\OptifiNeoforge` 均已删除),
+所以"用旧环境复现 4 条那次的对照"这条路**已经不可能**,不能再等它。
+
+下一步(已定位入口,便于实现并验证):1.21 这条线的构建入口是
+`add-line.ps1 -Mc 1.21 -NeoForge 21.0.167 -OptifineJar <用户的 OptiFine jar>`;但按记录它**只在产物不存在时才跑
+`prepare-line`**(复用旧 donor 的陷阱),所以"重建"必须先处理已存在的载荷,不能直接重跑就以为重建了。
+修复方向仍是在载荷里给 `FieldLocatorName.getDeclaredField` 加 null 保护(与已有的
+`ShadersPackLoadedRepair`/`FxaaPostChainRepair` 同族),因为它现在**必然**往 stderr 打 11 条 NPE 栈 ——
+出厂的 mod 不该这样;但**未验证不得声称修好**。
