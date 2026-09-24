@@ -19,6 +19,19 @@ base {
 // The release requires Java 25, which is Minecraft 26.1.2's own requirement.
 def targetJavaVersion = 25
 
+// The FML 10 mount point. On the 1.21.x branch this is conditional, because that branch carries both loader
+// generations and picks the source set with -Pmountpoint=modlauncher|fml10. This branch is FML 10 only - NeoForge
+// dropped ModLauncher before the 26.x line began - so the source set belongs to every build here and there is
+// nothing to select.
+//
+// Measured 2026-09-24: without this, `src/fml10` was never compiled at all (build/classes/java/main/.../fml10 did
+// not exist), and the payload assembly refuses exactly as it does on the 1.21.x branch -
+// "no compiled fml10 classes at ... - run gradlew -Pmountpoint=fml10 compileJava first" - so the 26.x payload jar
+// could not be produced from this branch's sources. The two classes it carries are the ClassProcessor that installs
+// OptiFine's patched classes and the mod-file locator that makes the payload a mod at all.
+sourceSets.main.java.srcDir 'src/fml10/java'
+sourceSets.main.resources.srcDir 'src/fml10/resources'
+
 neoForge {
     version = project.neoforge_version
 
