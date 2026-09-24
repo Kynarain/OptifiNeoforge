@@ -144,6 +144,6 @@ OptiFine 的 Forge 侧入口是一个 ModLauncher 服务:`META-INF/services/cpw.
 
 ## 许可与致谢
 
-- 本项目遵循 **MPL-2.0**(`LICENSE`),加载思路与部分代码移植自 [Chocohead/OptiFabric](https://github.com/Chocohead/OptiFabric)(作者 Modmuss50、Chocohead)。
+- 本项目遵循 **MPL-2.0**(`LICENSE`)。**实现为本项目自写**;与 [OptiFabric](https://github.com/Chocohead/OptiFabric)(作者 Modmuss50、Chocohead)相同的是**做法本身** —— 把 OptiFine 在运行时补进游戏 —— 这一点在此致谢,但两者是不同的加载器(Fabric Loader 对应 NeoForge)、不同的实现,本项目**不是** OptiFabric 的移植或重传。2026-09-24 逐文件核对:源码中没有来自 OptiFabric 的署名或移植片段(源码里的 "Ported from …" 均指本项目自己分支之间的移植),故按事实表述。
 - **不包含、也不分发 OptiFine 本体**,OptiFine 版权归 sp614x 所有,请自行获取。
 - 各版本的构建列表、NeoForge 坐标与下载命令见 `docs/VERSIONS.md`,版本号规则见 `docs/VERSIONING.md`,设计与里程碑见 `docs/PLAN.md`。
