@@ -602,12 +602,12 @@ OptiFine 的 Forge 侧入口是一个 ModLauncher 服务:`META-INF/services/cpw.
   原因是这两版的 OptiFine 预览构建给纹理初始化插入的调用**缺少一个前置的 `setParentTexture` 关联**,而被调用的 `initDynamicTextureNS` 会直接解引用 `getMultiTexID()` 的结果。这两版可用的 OptiFine 构建共七个(1.21.6 三个 + 1.21.7 四个),行为一致,降级到更早的 preview 不能规避。**这是 OptiFine 补丁负载自身的问题,与本模组的加载器适配无关**;来源见下。
 - 上面这条已经在**本线自己**的 1.21.6 / 1.21.7 上复现并确认过(验收因此不含启用光影包),不再是照搬姊妹项目的结论;1.21.7 的四个预览构建行为一致。另外 1.21 带一条已知的 Reflector 缺陷(OptiFine `J1_pre9` 每次启动往 stderr 写 4 条 `NoClassDefFoundError`,不影响启动)——两条都记在 `docs/MATRIX.md`。
 - 这条线的 1.21.6 / 1.21.7 / 1.21.9 只能用 **beta 版 NeoForge**,beta 本身的变动会增加排查噪声。
-- 与 OptiFabric 一样,**不包含、也不分发 OptiFine 本体**:OptiFine 的 jar 由用户自行获取,本项目只把它当作补丁来源。
+- 与 OptiFabric 一样,**不包含、也不分发 OptiFine 本体**:OptiFine 的 jar 由用户自行获取,本项目只把它当作补丁来源。**这句是可核对的**:发布产物的 `net/optifine/**` 条目数为 **0**;曾经有两份源自 OptiFine 文件的 FXAA 后处理定义随 jar 分发,现在已改由本项目自己撰写(见 `docs/PUBLISHING.md`),因此产物里不含任何取自 OptiFine 的文件。
 
 ## 许可与致谢
 
-- 本项目遵循 **MPL-2.0**(`LICENSE`),加载思路与部分代码移植自 [Chocohead/OptiFabric](https://github.com/Chocohead/OptiFabric)(作者 Modmuss50、Chocohead)。
-- **不包含、也不分发 OptiFine 本体**,OptiFine 版权归 sp614x 所有,请自行获取。
+- 本项目遵循 **MPL-2.0**(`LICENSE`)。**实现为本项目自写**;与 [OptiFabric](https://github.com/Chocohead/OptiFabric)(作者 Modmuss50、Chocohead)相同的是**做法本身** —— 把 OptiFine 在运行时补进游戏 —— 这一点在此致谢,但两者是不同的加载器(Fabric Loader 对应 NeoForge)、不同的实现,本项目**不是** OptiFabric 的移植或重传。2026-09-24 逐文件核对:源码中没有来自 OptiFabric 的署名或移植片段(源码里的 "Ported from …" 均指本项目自己分支之间的移植),故按事实表述。
+- **不包含、也不分发 OptiFine 本体**:发布产物内 `net/optifine/**` 为 0 条,也没有任何取自 OptiFine 的文件;OptiFine 版权归 sp614x 所有,请自行获取。本项目未获 OptiFine 或 NeoForge 认可或支持。
 - 各版本的构建列表、NeoForge 坐标与下载命令见 `docs/VERSIONS.md`,版本号规则见 `docs/VERSIONING.md`,设计与里程碑见 `docs/PLAN.md`。
 
 ### 补充记录:第 27 轮那次"投递"测量是空的(2026-09-19)
