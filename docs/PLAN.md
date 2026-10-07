@@ -1585,3 +1585,10 @@ Gradle 与 JVM: 三仓库 wrapper 均为 gradle-9.6.1(要求 Java 17+ 运行, 9.
 
 仍如实留着: FXAA 在 1.20.1/1.21.6/1.21.7/26.1.2 四条未测、1.20.6/1.21.3 低于 2.0% 阈值(每条说明都写着); /register 仍是测量缺口未测; 1.21.6/1.21.7 光影包不加载(未决); 流水线脚本仍在 rig(非 git 仓库), 输入已受版本控制而工具还没有。
 
+
+### rig 纳入版本控制(本地提交): 流水线最后的单点缺口闭合
+
+在 I:\mods\optifineoforge-test 就地 git init, .gitignore 只保留流水线(43 个 .ps1、59 个输入 txt、8 个 .java 工具源、2.7 KB 存档 fixture、STATUS 台账), 排除 game/work/downloads/libraries/natives/versions/logs/release-stage/jars-*/dump*/inspect*/tools-* 输出、*.jar/*.log/*.png、14.7MB 的 obf-official-*.tsrg(可由 proguard-to-tsrg.ps1 重建)与 launcher_profiles.json。结果 119 文件 / 920 KB, 本地提交 9ac34b4(分支 master), 尚未推远端(推送方式待用户定)。
+
+期间修掉一个真错误: .gitignore 不支持行尾注释, 第一版 *.tsrg   # why 整行是模式导致失效, 首次暂存混进 14.7MB tsrg 与 launcher_profiles.json; 已改独立注释并在文件头写明该坑。另注意: 修完模式后 git add -A 不移除已在索引的文件, 须先 git rm -r --cached . 再 add。
+
