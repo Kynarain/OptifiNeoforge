@@ -5799,3 +5799,18 @@ Gradle 与 JVM: 三仓库 wrapper 均为 gradle-9.6.1(要求 Java 17+ 运行, 9.
 
 期间修掉一个真错误: .gitignore 不支持行尾注释, 第一版 *.tsrg   # why 整行是模式导致失效, 首次暂存混进 14.7MB tsrg 与 launcher_profiles.json; 已改独立注释并在文件头写明该坑。另注意: 修完模式后 git add -A 不移除已在索引的文件, 须先 git rm -r --cached . 再 add。
 
+
+### FXAA 补测第一轮: 1.21.3 得 VISIBLE; 1.21.6/1.21.7 的光影包不加载拿到证据链, 并修掉后处理链 JSON 缺陷
+
+新判定: 1.21.3 的 aa0/aa2 对场景差 4.6%、边缘能量 -4.9%(硬边 -6.8%)=> **VISIBLE**, 取代此前'低于 2.0% 阈值'的记录。1.20.6 的旧 aa0 与本轮 aa2 场景差 76.5% => 该对 INCONCLUSIVE 作废, 需重采。
+
+1.21.6/1.21.7 '光影包不加载'证据链: 两线日志均为 Load shaders configuration -> No shaderpack loaded, 而同目录同 optionsshaders.txt 的 1.21.3 打出 Loaded shaderpack: MakeUp-UltraFast-9.5e.zip; graphicsMode:1(Fancy) 故与'Fabulous 会跳过光影包'那条保护无关; 反汇编 1.21.6 的 Shaders.loadShaderPack() 见正确 goto(1.21.9 那个丢 else 分支的缺陷在 1.21.6 不存在), 且 ShadersPackLoadedRepair 只针对 1.21.9 => 原因另有, 仍在查。
+
+顺带修掉真缺陷: 1.21.6 每次启动两条 ERROR 'Failed to parse post chain at minecraft:post_effect/fxaa_of_2x.json / No key fragment_shader' —— OptiFine J6 发的是旧格式 JSON('program'), 而 1.21.6 的 post_effect 加载器要 vertex_shader+fragment_shader(依据游戏自带 entity_outline.json 实测内容)。已把两个 pass 的 program 换成 vertex_shader+fragment_shader(blit 的 vertex 用 core/screenquad), 重启后两条 ERROR 消失(日志证实); 但取帧撞上 Mojang 加载画面(23679 B), 视觉判定仍待重跑。
+
+我自己两个失误: ①并发启动 1.21.7 与 1.21.6 两次采集, launch.ps1 并发保护挡住后者且 fxaa-line 的 Start-Process 未重定向故异常被吞, 两次均 client running:0/NO FRAME => rig 一次只能跑一个客户端; ②用 PowerShell ZipFile Open(Update) 改 jar 把 jar 改坏(客户端抛 ZipException invalid entry size), 已从备份回滚并改用 JDK jar --update 重做(6144 条目 0 读取失败), 启动恢复。
+
+FXAA 现状: VISIBLE = 1.20.2/1.20.4/1.21/1.21.1/1.21.3(新)/1.21.4; 低于阈值 = 1.20.6(该对作废需重测); 未测得判定 = 1.20.1、1.21.6、1.21.7(pack 不加载)、26.1.2; 1.21.8/9/10/11 仍是 09-23 的 VISIBLE 未重测。
+
+下一步: 1.21.6 重跑取帧(等世界加载后再 F2)、1.20.6 重采一对、1.20.1 补 aa0、26.1.2 采一对(FML10 payload+own-classes); 把后处理链修复写进仓库代码(FxaaPostChainRepair 增加旧格式转换)而非只打准备 jar; 继续查 getShaderPack 返回 null 的原因。
+
