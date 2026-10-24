@@ -1648,3 +1648,14 @@ eoforge-26.2.0.88-userdev.jar / neoform-26.2-2.zip / vineflower-* 均无缓存; 
 
 我的操作副作用: 第 2 次启动报 a client is already running (PID 36820), 实为用户另一项目 I:\mods\OptiForge\build\jdk25\bin\java.exe, 被并发保护误判;已停止以继续, 如那是你在跑的进程需重开。
 
+
+### 再查 Gradle 下载问题: DNS 污染+出口封锁+镜像缺 neoform/vineflower-plugins; 已做成可复现 javac 路径
+
+根因(实测): maven.neoforged.net 解析到 2a03:2880:f12c:183:face:b00c:0:25de(AAAA, Meta 段)与 108.160.172.200(A, Dropbox/Meta 段), curl -4/-6 均 8s 超时; 阿里 DoH 给 128.242.250.155, 用 curl --resolve 直连同样 21s 超时 => 出口封锁, 不只是本地 resolver; 本机无代理环境变量。镜像缺口(非冷缓存): BMCLAPI/USTC 能拿 neoforge-26.2.0.88-userdev/-universal 与 vineflower-1.12.0; 腾讯 maven-public/阿里 central 只有 vineflower; 华为云全 404; 而 net.neoforged:neoform 与 :vineflower-plugins 所有镜像 404 —— 连本机已缓存的 neoform-26.1.2-1、1.21.11-20251209.172050 也 404/403, 说明镜像根本没转储该组。故 ModDevGradle 的 :createMinecraftArtifacts 在本机无法靠配置解决, 需放行 maven.neoforged.net 或换真正镜像这两件的源。
+
+可复现解法: 新增 compile-fml10-without-gradle.ps1 —— 用 javac25 编译 src/fml10 到 <Repo>\build\classes\java\main(build-fml10-payload.ps1 取类的位置), 类路径 = work/<line>/runtime-<line>.jar + neoforge-<ver>-universal.jar + 缓存里含 net/neoforged/neoforgespi/transformation/ClassProcessor.class 的 jar(按内容挑) + 含 org/apache/logging/log4j/LogManager.class 的 jar + tools-classpath-fml10.txt 里的 5 个 ASM jar。26.2 实测 exit 0: OptifinePayloadClassProcessor.class 36623 B、OptifinePayloadLocator.class 969 B。
+
+rig 仓库: 修掉 build-fml10-payload.ps1 的 Resolve-PayloadInput 空值 bug(某线无 stub-additions 时 Test-Path  抛错);另我一次误提交已撤销 —— 首次提交时 .gitignore 只排除 natives/ 未排除 natives-*/ 把 300 多个原生 DLL 卷入, 因 rig 仓库纯本地未推送, 用 git reset --soft HEAD~1 撤掉、补 natives-*/ 规则后重提(5eb69c4, 5 files), 历史无该误提交。期间还踩一坑: 注释行里写了 natives-*/ 使'是否已含该模式'的自检被注释骗过、模式实际没插入, 最后按行精确插入。
+
+现状: 26.2 的 pre5 两个 jar 已由该路径构建(payload 3308259 B / own-classes 2780475 B); 启动仍卡 FieldLocatorTypes.<init> 的 VerifyError(与下载无关); 网络放行 maven.neoforged.net 后 prepare-fml10-line 的 Gradle 步可恢复, 两个 jar 也能回到仓库自带流水线产出。
+
