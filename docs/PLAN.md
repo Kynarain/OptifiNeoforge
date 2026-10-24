@@ -1661,3 +1661,6 @@ rig 仓库: 修掉 build-fml10-payload.ps1 的 Resolve-PayloadInput 空值 bug(�
 
 教训: 基类 jar 必须是 FML profile 真正使用的 libraries\net\neoforged\minecraft-client-patched\<ver>\…jar; 不能用来源不明的旧 work 视图(原版式, 少 AttachmentHolder 继承链), 否则'父类为 Forge 桩+缺方法'会伪装成 OptiFine 类出错。
 
+
+### 26.2 进世界补充: quickPlay 参数已传入但世界未打开(日志停在标题前, 无错误); 疑为 1.20.4 存档模板在 26.2 不可加载, 下一步改用 26.2 自身生成的世界。
+
