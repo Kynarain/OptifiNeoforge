@@ -1635,3 +1635,16 @@ eoforge-26.2.0.88-userdev.jar / neoform-26.2-2.zip / vineflower-* 均无缓存; 
 
 网络恢复后: ①gradlew -Pmc=26.2 -Pneoforge=26.2.0.88 -Pmountpoint=fml10 compileJava; ②重跑 prepare-fml10-line 那条(用已下载的 pre5); ③build-fml10-own-classes 重建; ④launch-fml10 跑四检+进世界(注意历史挂起); ⑤通过后把 26.2 加进 build-release-jars 行表并发布(新增 MC 版本 = MINOR, 按 VERSIONING 应升 2.1.0)。
 
+
+### 国内镜像取 26.2 依赖: 绕开 Gradle 用 javac 构建 pre5 载荷; 26.2 从挂起变成确定性崩溃
+
+镜像实测(2026-10-23): 官方 maven 的 IPv4 也不通; **BMCLAPI(经 USTC)可拿** neoforge-26.2.0.88-userdev.jar 与 -universal.jar、vineflower-1.12.0.jar; 腾讯 maven-public 与阿里云 central 只有 vineflower; **neoform-26.2-2.zip 与 vineflower-plugins-0.1.6.jar 所有镜像均 404** => Gradle 的 :createMinecraftArtifacts 仍不可用(它才要 decompile)。
+
+绕开 Gradle: 直接用 javac25 --release 25 编译 src/fml10 两个类, 类路径 = runtime-26.2.jar + neoforge-26.2.0.88-universal.jar + fancymodloader/loader/11.0.15 + log4j-api + asm-9.10.1 => exit 0(OptifinePayloadClassProcessor.class 36623 B);随后 build-fml10-payload.ps1 得 payload 3308259 B(1333 srg + 2 fml10 类 + 3 计划), build-fml10-own-classes.ps1 用 pre5 得 own-classes 2780475 B(OptiFine 条目 2614、shims 78、stubs 重生成 78)。
+
+顺带修掉我自己引入的真 bug: build-fml10-payload.ps1 的 Resolve-PayloadInput 在某线没有 stub-additions-<line>.txt 时返回 , 后面 Test-Path  抛 Cannot bind argument to parameter 'Path';已改为 if ( -and (Test-Path ...))(keep-additions 同), 语法 0 错误, 复跑成功。
+
+26.2 启动结果: 不再是无声挂起, 而是 VerifyError: Bad invokespecial in net.optifine.reflect.FieldLocatorTypes.<init> => Reflector.<clinit> 失败 => NoClassDefFoundError, 连锁 ClientBrandRetriever/ModCheck/checkModStatus 崩溃。**这解释了 10-01 的挂起**: FML 默认入口在启动异常时弹模态对话框而不打印, 进程看着像卡死;本轮用 -MainClass DiagnosticClientAny 才拿到 throwable。已排除: IFieldLocator 是接口且构造器字节码正常(invokespecial Object.<init>)、payload 不含 net/optifine/reflect/*、原始 pre5 用 srg/ 前缀(patch 5510/notch 832/srg 762/assets 172)。下一步查该类为何校验失败(怀疑 Forge API shims 或 reparent/接口计划改写的超类型)。
+
+我的操作副作用: 第 2 次启动报 a client is already running (PID 36820), 实为用户另一项目 I:\mods\OptiForge\build\jdk25\bin\java.exe, 被并发保护误判;已停止以继续, 如那是你在跑的进程需重开。
+
