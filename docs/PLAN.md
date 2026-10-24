@@ -1623,3 +1623,15 @@ FXAA 现状: VISIBLE = 1.20.2/1.20.4/1.21/1.21.1/1.21.3(新)/1.21.4; 低于阈�
 
 下一步: 1.21.6 重跑取帧(等世界加载后再 F2)、1.20.6 重采一对、1.20.1 补 aa0、26.1.2 采一对(FML10 payload+own-classes); 把后处理链修复写进仓库代码(FxaaPostChainRepair 增加旧格式转换)而非只打准备 jar; 继续查 getShaderPack 返回 null 的原因。
 
+
+### 26.2 支持 OptiFine K2 pre5: OptiFine 侧已通过, 卡在 Gradle 网络
+
+核对 optifine.net(2026-10-23): 带 pre5 的只有 Minecraft 26.2 → OptiFine HD U K2 pre5(20.10.2026)(26.1.2 只到 K1 pre2;1.21.7 的 J6 pre5 已被我们用着的 pre7 覆盖)=> 目标定为 26.2 线支持 K2 pre5。
+
+已完成: ①preview_OptiFine_26.2_HD_U_K2_pre5.jar(7849368 B)已用 rig 的 get-optifine.ps1 下载; ②该线现状: jars-26.2 的 payload 是 09-24 由 K2 pre1 构建、own-classes 10-01; 实例 neoforge-26.2.0.88 在; work/26.2/runtime-26.2.jar(39193383 B)可作 -RuntimeJar; ③跑 prepare-fml10-line.ps1 时 **OptiFine 侧全部成功**: patched 7989283 B、split 4627 条去掉 1437、classpath 2792306 B、patched game classes 571(486 net/minecraft)、member-restore 60 条 26 个 donor、reparent 0、MissingTargets 扫描 1385 类 49018 引用 **0 缺失**、PayloadDrift 1385 类/571 在运行时/814 OptiFine 新增、keep/interface/access 计划各 1 条 => **pre5 与补丁管线结构兼容**。
+
+阻塞(外部): Gradle 步失败 —— 在线 Could not resolve :neoFormRuntimeDependenciesNeoForgeClasses(超时), 离线 
+eoforge-26.2.0.88-userdev.jar / neoform-26.2-2.zip / vineflower-* 均无缓存; 实测 maven.neoforged.net:443 TCP 不通; 缓存里 net.neoforged/neoforge 只有 20.4.251…21.11.45 无 26.x, neoform 同样无 26.x, 实例 libraries 无 26.2, 仓库 build/classes/java/fml10 也无残留 => 无法编译 26.2 的 fml10 挂载点类, 因此无法生成 payload。另外 26.2 曾于 10-01 挂起(logs/hang-neoforge-26.2.0.88.txt 有线程转储), 即使构建通过也要先解决。
+
+网络恢复后: ①gradlew -Pmc=26.2 -Pneoforge=26.2.0.88 -Pmountpoint=fml10 compileJava; ②重跑 prepare-fml10-line 那条(用已下载的 pre5); ③build-fml10-own-classes 重建; ④launch-fml10 跑四检+进世界(注意历史挂起); ⑤通过后把 26.2 加进 build-release-jars 行表并发布(新增 MC 版本 = MINOR, 按 VERSIONING 应升 2.1.0)。
+
