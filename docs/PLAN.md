@@ -5850,3 +5850,10 @@ rig 仓库: 修掉 build-fml10-payload.ps1 的 Resolve-PayloadInput 空值 bug(�
 
 现状: 26.2 的 pre5 两个 jar 已由该路径构建(payload 3308259 B / own-classes 2780475 B); 启动仍卡 FieldLocatorTypes.<init> 的 VerifyError(与下载无关); 网络放行 maven.neoforged.net 后 prepare-fml10-line 的 Gradle 步可恢复, 两个 jar 也能回到仓库自带流水线产出。
 
+
+### VerifyError 追加: 根因是用错基类 jar —— 真实 client jar 在 libraries/, 其 BlockEntity 继承 AttachmentHolder 且有 removeData; 我们用的 work/26.2/runtime-26.2.jar 是原版式(extends Object, 无 removeData), 打补丁后 BlockEntity 被塞了我们的 Forge 桩作父类, 导致 super.removeData 校验失败。
+
+对比数据: 真实 minecraft-client-patched-26.2.0.88.jar 的 BlockEntity = 23750 B / extends net/neoforged/neoforge/attachment/AttachmentHolder / 58 methods / 有 public final <T> T removeData(AttachmentType<T>); work/26.2/runtime-26.2.jar 的 = extends java/lang/Object / 51 methods / 无 removeData; 载荷 = extends 我们的桩 CapabilityProvider(186 B)/ 53 methods。
+
+下一步: ①用 libraries 下真实 client jar(+NeoForge universal)重建运行时视图覆盖 work/26.2/runtime-26.2.jar; ②重跑 prepare-fml10-line; ③若仍需 reparent, 补 BlockEntity→AttachmentHolder 计划并扩展 reparent() 处理非 <init> 的 super 调用; ④重建 payload+own-classes 并跑四检。
+
