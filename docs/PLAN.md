@@ -1664,3 +1664,14 @@ rig 仓库: 修掉 build-fml10-payload.ps1 的 Resolve-PayloadInput 空值 bug(�
 
 ### 26.2 进世界补充: quickPlay 参数已传入但世界未打开(日志停在标题前, 无错误); 疑为 1.20.4 存档模板在 26.2 不可加载, 下一步改用 26.2 自身生成的世界。
 
+
+### 26.2 + OptiFine K2 pre5: **四检全部通过**(进世界成功, 0 崩溃)
+
+进世界前提: templates/level-1.20.4.dat 是 1.20.4 存档, 26.2 的 quickPlay 对它静默退回标题; 改用缓存里的 26.2 原版服务端(neoformruntime/artifacts/minecraft_26.2_server.jar)生成新布局世界(dimensions/+level.dat 382B), 复制到 saves/Rig26 后 quickPlay 才真正加载。
+
+进世界后依次暴露并修掉三个运行期缺陷(全部用 keep-additions-26.2.txt 的整类保留, 5 条): ①ClassCastException QueuedPacket -> PacketProcessor(载荷装了 OptiFine 版 PacketProcessor, NeoForge 队列类型不符)=> keep net/minecraft/network/PacketProcessor; ②NoSuchMethodError PacketProcessor.clientPreProcessPacket(只保留外类, 嵌套类仍 OptiFine 版)=> 加 PacketProcessor$ListenerAndPacket(外类与嵌套必须成对); ③NoSuchMethodError BlockEntity.gatherCapabilities()(OptiFine 的 BlockEntity 仍链到 1.20 Forge 的 CapabilityProvider, reparent 到 AttachmentHolder 不够)=> 整类保留 net/minecraft/world/level/block/entity/BlockEntity。
+
+最终四检(日志可复核): Setting user 1 次 ✓; Sound engine started 1 次 ✓; Preparing spawn area 8 次; joined the game 1 次 ✓; Saving chunks 6 次; ClassCastException 0; NoSuchMethodError 0; 新增崩溃报告 0 个 ✓(目录里 5 个都是修复前, 最新 03:36:15)。
+
+仍未做: 26.2 的 FXAA 测量(实例无 shaderpacks); 把 26.2 加进 build-release-jars 行表并发布(新增 MC 版本 = MINOR, 按 VERSIONING 应升 2.1.0); Gradle 正轨仍因网络阻塞, 本轮用 compile-fml10-without-gradle.ps1 旁路。本轮踩坑: 两次追加 keep 条目时文件末尾无换行导致两条拼成一行(构建只认到 3/4 条, 以 keep additions: N line(s) 判断); 一次中文引号导致语法错误。
+

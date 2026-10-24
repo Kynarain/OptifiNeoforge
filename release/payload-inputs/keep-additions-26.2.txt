@@ -1,0 +1,21 @@
+# Copied from keep-additions-26.1.2.txt on 2026-10-23 after 26.2 was measured to die in-world with
+#   java.lang.ClassCastException: net.neoforged.neoforge.network.handling.QueuedPacket$CustomPayload
+#     cannot be cast to net.minecraft.network.PacketProcessor$QueuedPacket   (processQueuedPackets)
+# and then, with only the outer PacketProcessor kept, with
+#   java.lang.NoSuchMethodError: void net.minecraft.network.PacketProcessor.clientPreProcessPacket(Packet)
+#   at net.minecraft.network.PacketProcessor$ListenerAndPacket.handle
+# so the outer class and its nested listener have to be kept TOGETHER - keeping the outer class alone leaves the
+# OptiFine nested class calling a method the runtime's outer class does not have.
+#
+# BlockEntity is kept whole because OptiFine's copy chains to the 1.20-era Forge CapabilityProvider
+# (gatherCapabilities()); re-parenting it onto the runtime's AttachmentHolder is not enough, the call stays and is
+# measured as
+#   java.lang.NoSuchMethodError: void net.minecraft.world.level.block.entity.BlockEntity.gatherCapabilities()
+#   at net.minecraft.world.level.block.entity.BlockEntity.<init>
+#   at net.minecraft.world.level.block.entity.BeehiveBlockEntity.<init>
+#   at net.minecraft.world.level.levelgen.feature.TreeFeature.place          (worker thread)
+net/minecraft/network/PacketProcessor	*
+net/minecraft/network/PacketProcessor$ListenerAndPacket	*
+net/minecraft/client/server/IntegratedServer	*
+net/minecraft/client/renderer/block/ModelBlockRenderer$1	*
+net/minecraft/world/level/block/entity/BlockEntity	*
