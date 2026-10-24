@@ -1666,3 +1666,14 @@ rig 仓库: 修掉 build-fml10-payload.ps1 的 Resolve-PayloadInput 空值 bug(�
 
 下一步: ①用 libraries 下真实 client jar(+NeoForge universal)重建运行时视图覆盖 work/26.2/runtime-26.2.jar; ②重跑 prepare-fml10-line; ③若仍需 reparent, 补 BlockEntity→AttachmentHolder 计划并扩展 reparent() 处理非 <init> 的 super 调用; ④重建 payload+own-classes 并跑四检。
 
+
+### 26.2 + OptiFine K2 pre5: VerifyError 已消除, 客户端能正常启动(四检前两项通过)
+
+做法: 用 libraries\net\neoforged\minecraft-client-patched\26.2.0.88\minecraft-client-patched-26.2.0.88.jar(35.6MB) 覆盖 work/26.2/runtime-26.2.jar(旧 37.4MB 视图备份为 .before-real-client), 重跑 prepare-fml10-line(pre5): MemberRestorePlan 85 类/266 条/88 donors(旧基类 26/60/26), HierarchyPlan 找到 1 个可重挂类并写出 reparent.txt: BlockEntity -> net/neoforged/neoforge/attachment/AttachmentHolder ()V(旧基类时 0 行), MissingTargets 49018 引用 0 缺失, PayloadDrift hierarchy drift 13 类/interface plan 13/access plan 56/keep 1; Gradle 仍因网络失败故用 compile-fml10-without-gradle.ps1(exit 0), 再 build-fml10-payload(266 restores/1 reparent/88 donors) 与 build-fml10-own-classes(pre5, 2614 条目/78 shims)。
+
+结果(日志可复核): 'OptiFine payload: re-parented net.minecraft.world.level.block.entity.BlockEntity from the Forge type …'; 'Setting user: Dev'(四检1 ✓); 'Sound engine started'(四检2 ✓); VerifyError 不再出现; 新增崩溃报告 0 个; installed BlockEntity (12 fields, 60 methods) 说明重挂后带上了运行时的 removeData; 唯一 ERROR 是离线环境 Failed to fetch user properties(401)。
+
+未完成: 四检第3项(进世界) —— test-save-shaders -PrepareOnly 由 templates/level-1.20.4.dat 建了 RigSession(仅 level.dat 2699B, 区域需生成), 但 --quickPlaySingleplayer=RigSession 没触发进世界(日志停在标题界面, 无 Preparing spawn area/joined the game); 需确认 26.2 的 quickPlay 参数形式与 1.20.4 存档在 26.2 的加载转换。四检第4项(无崩溃)已满足。
+
+教训: 基类 jar 必须是 FML profile 真正使用的 libraries\net\neoforged\minecraft-client-patched\<ver>\…jar; 不能用来源不明的旧 work 视图(原版式, 少 AttachmentHolder 继承链), 否则'父类为 Forge 桩+缺方法'会伪装成 OptiFine 类出错。
+
