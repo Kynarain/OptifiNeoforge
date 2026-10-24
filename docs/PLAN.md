@@ -1675,3 +1675,14 @@ rig 仓库: 修掉 build-fml10-payload.ps1 的 Resolve-PayloadInput 空值 bug(�
 
 仍未做: 26.2 的 FXAA 测量(实例无 shaderpacks); 把 26.2 加进 build-release-jars 行表并发布(新增 MC 版本 = MINOR, 按 VERSIONING 应升 2.1.0); Gradle 正轨仍因网络阻塞, 本轮用 compile-fml10-without-gradle.ps1 旁路。本轮踩坑: 两次追加 keep 条目时文件末尾无换行导致两条拼成一行(构建只认到 3/4 条, 以 keep additions: N line(s) 判断); 一次中文引号导致语法错误。
 
+
+### Gradle 缺口收敛到两个文件, 并做了可复现的本地 Maven 播种
+
+离线复跑确认 :neoFormRuntimeDependenciesNeoForgeClasses 只缺四件: neoforge:26.2.0.88(userdev, BMCLAPI 可得), vineflower:1.12.0(BMCLAPI/腾讯/阿里可得), **neoform:26.2-2**(仅 maven.neoforged.net), **vineflower-plugins:0.1.6**(同;本机缓存只有 0.1.5)。全盘搜索 *neoform*26.2* 零命中。
+
+新增 seed-gradle-local-maven.ps1: 把可得产物按 Maven 布局放进 gradle-local-maven/ 并生成 gradle-local-repo.init.gradle(用 -I 传给 Gradle, 仓库排在最前)。两个实测细节: ①classifier 必须体现在文件名(neoforge-26.2.0.88-userdev.jar, 否则 Gradle 认不出); ②.pom/.module 元数据必须一起播种(只有手写 pom 时报 Could not resolve net.neoforged:neoforge:26.2.0.88; 补上真 .module/.pom 后解析通过)。
+
+播种后实测: 缺失清单只剩 neoform-26.2-2.zip 与 vineflower-plugins-0.1.6.jar 两件 => 除这两件外一切就位; Gradle 正轨恢复的唯一前提是这两个文件到达本机(放进 downloads/neoforge-26.2/ 后重跑播种脚本, 再 gradlew -I …/gradle-local-repo.init.gradle …)。否则继续用 compile-fml10-without-gradle.ps1 旁路(26.2 已用它产出四检全绿)。
+
+踩坑记录: $Input 是 PowerShell 自动变量, 首版 param([string]) 被自动变量覆盖成空串; 已改名 -From 并写进脚本说明。
+
