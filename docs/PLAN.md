@@ -5904,3 +5904,14 @@ rig 仓库: 修掉 build-fml10-payload.ps1 的 Resolve-PayloadInput 空值 bug(�
 
 固化的改动: 新增 gradle-mirror-repos.init.gradle; prepare-fml10-line.ps1 对 26.x 自动用 adoptium-25 + -Ptarget_java_version=25 并自动带 init 脚本(Gradle 因 neoform/vineflower-plugins 失败时仍自动降级到 javac); build-fml10-own-classes.ps1 对 26.x 用 Java 25; seed-gradle-local-maven.ps1 + gradle-local-maven(4/4 播种含 .pom/.module)。仍未做: 26.2 的 FXAA 测量(无 shaderpacks)、把 26.2 加进 build-release-jars 行表并发布 2.1.0。
 
+
+### 26.2 已发布为 **2.1.0**(MINOR: 新增 MC 版本)
+
+发布结果(GitHub API 复核): tag v2.1.0+mc26.2 创建于 26.x c5b15775; 资产 OptifiNeoforge-2.1.0+mc26.2.jar 174,216 B; 正文含 FXAA gate waiver 与 NOT PROVEN 两段。
+
+为发布改动: ①build-release-jars.ps1 行表加 26.2(-Pmountpoint=fml10 + -Ptarget_java_version=25)并自动带 -I gradle-mirror-repos.init.gradle; ②26x build.gradle 改为 findProperty('mc') ?: defaultMc 等覆盖(此前 -Pmc=26.2 会把产物命名成 +mc26.1.2, 名字错内容对); 回归: 不带 -Pmc 仍出 +mc26.1.2, 带 -Pmc=26.2 出 +mc26.2; ③publish 脚本三张表加 26.2(acceptance/save=pass, pack/fxaa=NOT PROVEN 并给原因); ④26x STATE.md 与 RELEASE-CHECKLIST.md 各加一节。
+
+2.1.0 四检(发布前同源 jar 复跑): Setting user 1 / Sound engine started 1 / Preparing spawn area 2 / joined the game 1 / ClassCastException 0 / NoSuchMethodError 0 / 新增崩溃 0。26x 提交 4aa224d 已推送。
+
+仍未做: 26.2 光影包与 FXAA 测量(该实例无 shaderpacks, Release 正文明写 NOT PROVEN); 1.20.x 与 1.21.x 仍为 2.0.0(版本按线独立)。
+
