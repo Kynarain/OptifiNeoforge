@@ -1686,3 +1686,14 @@ rig 仓库: 修掉 build-fml10-payload.ps1 的 Resolve-PayloadInput 空值 bug(�
 
 踩坑记录: $Input 是 PowerShell 自动变量, 首版 param([string]) 被自动变量覆盖成空串; 已改名 -From 并写进脚本说明。
 
+
+### **Gradle 正轨恢复**: neoforged.forgecdn.net 可达, 26.2 的 compileJava 成功(BUILD SUCCESSFUL 2m28s)
+
+用户给出 https://neoforged.forgecdn.net/#/releases —— NeoForged 自己的 CDN, 与 maven.neoforged.net 同内容且未被墙: neoform-26.2-2.zip(94,156 B)、vineflower-plugins-0.1.6.jar(8,820 B)、neoforge-26.2.0.88-userdev.jar、.module 全部 200。此前所有国内镜像与 Central 都没有的那两件, 在这里齐全。
+
+恢复正常构建需要三处随线差异: ①仓库前置 —— 新增 gradle-mirror-repos.init.gradle(-I 传入), 依次为 forgecdn → 阿里云 central → 本地播种仓库, 效果是 :createMinecraftArtifacts 首次成功(加载 152 个 artifact); ②Java 目标按线 —— 26.x 的 modDevApiElements 变体只支持 Java 25, 默认 21 报 No matching variant, 需 -Ptarget_java_version=25 且 JAVA_HOME=adoptium-25; ③own-classes 的 JVM 也要按线 —— 硬编码 jdk-21 跑 Java 25 编出的类报 LinkageError(UnsupportedClassVersionError), 26.x 改 adoptium-25 后正常(78 stubs/2614 条目)。
+
+结果: gradlew -I gradle-mirror-repos.init.gradle -Pmc=26.2 -Pneoforge=26.2.0.88 -Pmountpoint=fml10 -Ptarget_java_version=25 compileJava => BUILD SUCCESSFUL in 2m 28s; 随后 prepare-fml10-line(已按线处理三处)全链路成功(payload 3,394,907 B / own-classes 2,780,475 B); 用正轨产出的 jar 再测进世界: Setting user 1 / Sound engine started 1 / Preparing spawn area 2 / joined the game 1 / ClassCastException 0 / NoSuchMethodError 0 / 新增崩溃 0(最新仍是修复前 03:36:15) => 四检依旧全绿。
+
+固化的改动: 新增 gradle-mirror-repos.init.gradle; prepare-fml10-line.ps1 对 26.x 自动用 adoptium-25 + -Ptarget_java_version=25 并自动带 init 脚本(Gradle 因 neoform/vineflower-plugins 失败时仍自动降级到 javac); build-fml10-own-classes.ps1 对 26.x 用 Java 25; seed-gradle-local-maven.ps1 + gradle-local-maven(4/4 播种含 .pom/.module)。仍未做: 26.2 的 FXAA 测量(无 shaderpacks)、把 26.2 加进 build-release-jars 行表并发布 2.1.0。
+
