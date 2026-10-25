@@ -67,3 +67,11 @@ NOT PROVEN(未测)— 1.20.1、1.21.6、1.21.7、26.1.2。
 2. 用**这批** jar 重跑四检 + 建存档进世界,逐条记录;
 3. FXAA 那半道门槛:由所有者解除暂停后测量,或明确"不作为门槛";
 4. 只有 1–3 全绿,才在三个分支打 tag 并写 GitHub Release(说明按 `PUBLISHING.md`:没证到的写 `NOT PROVEN` + 原因)。
+
+## 2026-10-23 - 新增 Minecraft 26.2 支持,版本 2.1.0
+
+- **26.2 已支持并发布**: `OptifiNeoforge-2.1.0+mc26.2.jar`(Release `v2.1.0+mc26.2`, 单资产 174,216 B), NeoForge `26.2.0.88`, OptiFine 实测构建 `HD U K2 pre5`。
+- **四检(2026-10-23, 真实客户端)**: Setting user 1 / Sound engine started 1 / Preparing spawn area 2 / joined the game 1 / 新增崩溃 0。
+- **未证明**: 光影包加载与 FXAA 像素判定 —— 该线实例没有 shaderpacks, 本轮运行未加载任何包;Release 正文如实写为 NOT PROVEN 并给出原因。
+- **解锁 26.2 的三个真缺陷**(都已修): ①载荷基类必须用 FML 实际加载的 `libraries\net\neoforged\minecraft-client-patched\26.2.0.88\…jar`(旧的 `work\26.2\runtime-26.2.jar` 是原版式, 少 `AttachmentHolder` 链, 会伪装成 OptiFine 类出错); ②`PacketProcessor`/`PacketProcessor\`/`BlockEntity` 必须成对整类保留(`keep-additions-26.2.txt`, 5 条); ③Gradle 侧需 `-Ptarget_java_version=25` 与 `-I gradle-mirror-repos.init.gradle`(26.x 变体仅 Java 25; maven.neoforged.net 不可达但 `neoforged.forgecdn.net` 可达)。
+- **构建正轨已恢复**: `gradlew -Pmc=26.2 -Pneoforge=26.2.0.88 -Pmountpoint=fml10 -Ptarget_java_version=25 jar` 成功;本分支的 `build.gradle` 已支持 `-Pmc`/`-Pneoforge`/`-Ptarget_java_version` 覆盖(此前只读 `gradle.properties`, 会把 26.2 的产物命名成 `+mc26.1.2`)。

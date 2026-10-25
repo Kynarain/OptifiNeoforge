@@ -4,10 +4,19 @@ plugins {
     id 'net.neoforged.moddev'
 }
 
-// The 26.x line: one Minecraft version per line, so the target comes from gradle.properties
-// alone. 26.1 and newer ships unobfuscated - the game's own names are the runtime names -
+// The 26.x line: the target comes from gradle.properties, and -Pmc overrides it for the other Minecraft version
+// this branch has to keep building. 26.1 and newer ships unobfuscated - the game's own names are the runtime names -
 // so there is no mappings block and no mapping artifact to bundle.
-def targetMc = project.minecraft_version.toString()
+//
+// Measured 2026-10-23 while adding 26.2: with minecraft_version only (the way this file started), a build with
+// -Pmc=26.2 silently produced "OptifiNeoforge-2.1.0+mc26.1.2.jar" - the flag reached the source-set selection but
+// not the version string, so the artifact was named after the wrong Minecraft version. The 1.21.x branch already
+// resolves its target that way (`project.findProperty('mc') ?: defaultMc`); this branch now does the same, and takes
+// the NeoForge version and Java target the same way, because 26.1.2 and 26.2 differ in neither but a later version
+// might.
+def defaultMc = project.minecraft_version.toString()
+def targetMc = (project.findProperty('mc') ?: defaultMc).toString()
+def targetNeoForge = (project.findProperty('neoforge') ?: project.neoforge_version).toString()
 
 version = "${project.mod_version_base}+mc${targetMc}"
 group = project.maven_group
@@ -16,8 +25,8 @@ base {
     archivesName = project.archives_base_name
 }
 
-// The release requires Java 25, which is Minecraft 26.1.2's own requirement.
-def targetJavaVersion = 25
+// The release requires Java 25, which is Minecraft 26.1.2's own requirement; -Ptarget_java_version overrides it.
+def targetJavaVersion = (project.findProperty('target_java_version') ?: '25').toString().toInteger()
 
 // The FML 10 mount point. On the 1.21.x branch this is conditional, because that branch carries both loader
 // generations and picks the source set with -Pmountpoint=modlauncher|fml10. This branch is FML 10 only - NeoForge
@@ -33,7 +42,7 @@ sourceSets.main.java.srcDir 'src/fml10/java'
 sourceSets.main.resources.srcDir 'src/fml10/resources'
 
 neoForge {
-    version = project.neoforge_version
+    version = targetNeoForge
 
     // This mod is client only, so only the client run is set up. `runClient` is for
     // development; a released jar is a normal mod jar in build/libs.
@@ -75,19 +84,19 @@ java {
 tasks.named('processResources') {
     inputs.property 'version', project.version
     inputs.property 'minecraft_version', targetMc
-    inputs.property 'neoforge_version', project.neoforge_version
+    inputs.property 'neoforge_version', targetNeoForge
     filteringCharset = 'UTF-8'
 
     filesMatching('META-INF/neoforge.mods.toml') {
         expand 'version': project.version,
                 'minecraft_version': targetMc,
-                'neoforge_version': project.neoforge_version
+                'neoforge_version': targetNeoForge
     }
 }
 
 tasks.named('build') {
     doFirst {
         println "Building ${project.archives_base_name} ${project.version} (Minecraft ${targetMc}, " +
-                "NeoForge ${project.neoforge_version}, Java ${targetJavaVersion})"
+                "NeoForge ${targetNeoForge}, Java ${targetJavaVersion})"
     }
 }

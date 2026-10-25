@@ -86,3 +86,16 @@ CurseForge 项目的恢复由本人在网页端处理(恢复时填 名称 `Optif
 - 升版**只能用** `release\version.ps1`(`show` / `major` / `minor` / `patch` / `-Base`);只有 `1.0.0` 才用 `-Base` 明确设定。
 - **升版会移动分支头** ⇒ 会作废基于旧头的验收证据。因此:要么不升版直接发布当前 `2.0.0`,
   要么**先升版、再跑 §3 的第 2 步**。不要"先验收、后升版、直接发"。
+
+### 2026-10-23 - 26.2 行
+
+| 项 | 结果 |
+|---|---|
+| 分支/头 | `26.x` @ 发布时 `c5b1577`, 版本 2.1.0 |
+| 产物 | `OptifiNeoforge-2.1.0+mc26.2.jar` (174,216 B) |
+| NeoForge | `26.2.0.88`, mount `-Pmountpoint=fml10`, Java 25 |
+| OptiFine | `HD U K2 pre5` |
+| 四检 | pass (Setting user / Sound engine started / joined the game / 0 新崩溃) |
+| 存档 | pass (由 26.2 原版服务端生成的世界) |
+| 光影包 | NOT PROVEN - 该实例无 shaderpacks |
+| FXAA | NOT PROVEN - 未测量 |
