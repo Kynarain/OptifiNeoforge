@@ -75,3 +75,15 @@ NOT PROVEN(未测)— 1.20.1、1.21.6、1.21.7、26.1.2。
 - **未证明**: 光影包加载与 FXAA 像素判定 —— 该线实例没有 shaderpacks, 本轮运行未加载任何包;Release 正文如实写为 NOT PROVEN 并给出原因。
 - **解锁 26.2 的三个真缺陷**(都已修): ①载荷基类必须用 FML 实际加载的 `libraries\net\neoforged\minecraft-client-patched\26.2.0.88\…jar`(旧的 `work\26.2\runtime-26.2.jar` 是原版式, 少 `AttachmentHolder` 链, 会伪装成 OptiFine 类出错); ②`PacketProcessor`/`PacketProcessor\`/`BlockEntity` 必须成对整类保留(`keep-additions-26.2.txt`, 5 条); ③Gradle 侧需 `-Ptarget_java_version=25` 与 `-I gradle-mirror-repos.init.gradle`(26.x 变体仅 Java 25; maven.neoforged.net 不可达但 `neoforged.forgecdn.net` 可达)。
 - **构建正轨已恢复**: `gradlew -Pmc=26.2 -Pneoforge=26.2.0.88 -Pmountpoint=fml10 -Ptarget_java_version=25 jar` 成功;本分支的 `build.gradle` 已支持 `-Pmc`/`-Pneoforge`/`-Ptarget_java_version` 覆盖(此前只读 `gradle.properties`, 会把 26.2 的产物命名成 `+mc26.1.2`)。
+
+### 2026-10-23 追加:26.2 的光影包与 FXAA 已实测
+
+- **光影包: pass** —— 在 26.2 实例装入 `MakeUp-UltraFast-9.5e.zip` 后, 进世界运行日志打出
+  `[Shaders] Loaded shaderpack: MakeUp-UltraFast-9.5e.zip`(伴随 `Framebuffer created: dfb/sfb`、`Reset world renderers`)。
+- **FXAA: VISIBLE** —— aa0 与 aa2 同场景帧(均 854x480, 场景差 9.2%):
+  边缘能量 **−20.6%**、硬边 **−18.9%**(`fxaa-check.ps1` 判定)。
+- 已发布的 Release `v2.1.0+mc26.2` 正文中这两行原是 NOT PROVEN, 现已用上述实测替换(GitHub API 复核为 True)。
+- 复测时发现: 该实例窗口尺寸不受 `options.txt` 的 `width/height` 控制, 两帧尺寸不一致会让 `fxaa-check` 直接拒绝;
+  改为写入 `overrideWidth/Height=854x480` 后两帧同尺寸。
+- 另: `post-key.ps1` 对 FML10 线报 "no window matching ... belonging to a Minecraft client"(窗口确实存在),
+  已加 `send-key-raw.ps1` 直接按窗口句柄 PostMessage 发 F2。
